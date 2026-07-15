@@ -5,10 +5,12 @@ mod arch;
 mod input_hw;
 mod interrupts;
 mod memory;
+mod paging;
 mod ramfs;
 mod rtc;
 mod serial;
 mod shell;
+mod userspace;
 
 use core::panic::PanicInfo;
 use genos_abi::{BootInfo, BOOT_INFO_MAGIC, BOOT_INFO_VERSION};
@@ -28,8 +30,13 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
 
     arch::init();
     memory::init(boot_info);
+    if paging::init_protected_address_space().is_err() {
+        serial::println("PAGING_FAILED");
+        arch::halt_loop();
+    }
 
     interrupts::init();
+    userspace::run_probe();
 
     let initrd = ramfs::RamFs::from_initrd(boot_info.initrd.base, boot_info.initrd.size);
     let mut vfs = RamVfs::new();
@@ -48,6 +55,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         taskmgr: tasks.register("taskmgr", TaskState::Ready, 32),
         idle: tasks.register("idle", TaskState::Sleeping, 8),
     };
+    let _ = tasks.record_user_exit("init", 0, interrupts::ticks());
     serial::println("TASKS_READY");
     serial::println("SCHED_READY");
 

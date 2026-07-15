@@ -51,7 +51,7 @@ pub fn run(
         display.refresh_stats_if_due(tick);
         display.animate_if_due(tick);
 
-        if tick % 25 == 0 {
+        if tick.is_multiple_of(25) {
             let now = rtc::read();
             if now.second != last_clock_second {
                 last_clock_second = now.second;
@@ -207,7 +207,7 @@ fn execute(
         "help" => {
             display.push_line(
                 LineKind::Output,
-                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps spawn kill sleep wake sched taskmgr files game time apps echo uname about ui reboot shutdown",
+                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
             );
             display.set_status("help printed");
         }
@@ -438,6 +438,19 @@ fn execute(
             display.push_fixed(LineKind::Output, line);
             display.set_status("scheduler sampled");
         }
+        "userabi" => {
+            let mut line = FixedText::from_str("ring3=");
+            line.push_str(if crate::userspace::probe_passed() {
+                "passed"
+            } else {
+                "failed"
+            });
+            line.push_str(" abi=");
+            line.push_u64(kernel::syscall::USER_ABI_VERSION);
+            line.push_str(" gate=int80 protected-pages=yes");
+            display.push_fixed(LineKind::Output, line);
+            display.set_status("userspace ABI sampled");
+        }
         "taskmgr" => {
             tasks.mark_running(ids.taskmgr, tick);
             display.open_task_manager();
@@ -467,7 +480,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.5 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.6 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -477,7 +490,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.5 adds PID lifecycle, scheduled kernel workers, CPU slices, sleep and wake deadlines, and live scheduler telemetry.",
+                "GenOS 0.6 enters ring 3, runs a protected user page, validates syscalls, exits to ring 0, and then starts the desktop.",
             );
             display.set_status("about");
         }

@@ -1,7 +1,7 @@
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{arch, input_hw};
+use crate::{arch, input_hw, userspace};
 
 const PIC1_COMMAND: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
@@ -153,6 +153,7 @@ pub fn init() {
         arch::set_idt_handler(32, genos_irq0_stub);
         arch::set_idt_handler(33, genos_irq1_stub);
         arch::set_idt_handler(44, genos_irq12_stub);
+        arch::set_user_idt_handler(userspace::SYSCALL_VECTOR, userspace::syscall_handler());
         remap_pic();
         init_pit_100hz();
     }

@@ -35,7 +35,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy -p kernel --lib -- -D warnings
+        run: |
+          cargo clippy -p kernel --lib -- -D warnings
+          cargo clippy -p kernel --bin kernel --target x86_64-unknown-none -- -D warnings
 
       - name: Run workspace tests
         run: cargo test --workspace

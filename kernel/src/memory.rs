@@ -1,13 +1,10 @@
 use genos_abi::{BootInfo, MemoryRegionKind};
+use kernel::physmem::FrameAllocator;
 
-static mut TOTAL_USABLE: u64 = 0;
-static mut NEXT_FRAME: u64 = 0;
-static mut LAST_FRAME: u64 = 0;
+static mut ALLOCATOR: FrameAllocator = FrameAllocator::new();
 
 pub fn init(boot_info: &BootInfo) {
-    let mut total = 0;
-    let mut first = 0;
-    let mut last = 0;
+    let mut allocator = FrameAllocator::new();
     for region in boot_info
         .memory_map
         .regions
@@ -15,39 +12,29 @@ pub fn init(boot_info: &BootInfo) {
         .take(boot_info.memory_map.region_count as usize)
     {
         if region.kind == MemoryRegionKind::Usable {
-            total += region.size;
-            if first == 0 {
-                first = align_up(region.start, 4096);
-            }
-            last = region.start + region.size;
+            allocator.add_region(*region);
         }
     }
+    let total = allocator.usable_bytes();
+    let regions = allocator.region_count();
     unsafe {
-        TOTAL_USABLE = total;
-        NEXT_FRAME = first;
-        LAST_FRAME = last;
+        core::ptr::addr_of_mut!(ALLOCATOR).write(allocator);
     }
     crate::serial::print("Usable memory bytes: ");
     crate::serial::print_u64(total);
+    crate::serial::print(" regions=");
+    crate::serial::print_u64(regions as u64);
     crate::serial::println("");
 }
 
 pub fn usable_bytes() -> u64 {
-    unsafe { TOTAL_USABLE }
+    unsafe { (*core::ptr::addr_of!(ALLOCATOR)).usable_bytes() }
 }
 
 pub fn alloc_frame() -> Option<u64> {
-    unsafe {
-        if NEXT_FRAME == 0 || NEXT_FRAME + 4096 > LAST_FRAME {
-            None
-        } else {
-            let frame = NEXT_FRAME;
-            NEXT_FRAME += 4096;
-            Some(frame)
-        }
-    }
+    unsafe { (*core::ptr::addr_of_mut!(ALLOCATOR)).alloc_frame() }
 }
 
-const fn align_up(value: u64, align: u64) -> u64 {
-    (value + align - 1) & !(align - 1)
+pub fn allocated_frames() -> u64 {
+    unsafe { (*core::ptr::addr_of!(ALLOCATOR)).allocated_frames() }
 }

@@ -67,12 +67,17 @@ Acceptance criteria:
 
 Goal: move from kernel-owned demo tasks to isolated executable processes.
 
-Planned work:
+Delivered so far:
 
 - bounded process/task table and PID lifecycle;
 - round-robin scheduler policy and quantum accounting;
 - sleep/wake deadlines and protected system tasks;
-- privilege transition to ring 3;
+- gap-safe physical frame allocation and a protected kernel address-space clone;
+- initial privilege transition to ring 3;
+- DPL3 syscall entry, scalar argument validation, return, and process exit.
+
+Remaining work:
+
 - per-process address spaces;
 - virtual-memory mappings and page-fault handling;
 - syscall entry/exit path;
@@ -88,10 +93,13 @@ Acceptance criteria:
 - [x] Kernel workers receive stable PIDs and reusable lifecycle slots.
 - [x] Round-robin selection, CPU slices, and context-switch accounting are covered by tests.
 - [x] Workers can sleep until a tick deadline, wake early, and terminate without affecting protected system tasks.
+- [x] A boot-time program executes at ring 3 on explicitly exposed code and guarded stack pages.
+- [x] The program crosses a DPL3 syscall gate, receives ABI results, and exits cleanly back to ring 0.
+- [x] Initial syscall numbers and scalar arguments are validated before kernel dispatch.
 - [ ] Two independent userspace programs run with separate address spaces.
 - [ ] A userspace crash terminates only the failing process.
 - [ ] The scheduler demonstrates preemption rather than cooperative polling.
-- [ ] Syscall arguments are validated before kernel access.
+- [ ] Userspace pointers and buffer ranges are validated before kernel access.
 - [ ] The shell can launch, inspect, and terminate a userspace process.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 

@@ -3,8 +3,11 @@ use core::arch::{asm, global_asm};
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
 const TSS_SELECTOR: u16 = 0x18;
+pub const USER_DATA_SELECTOR: u16 = 0x2b;
+pub const USER_CODE_SELECTOR: u16 = 0x33;
 const INTERRUPT_IST_INDEX: u16 = 1;
 const INTERRUPT_STACK_SIZE: usize = 64 * 1024;
+const PRIVILEGE_STACK_SIZE: usize = 64 * 1024;
 
 #[repr(C, packed)]
 struct DescriptorTablePointer {
@@ -63,12 +66,17 @@ impl IdtEntry {
         }
     }
 
-    fn new(handler: unsafe extern "C" fn()) -> Self {
-        let addr = handler as u64;
+    fn new(handler: unsafe extern "C" fn(), user_callable: bool) -> Self {
+        let addr = handler as usize as u64;
+        let ist = if user_callable {
+            0
+        } else {
+            INTERRUPT_IST_INDEX
+        };
         Self {
             offset_low: addr as u16,
             selector: KERNEL_CODE_SELECTOR,
-            options: 0x8e00 | INTERRUPT_IST_INDEX,
+            options: (if user_callable { 0xee00 } else { 0x8e00 }) | ist,
             offset_mid: (addr >> 16) as u16,
             offset_high: (addr >> 32) as u32,
             reserved: 0,
@@ -77,11 +85,14 @@ impl IdtEntry {
 }
 
 static mut IDT: Idt = Idt([IdtEntry::missing(); 256]);
-static mut GDT: [u64; 5] = [0; 5];
+static mut GDT: [u64; 7] = [0; 7];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
 #[repr(align(16))]
 struct InterruptStack([u8; INTERRUPT_STACK_SIZE]);
 static mut INTERRUPT_STACK: InterruptStack = InterruptStack([0; INTERRUPT_STACK_SIZE]);
+#[repr(align(16))]
+struct PrivilegeStack([u8; PRIVILEGE_STACK_SIZE]);
+static mut PRIVILEGE_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_SIZE]);
 
 global_asm!(
     r#"
@@ -102,7 +113,7 @@ pub fn init() {
         for index in 0..256 {
             idt_ptr
                 .add(index)
-                .write(IdtEntry::new(genos_interrupt_stub));
+                .write(IdtEntry::new(genos_interrupt_stub, false));
         }
         let ptr = DescriptorTablePointer {
             limit: (core::mem::size_of::<Idt>() - 1) as u16,
@@ -116,6 +127,8 @@ pub fn init() {
 unsafe fn init_gdt() {
     let stack_base = core::ptr::addr_of!(INTERRUPT_STACK.0) as u64;
     TSS.ist[(INTERRUPT_IST_INDEX - 1) as usize] = stack_base + INTERRUPT_STACK_SIZE as u64;
+    let privilege_stack_base = core::ptr::addr_of!(PRIVILEGE_STACK.0) as u64;
+    TSS.rsp[0] = privilege_stack_base + PRIVILEGE_STACK_SIZE as u64;
 
     GDT[0] = 0;
     GDT[1] = 0x00af_9a00_0000_ffff;
@@ -123,9 +136,11 @@ unsafe fn init_gdt() {
     let (tss_low, tss_high) = tss_descriptor(core::ptr::addr_of!(TSS) as u64);
     GDT[3] = tss_low;
     GDT[4] = tss_high;
+    GDT[5] = 0x00cf_f200_0000_ffff;
+    GDT[6] = 0x00af_fa00_0000_ffff;
 
     let ptr = DescriptorTablePointer {
-        limit: (core::mem::size_of::<[u64; 5]>() - 1) as u16,
+        limit: (core::mem::size_of::<[u64; 7]>() - 1) as u16,
         base: core::ptr::addr_of!(GDT) as u64,
     };
 
@@ -165,7 +180,14 @@ fn tss_descriptor(base: u64) -> (u64, u64) {
 pub unsafe fn set_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
     if vector < 256 {
         let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr.add(vector).write(IdtEntry::new(handler));
+        idt_ptr.add(vector).write(IdtEntry::new(handler, false));
+    }
+}
+
+pub unsafe fn set_user_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
+    if vector < 256 {
+        let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
+        idt_ptr.add(vector).write(IdtEntry::new(handler, true));
     }
 }
 

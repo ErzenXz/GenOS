@@ -1356,7 +1356,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.5",
+            "GenOS 0.6",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1370,7 +1370,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "LIVE INPUT  /  SCHEDULER  /  SESSION FILES",
+            "RING 3  /  SYSCALL ABI  /  SCHEDULER",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

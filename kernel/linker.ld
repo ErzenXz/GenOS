@@ -8,6 +8,10 @@ SECTIONS
         *(.text .text.*)
     }
 
+    .usertext : ALIGN(4K) {
+        KEEP(*(.usertext))
+    }
+
     .rodata : ALIGN(4K) {
         *(.rodata .rodata.*)
     }
@@ -19,6 +23,10 @@ SECTIONS
     .bss : ALIGN(4K) {
         *(COMMON)
         *(.bss .bss.*)
+    }
+
+    .userstack (NOLOAD) : ALIGN(4K) {
+        KEEP(*(.userstack))
     }
 
     /DISCARD/ : {

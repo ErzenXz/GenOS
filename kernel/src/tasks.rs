@@ -8,6 +8,7 @@ const WORK_UNITS_PER_SLICE: u64 = 64;
 pub enum TaskClass {
     System,
     Worker,
+    User,
 }
 
 impl TaskClass {
@@ -15,6 +16,7 @@ impl TaskClass {
         match self {
             Self::System => "system",
             Self::Worker => "worker",
+            Self::User => "user",
         }
     }
 }
@@ -134,6 +136,19 @@ impl TaskRegistry {
             return Err(TaskError::InvalidState);
         }
         self.insert(name, TaskClass::Worker, TaskState::Ready, memory_kib, tick)
+    }
+
+    pub fn record_user_exit(
+        &mut self,
+        name: &str,
+        exit_code: u8,
+        tick: u64,
+    ) -> Result<u32, TaskError> {
+        let pid = self.insert(name, TaskClass::User, TaskState::Exited, 20, tick)?;
+        if let Some(task) = self.get_mut(pid) {
+            task.exit_code = exit_code as i32;
+        }
+        Ok(pid)
     }
 
     fn insert(
@@ -480,5 +495,17 @@ mod tests {
             Err(TaskError::InvalidState)
         );
         assert!(registry.spawn_worker("render-1", 16, 0).is_ok());
+    }
+
+    #[test]
+    fn completed_userspace_probe_keeps_exit_status() {
+        let mut registry = TaskRegistry::new();
+        registry.register("desktop", TaskState::Running, 32);
+        let pid = registry.record_user_exit("init", 7, 12).unwrap();
+        let task = registry.find(pid).unwrap();
+
+        assert_eq!(task.class, TaskClass::User);
+        assert_eq!(task.state, TaskState::Exited);
+        assert_eq!(task.exit_code, 7);
     }
 }

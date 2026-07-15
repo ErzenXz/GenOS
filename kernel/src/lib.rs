@@ -5,5 +5,7 @@ extern crate std;
 
 pub mod display;
 pub mod input;
+pub mod physmem;
+pub mod syscall;
 pub mod tasks;
 pub mod vfs;

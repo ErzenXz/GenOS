@@ -174,7 +174,11 @@ fn classify_memory(kind: MemoryType) -> MemoryRegionKind {
     match kind {
         MemoryType::CONVENTIONAL => MemoryRegionKind::Usable,
         MemoryType::LOADER_CODE | MemoryType::LOADER_DATA => MemoryRegionKind::Bootloader,
-        MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => MemoryRegionKind::Usable,
+        // Keep firmware boot-services memory reserved until GenOS can prove that no active
+        // page table or firmware-owned structure still references it.
+        MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
+            MemoryRegionKind::Reserved
+        }
         MemoryType::ACPI_RECLAIM | MemoryType::ACPI_NON_VOLATILE => MemoryRegionKind::Acpi,
         MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE | MemoryType::PAL_CODE => {
             MemoryRegionKind::Mmio

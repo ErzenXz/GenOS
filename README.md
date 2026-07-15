@@ -76,7 +76,9 @@ The current GenOS build already contains real operating-system infrastructure:
 - repo-owned `x86_64` UEFI bootloader;
 - ELF kernel loading and versioned boot information;
 - Rust `no_std` kernel with GDT, TSS, IDT, and interrupt setup;
-- physical memory-map discovery and frame allocation;
+- gap-safe physical frame allocation that keeps reserved firmware ranges out of circulation;
+- cloned supervisor-only kernel page tables with explicitly exposed user code and stack pages;
+- a real ring-3 entry path, DPL3 `int 0x80` syscall gate, validated ABI calls, and syscall exit;
 - PS/2 keyboard and mouse input with an event queue;
 - Shift, Caps Lock, symbols, and shell command history;
 - backbuffered framebuffer rendering and dirty-region presentation;
@@ -103,9 +105,9 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`, alongside commands for memory, time, diagnostics, reboot, and shutdown. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports the live ring-3 and syscall probe. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-The scheduled workloads in GenOS 0.5 still run inside the kernel. They prove lifecycle and scheduling policy, but they are not isolated userspace processes yet. Ring-3 execution, separate address spaces, saved CPU contexts, and syscalls remain Stage 2 work.
+GenOS 0.6 executes a minimal probe at ring 3 with only its code and guarded stack pages exposed, crosses a validated syscall boundary, and exits back to the kernel before the desktop starts. Scheduled shell-created workloads still run inside the kernel, however. Per-process address spaces, saved CPU contexts, preemption, userspace ELF loading, and general-purpose applications remain Stage 2 work. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -118,7 +120,8 @@ GenOS bootloader
     v
 GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
-    |-- memory                   map discovery / frame allocation
+    |-- memory                   gap-safe frames / protected page tables
+    |-- userspace               ring 3 / syscall gate / guarded stack
     |-- input                    PS/2 keyboard + mouse / event queue
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
@@ -126,7 +129,7 @@ GenOS kernel
     `-- desktop                  windows / apps / taskbar / shell
 ```
 
-The system is intentionally monolithic at this stage because the immediate goal is to establish correct hardware, process, filesystem, and desktop contracts. User/kernel separation and an application ABI are major roadmap milestones—not assumptions hidden behind placeholder interfaces.
+The system remains intentionally monolithic while its contracts are established, but the first hardware-enforced user/kernel boundary is now working. It is a boot-time proof, not yet a general application runtime.
 
 ## Project status
 
@@ -204,7 +207,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** lifecycle and scheduler policy are working; CPU context switching, syscalls, and isolation come next
+- [ ] **Processes and userspace (in progress):** lifecycle, scheduler policy, protected user pages, ring 3, and the first syscall ABI work; per-process address spaces and preemption come next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design
