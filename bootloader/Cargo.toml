@@ -13,4 +13,4 @@ bench = false
 
 [dependencies]
 genos_abi.workspace = true
-uefi = { version = "0.36.1", features = ["alloc", "global_allocator"] }
+uefi = { version = "0.39.0", features = ["alloc", "global_allocator"] }
