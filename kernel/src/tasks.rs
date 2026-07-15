@@ -117,7 +117,7 @@ impl TaskRegistry {
     }
 
     pub fn register(&mut self, name: &str, state: TaskState, memory_kib: u32) -> u32 {
-        self.insert(name, TaskClass::System, state, memory_kib, 0)
+        self.insert(name, TaskClass::System, state, memory_kib, 0, false)
             .unwrap_or(0)
     }
 
@@ -135,7 +135,14 @@ impl TaskRegistry {
         {
             return Err(TaskError::InvalidState);
         }
-        self.insert(name, TaskClass::Worker, TaskState::Ready, memory_kib, tick)
+        self.insert(
+            name,
+            TaskClass::Worker,
+            TaskState::Ready,
+            memory_kib,
+            tick,
+            true,
+        )
     }
 
     pub fn record_user_exit(
@@ -144,7 +151,7 @@ impl TaskRegistry {
         exit_code: u8,
         tick: u64,
     ) -> Result<u32, TaskError> {
-        let pid = self.insert(name, TaskClass::User, TaskState::Exited, 20, tick)?;
+        let pid = self.insert(name, TaskClass::User, TaskState::Exited, 20, tick, false)?;
         if let Some(task) = self.get_mut(pid) {
             task.exit_code = exit_code as i32;
         }
@@ -158,12 +165,17 @@ impl TaskRegistry {
         state: TaskState,
         memory_kib: u32,
         tick: u64,
+        reuse_exited: bool,
     ) -> Result<u32, TaskError> {
-        let slot = self
-            .tasks
-            .iter()
-            .take(self.len)
-            .position(|task| task.state == TaskState::Exited)
+        let reusable = reuse_exited
+            .then(|| {
+                self.tasks
+                    .iter()
+                    .take(self.len)
+                    .position(|task| task.state == TaskState::Exited)
+            })
+            .flatten();
+        let slot = reusable
             .or_else(|| (self.len < MAX_TASKS).then_some(self.len))
             .ok_or(TaskError::TableFull)?;
 
@@ -501,11 +513,14 @@ mod tests {
     fn completed_userspace_probe_keeps_exit_status() {
         let mut registry = TaskRegistry::new();
         registry.register("desktop", TaskState::Running, 32);
-        let pid = registry.record_user_exit("init", 7, 12).unwrap();
-        let task = registry.find(pid).unwrap();
+        let first = registry.record_user_exit("user-a", 7, 12).unwrap();
+        let second = registry.record_user_exit("user-b", 0, 13).unwrap();
+        let task = registry.find(first).unwrap();
 
         assert_eq!(task.class, TaskClass::User);
         assert_eq!(task.state, TaskState::Exited);
         assert_eq!(task.exit_code, 7);
+        assert_eq!(registry.find(second).unwrap().name.as_str(), "user-b");
+        assert_eq!(registry.len(), 3);
     }
 }

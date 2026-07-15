@@ -74,16 +74,19 @@ Delivered so far:
 - sleep/wake deadlines and protected system tasks;
 - gap-safe physical frame allocation and a protected kernel address-space clone;
 - initial privilege transition to ring 3;
-- DPL3 syscall entry, scalar argument validation, return, and process exit.
+- DPL3 syscall entry, scalar argument validation, return, and process exit;
+- separate CR3 roots with private user code, data, guard, and stack mappings;
+- saved general-purpose register and interrupt-return contexts;
+- cooperative user yield, address-space switch, resume, and independent exit;
+- bounded user-buffer validation and copy-in for the first pointer syscall.
 
 Remaining work:
 
-- per-process address spaces;
-- virtual-memory mappings and page-fault handling;
-- syscall entry/exit path;
+- page-fault handling and process-local fault termination;
+- broader syscall entry/exit surface and copy-out;
 - preemptive scheduler with sleep and wake primitives;
 - userspace ELF loader;
-- process lifecycle and exit status;
+- generalize lifecycle and exit status to dynamically loaded programs;
 - pipes or bounded message channels;
 - initial userspace runtime crate;
 - move the shell into userspace.
@@ -96,10 +99,12 @@ Acceptance criteria:
 - [x] A boot-time program executes at ring 3 on explicitly exposed code and guarded stack pages.
 - [x] The program crosses a DPL3 syscall gate, receives ABI results, and exits cleanly back to ring 0.
 - [x] Initial syscall numbers and scalar arguments are validated before kernel dispatch.
-- [ ] Two independent userspace programs run with separate address spaces.
+- [x] Two independent userspace processes run with separate address spaces.
+- [x] Both processes yield and resume with preserved CPU registers and private memory.
+- [x] A validated user pointer is translated through the owning address space before copy-in.
 - [ ] A userspace crash terminates only the failing process.
 - [ ] The scheduler demonstrates preemption rather than cooperative polling.
-- [ ] Userspace pointers and buffer ranges are validated before kernel access.
+- [x] Initial userspace pointer and buffer ranges are validated before kernel access.
 - [ ] The shell can launch, inspect, and terminate a userspace process.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 

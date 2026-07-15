@@ -25,10 +25,6 @@ SECTIONS
         *(.bss .bss.*)
     }
 
-    .userstack (NOLOAD) : ALIGN(4K) {
-        KEEP(*(.userstack))
-    }
-
     /DISCARD/ : {
         *(.eh_frame)
         *(.note .note.*)

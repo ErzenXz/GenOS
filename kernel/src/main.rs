@@ -36,7 +36,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     }
 
     interrupts::init();
-    userspace::run_probe();
+    let user_probe = userspace::run_probe();
 
     let initrd = ramfs::RamFs::from_initrd(boot_info.initrd.base, boot_info.initrd.size);
     let mut vfs = RamVfs::new();
@@ -55,7 +55,8 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         taskmgr: tasks.register("taskmgr", TaskState::Ready, 32),
         idle: tasks.register("idle", TaskState::Sleeping, 8),
     };
-    let _ = tasks.record_user_exit("init", 0, interrupts::ticks());
+    let _ = tasks.record_user_exit("user-a", user_probe.exit_codes[0], interrupts::ticks());
+    let _ = tasks.record_user_exit("user-b", user_probe.exit_codes[1], interrupts::ticks());
     serial::println("TASKS_READY");
     serial::println("SCHED_READY");
 

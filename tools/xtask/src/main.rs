@@ -256,8 +256,12 @@ fn smoke_markers_ready(output: &str) -> bool {
         "TASKS_READY",
         "SCHED_READY",
         "PAGING_READY",
+        "ADDRESS_SPACES_READY",
         "USER_CONTEXT_OK",
+        "USER_CONTEXT_RESUME_OK",
         "USER_SYSCALL_OK",
+        "USER_COPY_OK",
+        "USER_ISOLATION_OK",
         "USERMODE_READY",
         "BACKBUFFER_READY",
         "GENOS_READY",
@@ -298,7 +302,7 @@ mod tests {
     #[test]
     fn smoke_requires_phase3_markers() {
         assert!(smoke_markers_ready(
-            "IRQ_READY\nVFS_READY\nTASKS_READY\nSCHED_READY\nPAGING_READY\nUSER_CONTEXT_OK\nUSER_SYSCALL_OK\nUSERMODE_READY\nBACKBUFFER_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nDISPLAY_IDLE_OK\n"
+            "IRQ_READY\nVFS_READY\nTASKS_READY\nSCHED_READY\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_ISOLATION_OK\nUSERMODE_READY\nBACKBUFFER_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nDISPLAY_IDLE_OK\n"
         ));
         assert!(!smoke_markers_ready("GENOS_READY\n"));
     }

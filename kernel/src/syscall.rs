@@ -1,13 +1,17 @@
-pub const USER_ABI_VERSION: u64 = 1;
+pub const USER_ABI_VERSION: u64 = 2;
 pub const SYSCALL_PING: u64 = 0;
 pub const SYSCALL_ABI_VERSION: u64 = 1;
 pub const SYSCALL_EXIT: u64 = 2;
+pub const SYSCALL_YIELD: u64 = 3;
+pub const SYSCALL_REPORT: u64 = 4;
 pub const PING_REPLY: u64 = 0x4745_4e4f_535f_4f4b;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallAction {
     Return(u64),
     Exit(u8),
+    Yield,
+    Report { address: u64, length: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,7 +27,16 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         SYSCALL_EXIT if args[0] <= u8::MAX as u64 && args[1..] == [0; 5] => {
             Ok(SyscallAction::Exit(args[0] as u8))
         }
-        SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT => Err(SyscallError::InvalidArgument),
+        SYSCALL_YIELD if args == [0; 6] => Ok(SyscallAction::Yield),
+        SYSCALL_REPORT if args[0] != 0 && args[1] == 8 && args[2..] == [0; 4] => {
+            Ok(SyscallAction::Report {
+                address: args[0],
+                length: args[1],
+            })
+        }
+        SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT | SYSCALL_YIELD | SYSCALL_REPORT => {
+            Err(SyscallError::InvalidArgument)
+        }
         _ => Err(SyscallError::UnknownNumber),
     }
 }
@@ -33,6 +46,19 @@ pub const fn error_code(error: SyscallError) -> u64 {
         SyscallError::UnknownNumber => u64::MAX,
         SyscallError::InvalidArgument => u64::MAX - 1,
     }
+}
+
+pub fn validate_user_buffer(address: u64, length: u64, range_start: u64, range_size: u64) -> bool {
+    if length == 0 || address < range_start {
+        return false;
+    }
+    let Some(end) = address.checked_add(length) else {
+        return false;
+    };
+    let Some(range_end) = range_start.checked_add(range_size) else {
+        return false;
+    };
+    end <= range_end
 }
 
 #[cfg(test)]
@@ -53,6 +79,14 @@ mod tests {
             dispatch(SYSCALL_EXIT, [7, 0, 0, 0, 0, 0]),
             Ok(SyscallAction::Exit(7))
         );
+        assert_eq!(dispatch(SYSCALL_YIELD, [0; 6]), Ok(SyscallAction::Yield));
+        assert_eq!(
+            dispatch(SYSCALL_REPORT, [0x4000, 8, 0, 0, 0, 0]),
+            Ok(SyscallAction::Report {
+                address: 0x4000,
+                length: 8
+            })
+        );
     }
 
     #[test]
@@ -65,6 +99,24 @@ mod tests {
             dispatch(SYSCALL_EXIT, [256, 0, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
+        assert_eq!(
+            dispatch(SYSCALL_REPORT, [0, 8, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_REPORT, [0x4000, 16, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));
+    }
+
+    #[test]
+    fn user_buffers_must_stay_inside_the_owned_mapping() {
+        assert!(validate_user_buffer(0x4000, 8, 0x4000, 0x1000));
+        assert!(validate_user_buffer(0x4ff8, 8, 0x4000, 0x1000));
+        assert!(!validate_user_buffer(0x3fff, 8, 0x4000, 0x1000));
+        assert!(!validate_user_buffer(0x4ff9, 8, 0x4000, 0x1000));
+        assert!(!validate_user_buffer(u64::MAX - 3, 8, 0x4000, 0x1000));
+        assert!(!validate_user_buffer(0x4000, 0, 0x4000, 0x1000));
     }
 }

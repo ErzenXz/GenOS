@@ -447,7 +447,12 @@ fn execute(
             });
             line.push_str(" abi=");
             line.push_u64(kernel::syscall::USER_ABI_VERSION);
-            line.push_str(" gate=int80 protected-pages=yes");
+            line.push_str(" proc=");
+            line.push_u64(crate::userspace::process_count() as u64);
+            line.push_str(" spaces=");
+            line.push_u64(crate::userspace::address_space_count() as u64);
+            line.push_str(" yields=");
+            line.push_u64(crate::userspace::yield_count() as u64);
             display.push_fixed(LineKind::Output, line);
             display.set_status("userspace ABI sampled");
         }
@@ -480,7 +485,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.6 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.7 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -490,7 +495,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.6 enters ring 3, runs a protected user page, validates syscalls, exits to ring 0, and then starts the desktop.",
+                "GenOS 0.7 runs two isolated ring-3 processes, switches saved CPU contexts, validates user memory, and preserves private address spaces.",
             );
             display.set_status("about");
         }
