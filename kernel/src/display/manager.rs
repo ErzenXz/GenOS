@@ -13,7 +13,7 @@ use super::{
 
 const INPUT_CAP: usize = 128;
 const DIRTY_CAP: usize = 16;
-const STATS_REFRESH_TICKS: u64 = 10;
+const STATS_REFRESH_TICKS: u64 = 25;
 const FILE_VIEW_CAP: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1128,7 +1128,7 @@ impl DisplayManager {
     }
 
     fn draw_task_manager_window(&mut self, rect: Rect, tasks: Option<&TaskRegistry>) {
-        self.draw_window_frame(rect, "Task Manager");
+        self.draw_window_frame(rect, "Task Manager / scheduler");
         let body = Rect::new(rect.x + 8, rect.y + 45, rect.width - 16, rect.height - 53);
         self.fb.fill_rect(body, Color::rgb(232, 230, 222));
         self.fb.stroke_rect(body, Color::rgb(102, 102, 97));
@@ -1156,7 +1156,7 @@ impl DisplayManager {
             stats.as_str(),
             text,
         );
-        y += 24;
+        y += 22;
         let mut stats2 = FixedText::from_str("FILES ");
         stats2.push_u64(self.vfs_files as u64);
         stats2.push_str("    POINTER ");
@@ -1170,6 +1170,25 @@ impl DisplayManager {
             stats2.as_str(),
             text,
         );
+        y += 22;
+        if let Some(tasks) = tasks {
+            let mut scheduler = FixedText::from_str("WORKERS ");
+            scheduler.push_u64(tasks.worker_len() as u64);
+            scheduler.push_str("  RUN ");
+            match tasks.current_worker_id() {
+                Some(pid) => scheduler.push_u64(pid as u64),
+                None => scheduler.push_str("--"),
+            }
+            scheduler.push_str("  SW ");
+            scheduler.push_u64(tasks.total_switches());
+            TextRenderer::draw_text(
+                &mut self.fb,
+                clip,
+                Point::new(clip.x, y),
+                scheduler.as_str(),
+                text,
+            );
+        }
         y += 28;
         self.fb
             .fill_rect(Rect::new(clip.x, y, clip.width, 1), Color::BORDER);
@@ -1178,10 +1197,10 @@ impl DisplayManager {
             &mut self.fb,
             clip,
             Point::new(clip.x, y),
-            "NAME        STATE      MEMORY",
+            "NAME       TYPE      STATE    MEM",
             heading,
         );
-        y += 28;
+        y += 26;
         if let Some(tasks) = tasks {
             let mut index = 0;
             while index < tasks.len() && y < clip.bottom() - 22 {
@@ -1202,7 +1221,14 @@ impl DisplayManager {
                     TextRenderer::draw_text(
                         &mut self.fb,
                         clip,
-                        Point::new(clip.x + 122, y),
+                        Point::new(clip.x + 108, y),
+                        task.class.as_str(),
+                        text,
+                    );
+                    TextRenderer::draw_text(
+                        &mut self.fb,
+                        clip,
+                        Point::new(clip.x + 178, y),
                         task.state.as_str(),
                         accent,
                     );
@@ -1212,12 +1238,12 @@ impl DisplayManager {
                     TextRenderer::draw_text(
                         &mut self.fb,
                         clip,
-                        Point::new(clip.x + 238, y),
+                        Point::new(clip.x + 266, y),
                         memory.as_str(),
                         text,
                     );
                 }
-                y += 28;
+                y += 25;
                 index += 1;
             }
         }
@@ -1330,7 +1356,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.4",
+            "GenOS 0.5",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1344,7 +1370,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "REAL INPUT  /  LIVE TASKS  /  SESSION FILES",
+            "LIVE INPUT  /  SCHEDULER  /  SESSION FILES",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

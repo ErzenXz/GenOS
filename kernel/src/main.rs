@@ -49,6 +49,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         idle: tasks.register("idle", TaskState::Sleeping, 8),
     };
     serial::println("TASKS_READY");
+    serial::println("SCHED_READY");
 
     let display = FramebufferDevice::new(&boot_info.framebuffer);
     if display.is_backbuffered() {

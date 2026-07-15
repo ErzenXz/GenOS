@@ -81,6 +81,8 @@ The current GenOS build already contains real operating-system infrastructure:
 - Shift, Caps Lock, symbols, and shell command history;
 - backbuffered framebuffer rendering and dirty-region presentation;
 - native desktop, taskbar, start panel, cursor, and draggable windows;
+- bounded kernel-worker lifecycle with PIDs, protected system tasks, and slot reuse;
+- round-robin scheduling with measured CPU slices, sleep/wake deadlines, and context-switch accounting;
 - writable RAM-backed virtual filesystem;
 - Files application backed by live VFS state;
 - Task Manager backed by the kernel task registry;
@@ -101,7 +103,9 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`, alongside system commands for memory, tasks, time, diagnostics, reboot, and shutdown.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`, alongside commands for memory, time, diagnostics, reboot, and shutdown. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+
+The scheduled workloads in GenOS 0.5 still run inside the kernel. They prove lifecycle and scheduling policy, but they are not isolated userspace processes yet. Ring-3 execution, separate address spaces, saved CPU contexts, and syscalls remain Stage 2 work.
 
 ## Architecture
 
@@ -200,7 +204,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Userspace:** privilege separation, syscalls, executable processes, scheduler
+- [ ] **Processes and userspace (in progress):** lifecycle and scheduler policy are working; CPU context switching, syscalls, and isolation come next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design

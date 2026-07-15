@@ -4,7 +4,7 @@ use genos_abi::BootInfo;
 use kernel::{
     display::{DisplayManager, FixedText, LineKind},
     input::{InputEvent, KeyEvent},
-    tasks::{TaskRegistry, TaskState},
+    tasks::{TaskError, TaskRegistry, TaskState},
     vfs::{NodeKind, RamVfs, VfsError},
 };
 
@@ -163,6 +163,7 @@ pub fn run(
         }
 
         if tick != last_tick {
+            tasks.scheduler_tick(tick);
             tasks.mark_running(ids.desktop, tick);
             tasks.set_state(ids.input, TaskState::Waiting, tick);
             last_tick = tick;
@@ -206,7 +207,7 @@ fn execute(
         "help" => {
             display.push_line(
                 LineKind::Output,
-                "help clear mem pwd cd ls cat touch write append rm mkdir stat tasks taskmgr files game demo time apps echo uname about whoami ui reboot shutdown",
+                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps spawn kill sleep wake sched taskmgr files game time apps echo uname about ui reboot shutdown",
             );
             display.set_status("help printed");
         }
@@ -350,7 +351,7 @@ fn execute(
                 display.set_status("stat");
             }
         }
-        "tasks" => {
+        "tasks" | "ps" => {
             let mut index = 0;
             while index < tasks.len() {
                 if let Some(row) = tasks.format_row(index) {
@@ -358,7 +359,84 @@ fn execute(
                 }
                 index += 1;
             }
-            display.set_status("tasks listed");
+            display.set_status("processes listed");
+        }
+        "spawn" => {
+            let name = trim(args);
+            if name.is_empty() {
+                display.push_line(LineKind::Error, "usage: spawn NAME");
+            } else {
+                match tasks.spawn_worker(name, 24, tick) {
+                    Ok(pid) => {
+                        let mut line = FixedText::from_str("worker started pid=");
+                        line.push_u64(pid as u64);
+                        line.push_str(" name=");
+                        line.push_str(name);
+                        display.push_fixed(LineKind::Status, line);
+                        display.set_status("worker started");
+                    }
+                    Err(error) => push_task_error(display, error),
+                }
+            }
+            display.refresh_task_manager();
+        }
+        "kill" => {
+            match parse_u32(trim(args)) {
+                Some(pid) => match tasks.terminate(pid, 0, tick) {
+                    Ok(()) => {
+                        display.push_line(LineKind::Status, "worker terminated");
+                        display.set_status("worker terminated");
+                    }
+                    Err(error) => push_task_error(display, error),
+                },
+                None => display.push_line(LineKind::Error, "usage: kill PID"),
+            }
+            display.refresh_task_manager();
+        }
+        "sleep" => {
+            let (pid_text, ticks_text) = split_once_space(args);
+            match (parse_u32(pid_text), parse_u64(ticks_text)) {
+                (Some(pid), Some(duration)) => match tasks.sleep(pid, duration, tick) {
+                    Ok(()) => {
+                        let mut line = FixedText::from_str("worker sleeping for ");
+                        line.push_u64(duration);
+                        line.push_str(" ticks");
+                        display.push_fixed(LineKind::Status, line);
+                        display.set_status("worker sleeping");
+                    }
+                    Err(error) => push_task_error(display, error),
+                },
+                _ => display.push_line(LineKind::Error, "usage: sleep PID TICKS"),
+            }
+            display.refresh_task_manager();
+        }
+        "wake" => {
+            match parse_u32(trim(args)) {
+                Some(pid) => match tasks.wake(pid, tick) {
+                    Ok(()) => {
+                        display.push_line(LineKind::Status, "worker ready");
+                        display.set_status("worker woken");
+                    }
+                    Err(error) => push_task_error(display, error),
+                },
+                None => display.push_line(LineKind::Error, "usage: wake PID"),
+            }
+            display.refresh_task_manager();
+        }
+        "sched" => {
+            let mut line = FixedText::from_str("workers=");
+            line.push_u64(tasks.worker_len() as u64);
+            line.push_str(" current=");
+            match tasks.current_worker_id() {
+                Some(pid) => line.push_u64(pid as u64),
+                None => line.push_str("none"),
+            }
+            line.push_str(" quantum=");
+            line.push_u64(tasks.quantum_ticks() as u64);
+            line.push_str(" switches=");
+            line.push_u64(tasks.total_switches());
+            display.push_fixed(LineKind::Output, line);
+            display.set_status("scheduler sampled");
         }
         "taskmgr" => {
             tasks.mark_running(ids.taskmgr, tick);
@@ -389,7 +467,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.4 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.5 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -399,7 +477,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.4 adds real app focus, draggable windows, live Files, keyboard history, and a unified taskbar.",
+                "GenOS 0.5 adds PID lifecycle, scheduled kernel workers, CPU slices, sleep and wake deadlines, and live scheduler telemetry.",
             );
             display.set_status("about");
         }
@@ -465,6 +543,37 @@ fn push_vfs_error(display: &mut DisplayManager, error: VfsError) {
         VfsError::InvalidPath => "invalid path",
     };
     display.push_line(LineKind::Error, text);
+}
+
+fn push_task_error(display: &mut DisplayManager, error: TaskError) {
+    let text = match error {
+        TaskError::TableFull => "process table is full",
+        TaskError::NotFound => "pid not found",
+        TaskError::Protected => "system task is protected",
+        TaskError::InvalidState => "invalid task state or worker name",
+    };
+    display.push_line(LineKind::Error, text);
+    display.set_status("task error");
+}
+
+fn parse_u32(text: &str) -> Option<u32> {
+    let value = parse_u64(text)?;
+    (value <= u32::MAX as u64).then_some(value as u32)
+}
+
+fn parse_u64(text: &str) -> Option<u64> {
+    let text = trim(text);
+    if text.is_empty() {
+        return None;
+    }
+    let mut value = 0u64;
+    for byte in text.bytes() {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
+    }
+    Some(value)
 }
 
 fn resolve_path(cwd: &str, arg: &str) -> FixedText {

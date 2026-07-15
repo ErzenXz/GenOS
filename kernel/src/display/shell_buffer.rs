@@ -188,8 +188,12 @@ pub fn classify_command(command: &str) -> LineKind {
     } else {
         let name = split_once_space(command).0;
         match name {
-            "help" | "clear" | "mem" | "ls" | "cat" | "echo" | "uname" | "reboot" | "shutdown"
-            | "about" | "whoami" | "ui" => LineKind::Prompt,
+            "help" | "clear" | "mem" | "pwd" | "cd" | "ls" | "cat" | "touch" | "write"
+            | "append" | "rm" | "mkdir" | "stat" | "tasks" | "ps" | "spawn" | "kill" | "sleep"
+            | "wake" | "sched" | "taskmgr" | "files" | "game" | "demo" | "time" | "apps"
+            | "echo" | "uname" | "reboot" | "shutdown" | "about" | "whoami" | "ui" => {
+                LineKind::Prompt
+            }
             _ => LineKind::Error,
         }
     }

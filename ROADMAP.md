@@ -63,12 +63,15 @@ Acceptance criteria:
 
 ## Stage 2 — Processes and userspace
 
-**Status: next**
+**Status: in progress**
 
 Goal: move from kernel-owned demo tasks to isolated executable processes.
 
 Planned work:
 
+- bounded process/task table and PID lifecycle;
+- round-robin scheduler policy and quantum accounting;
+- sleep/wake deadlines and protected system tasks;
 - privilege transition to ring 3;
 - per-process address spaces;
 - virtual-memory mappings and page-fault handling;
@@ -82,6 +85,9 @@ Planned work:
 
 Acceptance criteria:
 
+- [x] Kernel workers receive stable PIDs and reusable lifecycle slots.
+- [x] Round-robin selection, CPU slices, and context-switch accounting are covered by tests.
+- [x] Workers can sleep until a tick deadline, wake early, and terminate without affecting protected system tasks.
 - [ ] Two independent userspace programs run with separate address spaces.
 - [ ] A userspace crash terminates only the failing process.
 - [ ] The scheduler demonstrates preemption rather than cooperative polling.
