@@ -204,6 +204,8 @@ fn smoke_qemu() -> Result<(), String> {
         .arg(format!("format=raw,file={IMAGE}"))
         .arg("-vga")
         .arg("std")
+        .arg("-display")
+        .arg("none")
         .arg("-serial")
         .arg(format!("file:{}", serial_log.display()))
         .arg("-no-reboot")
