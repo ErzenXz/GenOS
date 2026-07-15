@@ -1,0 +1,16 @@
+[package]
+name = "bootloader"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "bootloader"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+genos_abi.workspace = true
+uefi = { version = "0.36.1", features = ["alloc", "global_allocator"] }

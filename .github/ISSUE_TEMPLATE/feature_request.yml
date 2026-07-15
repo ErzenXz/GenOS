@@ -1,0 +1,69 @@
+name: Feature proposal
+description: Propose a focused improvement aligned with the GenOS roadmap.
+title: "[Proposal]: "
+labels: [proposal, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user, contributor, reliability, or performance problem should GenOS solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior, not only an implementation.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Roadmap area
+      options:
+        - Boot and architecture
+        - Memory and processes
+        - Input and desktop
+        - Filesystem and storage
+        - Networking
+        - Security
+        - Applications and SDK
+        - Hardware support
+        - Build, tests, or documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Explain the smallest useful vertical slice and important trade-offs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance criteria
+      description: List the tests or observable conditions that would make this complete.
+    validations:
+      required: true
+
+  - type: textarea
+    id: costs
+    attributes:
+      label: Security, compatibility, and maintenance costs
+      description: What new long-term responsibilities would this introduce?
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I reviewed the roadmap and searched existing proposals.
+          required: true
+        - label: I understand that roadmap inclusion does not guarantee implementation.
+          required: true

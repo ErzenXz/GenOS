@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "crates/abi",
+    "bootloader",
+    "kernel",
+    "tools/xtask",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["GenOS"]
+
+[workspace.dependencies]
+genos_abi = { path = "crates/abi" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
