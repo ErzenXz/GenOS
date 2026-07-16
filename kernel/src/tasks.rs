@@ -71,6 +71,7 @@ pub struct TaskRecord {
     pub work_units: u64,
     pub checksum: u64,
     pub exit_code: i32,
+    pub runtime_pid: u8,
 }
 
 impl TaskRecord {
@@ -89,6 +90,7 @@ impl TaskRecord {
             work_units: 0,
             checksum: 0,
             exit_code: 0,
+            runtime_pid: 0,
         }
     }
 
@@ -177,6 +179,55 @@ impl TaskRegistry {
         Ok(pid)
     }
 
+    pub fn spawn_user(&mut self, name: &str, runtime_pid: u8, tick: u64) -> Result<u32, TaskError> {
+        if runtime_pid == 0 {
+            return Err(TaskError::InvalidState);
+        }
+        let pid = self.reserve_user(name, tick)?;
+        self.bind_user_runtime(pid, runtime_pid)?;
+        Ok(pid)
+    }
+
+    pub fn reserve_user(&mut self, name: &str, tick: u64) -> Result<u32, TaskError> {
+        let reuse_terminal = self.len >= MAX_TASKS;
+        self.insert(
+            name,
+            TaskClass::User,
+            TaskState::Ready,
+            40,
+            tick,
+            reuse_terminal,
+        )
+    }
+
+    pub fn bind_user_runtime(&mut self, id: u32, runtime_pid: u8) -> Result<(), TaskError> {
+        let task = self.get_mut(id).ok_or(TaskError::NotFound)?;
+        if task.class != TaskClass::User || runtime_pid == 0 {
+            return Err(TaskError::InvalidState);
+        }
+        task.runtime_pid = runtime_pid;
+        Ok(())
+    }
+
+    pub fn update_user(
+        &mut self,
+        id: u32,
+        state: TaskState,
+        exit_code: u8,
+        tick: u64,
+    ) -> Result<(), TaskError> {
+        let task = self.get_mut(id).ok_or(TaskError::NotFound)?;
+        if task.class != TaskClass::User {
+            return Err(TaskError::InvalidState);
+        }
+        task.state = state;
+        task.exit_code = exit_code as i32;
+        task.last_activity = tick;
+        task.context_switches = task.context_switches.saturating_add(1);
+        task.ticks = task.ticks.saturating_add(1);
+        Ok(())
+    }
+
     fn insert(
         &mut self,
         name: &str,
@@ -214,6 +265,7 @@ impl TaskRegistry {
             work_units: 0,
             checksum: id as u64 ^ 0x4745_4e4f_5357_4f52,
             exit_code: 0,
+            runtime_pid: 0,
         };
         if slot == self.len {
             self.len += 1;
@@ -285,6 +337,9 @@ impl TaskRegistry {
         if self.tasks[index].class == TaskClass::System {
             return Err(TaskError::Protected);
         }
+        if self.tasks[index].class != TaskClass::Worker {
+            return Err(TaskError::InvalidState);
+        }
         if self.tasks[index].state.is_terminal() {
             return Err(TaskError::InvalidState);
         }
@@ -304,6 +359,9 @@ impl TaskRegistry {
         if self.tasks[index].class == TaskClass::System {
             return Err(TaskError::Protected);
         }
+        if self.tasks[index].class != TaskClass::Worker {
+            return Err(TaskError::InvalidState);
+        }
         if self.tasks[index].state.is_terminal() || duration == 0 {
             return Err(TaskError::InvalidState);
         }
@@ -321,6 +379,9 @@ impl TaskRegistry {
         let task = self.get_mut(id).ok_or(TaskError::NotFound)?;
         if task.class == TaskClass::System {
             return Err(TaskError::Protected);
+        }
+        if task.class != TaskClass::Worker {
+            return Err(TaskError::InvalidState);
         }
         if task.state != TaskState::Sleeping {
             return Err(TaskError::InvalidState);
@@ -403,6 +464,11 @@ impl TaskRegistry {
 
     pub fn find(&self, id: u32) -> Option<&TaskRecord> {
         self.index_of(id).map(|index| &self.tasks[index])
+    }
+
+    pub fn runtime_pid(&self, id: u32) -> Option<u8> {
+        let task = self.find(id)?;
+        (task.class == TaskClass::User && task.runtime_pid != 0).then_some(task.runtime_pid)
     }
 
     pub fn format_row(&self, index: usize) -> Option<FixedText> {
@@ -544,5 +610,31 @@ mod tests {
         assert_eq!(task.exit_code, 7);
         assert_eq!(registry.find(second).unwrap().name.as_str(), "user-b");
         assert_eq!(registry.len(), 4);
+    }
+
+    #[test]
+    fn live_userspace_tasks_track_runtime_identity_and_exit() {
+        let mut registry = TaskRegistry::new();
+        let task = registry.spawn_user("init-elf", 9, 3).unwrap();
+        assert_eq!(registry.runtime_pid(task), Some(9));
+        assert_eq!(registry.find(task).unwrap().state, TaskState::Ready);
+
+        registry
+            .update_user(task, TaskState::Running, 0, 4)
+            .unwrap();
+        registry.update_user(task, TaskState::Exited, 7, 5).unwrap();
+        let record = registry.find(task).unwrap();
+        assert_eq!(record.exit_code, 7);
+        assert_eq!(record.context_switches, 2);
+    }
+
+    #[test]
+    fn worker_controls_cannot_desynchronize_userspace_tasks() {
+        let mut registry = TaskRegistry::new();
+        let task = registry.spawn_user("init-elf", 9, 3).unwrap();
+        assert_eq!(registry.terminate(task, 0, 4), Err(TaskError::InvalidState));
+        assert_eq!(registry.sleep(task, 10, 4), Err(TaskError::InvalidState));
+        assert_eq!(registry.wake(task, 4), Err(TaskError::InvalidState));
+        assert_eq!(registry.find(task).unwrap().state, TaskState::Ready);
     }
 }

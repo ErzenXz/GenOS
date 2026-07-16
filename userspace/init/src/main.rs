@@ -7,6 +7,8 @@ use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use genos_user_runtime as runtime;
 
 const FAULT_TOKEN: u64 = 0xffff_ffff_ffff_fff0;
+const HOLD_TOKEN_BIT: u64 = 1 << 63;
+const GREETING: &[u8] = b"hello from INIT.ELF in ring 3";
 
 #[repr(C)]
 struct ProcessData {
@@ -40,6 +42,16 @@ pub extern "C" fn _start(token: u64) -> ! {
             write_volatile(runtime::STACK_GUARD as *mut u64, token);
         }
         runtime::exit(254);
+    }
+
+    if runtime::write(GREETING) != GREETING.len() as u64 {
+        runtime::exit(251);
+    }
+
+    if token & HOLD_TOKEN_BIT != 0 {
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     let reported = runtime::report_u64(unsafe { addr_of!(PROCESS_DATA.token) });

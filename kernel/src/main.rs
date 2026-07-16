@@ -49,6 +49,10 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
             arch::halt_loop();
         }
     };
+    serial::print("USER_BOOT_INIT pid=");
+    serial::print_u64(dynamic_probe.pid as u64);
+    serial::println("");
+    userspace::run_lifecycle_probe();
 
     let mut vfs = RamVfs::new();
     vfs.init_root();
@@ -98,7 +102,14 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::println("GENOS_READY");
 
     interrupts::enable();
-    shell::run(manager, vfs, boot_info, tasks, task_ids);
+    shell::run(
+        manager,
+        vfs,
+        boot_info,
+        tasks,
+        task_ids,
+        userspace::ProcessManager::new(),
+    );
 }
 
 #[panic_handler]

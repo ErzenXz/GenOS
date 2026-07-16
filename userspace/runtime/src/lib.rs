@@ -9,7 +9,7 @@ pub const STACK_GUARD: u64 = 0x0000_4000_0000_7000;
 use genos_abi::{
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_REPORT as SYSCALL_REPORT,
-    USER_SYSCALL_YIELD as SYSCALL_YIELD,
+    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
 pub fn ping() -> u64 {
@@ -26,6 +26,15 @@ pub fn yield_now() -> u64 {
 
 pub fn report_u64(value: *const u64) -> u64 {
     unsafe { syscall(SYSCALL_REPORT, [value as u64, 8, 0, 0, 0, 0]) }
+}
+
+pub fn write(bytes: &[u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_WRITE,
+            [bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0],
+        )
+    }
 }
 
 pub fn exit(status: u8) -> ! {

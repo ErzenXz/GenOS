@@ -35,6 +35,14 @@ pub fn alloc_frame() -> Option<u64> {
     unsafe { (*core::ptr::addr_of_mut!(ALLOCATOR)).alloc_frame() }
 }
 
+pub fn free_frame(frame: u64) -> bool {
+    unsafe { (*core::ptr::addr_of_mut!(ALLOCATOR)).free_frame(frame) }
+}
+
 pub fn allocated_frames() -> u64 {
     unsafe { (*core::ptr::addr_of!(ALLOCATOR)).allocated_frames() }
+}
+
+pub fn recycled_frames() -> usize {
+    unsafe { (*core::ptr::addr_of!(ALLOCATOR)).recycled_frames() }
 }

@@ -42,6 +42,7 @@ pub enum PagingError {
     MissingMapping,
     InvalidAddress,
     AddressInUse,
+    ActiveAddressSpace,
 }
 
 pub fn init_protected_address_space() -> Result<(), PagingError> {
@@ -82,6 +83,7 @@ pub fn create_user_address_space() -> Result<AddressSpace, PagingError> {
         let destination = table_mut(root);
         destination.copy_from_slice(source);
         if destination[USER_PML4_INDEX] & PRESENT != 0 {
+            let _ = memory::free_frame(root);
             return Err(PagingError::AddressInUse);
         }
     }
@@ -181,6 +183,33 @@ pub fn allocate_zeroed_frame() -> Result<u64, PagingError> {
     unsafe { allocate_table() }
 }
 
+pub fn destroy_user_address_space(space: AddressSpace) -> Result<u64, PagingError> {
+    if space.root == 0 || active_root() == space.root {
+        return Err(PagingError::ActiveAddressSpace);
+    }
+    let mut released = 0u64;
+    unsafe {
+        let pml4 = table_mut(space.root);
+        let entry = pml4[USER_PML4_INDEX];
+        if entry & PRESENT != 0 {
+            if entry & HUGE_OR_PAT != 0 || entry & USER == 0 {
+                return Err(PagingError::InvalidAddress);
+            }
+            let user_root = entry & TABLE_ADDRESS_MASK;
+            released += release_user_table(user_root, 3)?;
+            if !memory::free_frame(user_root) {
+                return Err(PagingError::InvalidAddress);
+            }
+            released += 1;
+            pml4[USER_PML4_INDEX] = 0;
+        }
+    }
+    if !memory::free_frame(space.root) {
+        return Err(PagingError::InvalidAddress);
+    }
+    Ok(released + 1)
+}
+
 unsafe fn clone_table(source_phys: u64, level: u8) -> Result<u64, PagingError> {
     let destination_phys = allocate_table()?;
     let source = table(source_phys);
@@ -219,6 +248,34 @@ unsafe fn allocate_table() -> Result<u64, PagingError> {
     let frame = memory::alloc_frame().ok_or(PagingError::OutOfMemory)?;
     core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize);
     Ok(frame)
+}
+
+unsafe fn release_user_table(table_phys: u64, level: u8) -> Result<u64, PagingError> {
+    let entries = table_mut(table_phys);
+    let mut released = 0u64;
+    for entry in entries.iter_mut() {
+        if *entry & PRESENT == 0 {
+            continue;
+        }
+        let frame = *entry & TABLE_ADDRESS_MASK;
+        if level == 1 {
+            if !memory::free_frame(frame) {
+                return Err(PagingError::InvalidAddress);
+            }
+            released += 1;
+        } else {
+            if *entry & HUGE_OR_PAT != 0 || *entry & USER == 0 {
+                return Err(PagingError::InvalidAddress);
+            }
+            released += release_user_table(frame, level - 1)?;
+            if !memory::free_frame(frame) {
+                return Err(PagingError::InvalidAddress);
+            }
+            released += 1;
+        }
+        *entry = 0;
+    }
+    Ok(released)
 }
 
 unsafe fn table(physical: u64) -> &'static [u64; ENTRY_COUNT] {

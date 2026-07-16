@@ -2,7 +2,7 @@ pub use genos_abi::{
     USER_ABI_VERSION, USER_PING_REPLY as PING_REPLY,
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_REPORT as SYSCALL_REPORT,
-    USER_SYSCALL_YIELD as SYSCALL_YIELD,
+    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -11,6 +11,7 @@ pub enum SyscallAction {
     Exit(u8),
     Yield,
     Report { address: u64, length: u64 },
+    Write { address: u64, length: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,9 +34,14 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 length: args[1],
             })
         }
-        SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT | SYSCALL_YIELD | SYSCALL_REPORT => {
-            Err(SyscallError::InvalidArgument)
+        SYSCALL_WRITE if args[0] != 0 && (1..=80).contains(&args[1]) && args[2..] == [0; 4] => {
+            Ok(SyscallAction::Write {
+                address: args[0],
+                length: args[1],
+            })
         }
+        SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT | SYSCALL_YIELD | SYSCALL_REPORT
+        | SYSCALL_WRITE => Err(SyscallError::InvalidArgument),
         _ => Err(SyscallError::UnknownNumber),
     }
 }
@@ -86,6 +92,13 @@ mod tests {
                 length: 8
             })
         );
+        assert_eq!(
+            dispatch(SYSCALL_WRITE, [0x5000, 12, 0, 0, 0, 0]),
+            Ok(SyscallAction::Write {
+                address: 0x5000,
+                length: 12
+            })
+        );
     }
 
     #[test]
@@ -104,6 +117,10 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_REPORT, [0x4000, 16, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WRITE, [0x4000, 81, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));

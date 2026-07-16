@@ -84,6 +84,9 @@ The current GenOS build already contains real operating-system infrastructure:
 - a bounded ELF64 parser and W^X userspace segment loader;
 - a separately built `no_std` userspace runtime and `INIT.ELF` application packaged in the initrd;
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
+- asynchronous userspace scheduling with observable ready, exited, faulted, and killed states;
+- `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
+- ABI 3 application output copied from validated user mappings into the desktop shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
 - Shift, Caps Lock, symbols, and shell command history;
@@ -111,9 +114,9 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports the live ELF, ring-3, and syscall state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, and reclaimed-frame state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.9 builds `genos-init` independently from the kernel, packages it as `INIT.ELF`, validates its ELF64 headers and load segments, and maps RX text and RW data into a fresh process root. The boot proof runs four ELF-backed instances while preserving timer preemption and local fault containment. `run init` launches another instance from the desktop shell, waits for its validated exit, records it in the task registry, and returns to the desktop. Launch is currently synchronous; general asynchronous process control remains Stage 2 work. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.10 turns the validated ELF path into an asynchronous lifecycle. `run init` returns immediately while the desktop schedules the Ring 3 process; its ABI 3 `write` call appears in the shell before normal exit. `run init hold` starts a deliberately persistent process so `ps`, `kill PID`, and `wait PID` can exercise live control. Exit, fault, and kill all tear down the private user page-table branch and return its image, stack, data, and page-table frames to a bounded recycled-frame pool while task history retains the result. The boot smoke proof requires normal asynchronous exit, userspace output, kill status 137, wait/reap, reuse, fault isolation, and a responsive desktop. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -126,9 +129,9 @@ GenOS bootloader
     v
 GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
-    |-- memory                   gap-safe frames / protected page tables
+    |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
-    |-- userspace               runtime / private CR3 / preemption / local faults
+    |-- userspace               async lifecycle / output / wait-kill / local faults
     |-- input                    PS/2 keyboard + mouse / event queue
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
@@ -136,7 +139,7 @@ GenOS kernel
     `-- desktop                  windows / apps / taskbar / shell
 ```
 
-The system remains intentionally monolithic while its contracts are established, but the first hardware-enforced user/kernel boundary is now working. It is a boot-time proof, not yet a general application runtime.
+The system remains intentionally monolithic while its contracts are established, but the hardware-enforced user/kernel boundary now supports a small interactive application lifecycle. It is still an experimental runtime, not a compatibility layer for existing Linux or Windows applications.
 
 ## Project status
 
@@ -215,7 +218,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, validated copy-in, preemption, local faults, ELF loading, and shell launch work; asynchronous lifecycle control comes next
+- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, local faults, output, asynchronous launch, wait/kill, and reclamation work; blocking I/O and IPC come next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design

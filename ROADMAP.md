@@ -86,13 +86,18 @@ Delivered so far:
 - page-aligned W^X mapping of independently built userspace executables;
 - initial `no_std` userspace runtime with typed syscall wrappers;
 - initrd packaging for `INIT.ELF` and boot-time executable discovery;
-- synchronous `run init` shell launch with fresh CR3, PID, preemption, exit status, and task history.
+- asynchronous `run init` launch with fresh CR3, PID, task state, preemption, exit status, and shell output;
+- persistent `run init hold` mode for observable live-process control;
+- `kill PID` and non-blocking `wait PID` for userspace tasks;
+- complete teardown of user leaf pages, page-table branches, and CR3 roots;
+- bounded physical-frame recycling with double-free rejection and reuse tests;
+- ABI 3 validated application output from mapped userspace memory.
 
 Remaining work:
 
 - broader syscall entry/exit surface and copy-out;
 - integrate preemptive userspace with general sleep and wake primitives;
-- generalize lifecycle and exit status to dynamically loaded programs;
+- parent/child ownership and blocking wait semantics;
 - pipes or bounded message channels;
 - move the shell into userspace.
 
@@ -112,7 +117,9 @@ Acceptance criteria:
 - [x] Initial userspace pointer and buffer ranges are validated before kernel access.
 - [x] A separately built ELF application is validated, mapped, preempted, and exited in isolated address spaces.
 - [x] The shell can launch the packaged ELF and retain its completed task status.
-- [ ] The shell can launch, inspect, and terminate a userspace process.
+- [x] The shell can asynchronously launch, inspect, terminate, and reap a userspace process.
+- [x] Exit, fault, and kill reclaim every owned user image, stack, page-table, and root frame.
+- [x] A userspace application can write bounded validated text to the desktop shell.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

@@ -2,6 +2,7 @@ use genos_abi::{MemoryRegion, MemoryRegionKind};
 
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_USABLE_REGIONS: usize = 64;
+const MAX_RECYCLED_FRAMES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FrameRegion {
@@ -22,6 +23,8 @@ pub struct FrameAllocator {
     next_frame: u64,
     usable_bytes: u64,
     allocated_frames: u64,
+    recycled: [u64; MAX_RECYCLED_FRAMES],
+    recycled_count: usize,
 }
 
 impl FrameAllocator {
@@ -33,6 +36,8 @@ impl FrameAllocator {
             next_frame: 0,
             usable_bytes: 0,
             allocated_frames: 0,
+            recycled: [0; MAX_RECYCLED_FRAMES],
+            recycled_count: 0,
         }
     }
 
@@ -65,6 +70,13 @@ impl FrameAllocator {
     }
 
     pub fn alloc_frame(&mut self) -> Option<u64> {
+        if self.recycled_count > 0 {
+            self.recycled_count -= 1;
+            let frame = self.recycled[self.recycled_count];
+            self.recycled[self.recycled_count] = 0;
+            self.allocated_frames += 1;
+            return Some(frame);
+        }
         while self.current_region < self.region_count {
             let region = self.regions[self.current_region];
             if self.next_frame < region.start {
@@ -84,6 +96,22 @@ impl FrameAllocator {
         None
     }
 
+    pub fn free_frame(&mut self, frame: u64) -> bool {
+        if frame == 0
+            || !frame.is_multiple_of(PAGE_SIZE)
+            || self.recycled_count >= MAX_RECYCLED_FRAMES
+            || self.allocated_frames == 0
+            || !self.was_allocated(frame)
+            || self.recycled[..self.recycled_count].contains(&frame)
+        {
+            return false;
+        }
+        self.recycled[self.recycled_count] = frame;
+        self.recycled_count += 1;
+        self.allocated_frames -= 1;
+        true
+    }
+
     pub const fn usable_bytes(&self) -> u64 {
         self.usable_bytes
     }
@@ -94,6 +122,23 @@ impl FrameAllocator {
 
     pub const fn region_count(&self) -> usize {
         self.region_count
+    }
+
+    pub const fn recycled_frames(&self) -> usize {
+        self.recycled_count
+    }
+
+    fn was_allocated(&self, frame: u64) -> bool {
+        self.regions
+            .iter()
+            .take(self.region_count)
+            .enumerate()
+            .any(|(index, region)| {
+                frame >= region.start
+                    && frame < region.end
+                    && (index < self.current_region
+                        || (index == self.current_region && frame < self.next_frame))
+            })
     }
 }
 
@@ -173,5 +218,22 @@ mod tests {
 
         allocator.add_region(region(0x1000, 0x1000, MemoryRegionKind::Usable));
         assert_eq!(allocator.alloc_frame(), None);
+    }
+
+    #[test]
+    fn freed_frames_are_reused_without_double_free() {
+        let mut allocator = FrameAllocator::new();
+        allocator.add_region(region(0x1000, 0x4000, MemoryRegionKind::Usable));
+        let first = allocator.alloc_frame().unwrap();
+        let second = allocator.alloc_frame().unwrap();
+
+        assert!(allocator.free_frame(first));
+        assert!(!allocator.free_frame(first));
+        assert!(!allocator.free_frame(0x4000));
+        assert_eq!(allocator.recycled_frames(), 1);
+        assert_eq!(allocator.allocated_frames(), 1);
+        assert_eq!(allocator.alloc_frame(), Some(first));
+        assert_eq!(allocator.allocated_frames(), 2);
+        assert_eq!(second, 0x2000);
     }
 }

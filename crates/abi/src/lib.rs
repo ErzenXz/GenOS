@@ -5,12 +5,13 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 2;
+pub const USER_ABI_VERSION: u64 = 3;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
 pub const USER_SYSCALL_YIELD: u64 = 3;
 pub const USER_SYSCALL_REPORT: u64 = 4;
+pub const USER_SYSCALL_WRITE: u64 = 5;
 pub const USER_PING_REPLY: u64 = 0x4745_4e4f_535f_4f4b;
 
 #[repr(C)]

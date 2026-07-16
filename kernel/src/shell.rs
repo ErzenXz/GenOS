@@ -4,11 +4,11 @@ use genos_abi::BootInfo;
 use kernel::{
     display::{DisplayManager, FixedText, LineKind},
     input::{InputEvent, KeyEvent},
-    tasks::{TaskError, TaskRegistry, TaskState, MAX_TASKS},
+    tasks::{TaskClass, TaskError, TaskRegistry, TaskState},
     vfs::{NodeKind, RamVfs, VfsError},
 };
 
-use crate::{arch, input_hw, interrupts, memory, rtc, serial};
+use crate::{arch, input_hw, interrupts, memory, rtc, serial, userspace};
 
 #[derive(Clone, Copy)]
 pub struct TaskIds {
@@ -20,12 +20,18 @@ pub struct TaskIds {
     pub idle: u32,
 }
 
+struct UserRuntime<'a> {
+    tasks: &'a mut TaskRegistry,
+    processes: &'a mut userspace::ProcessManager,
+}
+
 pub fn run(
     mut display: DisplayManager,
     mut vfs: RamVfs,
     boot_info: &'static BootInfo,
     mut tasks: TaskRegistry,
     ids: TaskIds,
+    mut processes: userspace::ProcessManager,
 ) -> ! {
     let mut cwd = FixedText::from_str("/");
     let mut history = [FixedText::empty(); 8];
@@ -98,14 +104,18 @@ pub fn run(
                         prompt.push_str(command);
                         display.push_fixed(LineKind::Prompt, prompt);
                     }
+                    let mut runtime = UserRuntime {
+                        tasks: &mut tasks,
+                        processes: &mut processes,
+                    };
                     execute(
                         command,
                         &mut display,
                         &mut vfs,
                         &mut cwd,
                         boot_info,
-                        &mut tasks,
                         ids,
+                        &mut runtime,
                     );
                     display.sync_vfs(&vfs);
                 }
@@ -163,6 +173,9 @@ pub fn run(
         }
 
         if tick != last_tick {
+            if let Some(update) = processes.poll() {
+                apply_process_update(&mut display, &mut tasks, update, tick);
+            }
             tasks.scheduler_tick(tick);
             tasks.mark_running(ids.desktop, tick);
             tasks.set_state(ids.input, TaskState::Waiting, tick);
@@ -189,9 +202,11 @@ fn execute(
     vfs: &mut RamVfs,
     cwd: &mut FixedText,
     boot_info: &BootInfo,
-    tasks: &mut TaskRegistry,
     ids: TaskIds,
+    runtime: &mut UserRuntime<'_>,
 ) {
+    let tasks = &mut *runtime.tasks;
+    let processes = &mut *runtime.processes;
     serial::print("shell: ");
     serial::println(command);
 
@@ -207,7 +222,7 @@ fn execute(
         "help" => {
             display.push_line(
                 LineKind::Output,
-                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps run spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
+                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps run wait spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
             );
             display.set_status("help printed");
         }
@@ -221,11 +236,11 @@ fn execute(
             line.push_u64(memory::usable_bytes());
             line.push_str(" bytes");
             display.push_fixed(LineKind::Output, line);
-            if let Some(frame) = memory::alloc_frame() {
-                let mut frame_line = FixedText::from_str("allocated frame: 0x");
-                frame_line.push_hex(frame);
-                display.push_fixed(LineKind::Status, frame_line);
-            }
+            let mut frame_line = FixedText::from_str("frames allocated=");
+            frame_line.push_u64(memory::allocated_frames());
+            frame_line.push_str(" recycled=");
+            frame_line.push_u64(memory::recycled_frames() as u64);
+            display.push_fixed(LineKind::Status, frame_line);
             display.set_status("memory sampled");
         }
         "pwd" => {
@@ -363,53 +378,62 @@ fn execute(
         }
         "run" => {
             let program = trim(args);
-            if program != "init" && program != "INIT.ELF" {
-                display.push_line(LineKind::Error, "usage: run init");
+            let hold = program == "init hold" || program == "INIT.ELF hold";
+            if program != "init" && program != "INIT.ELF" && !hold {
+                display.push_line(LineKind::Error, "usage: run init [hold]");
                 display.set_status("ELF launch failed");
-            } else if tasks.len() >= MAX_TASKS {
-                push_task_error(display, TaskError::TableFull);
             } else {
-                match crate::userspace::launch_init() {
-                    Ok(result) => {
-                        match tasks.record_user_exit(
-                            "init-elf",
-                            result.exit_code,
-                            interrupts::ticks(),
-                        ) {
-                            Ok(task_pid) => {
-                                let mut line = FixedText::from_str("ELF launched ring-pid=");
-                                line.push_u64(result.pid as u64);
-                                line.push_str(" task-pid=");
+                match tasks.reserve_user("init-elf", tick) {
+                    Ok(task_pid) => match processes.spawn_init(task_pid, hold) {
+                        Ok(ring_pid) => {
+                            if tasks.bind_user_runtime(task_pid, ring_pid).is_err() {
+                                let _ = processes.kill(task_pid);
+                                display
+                                    .push_line(LineKind::Error, "failed to bind process identity");
+                            } else {
+                                let mut line = FixedText::from_str("ELF started task-pid=");
                                 line.push_u64(task_pid as u64);
-                                line.push_str(" exit=");
-                                line.push_u64(result.exit_code as u64);
-                                line.push_str(" preempt=");
-                                line.push_u64(result.preemptions as u64);
+                                line.push_str(" ring-pid=");
+                                line.push_u64(ring_pid as u64);
+                                line.push_str(if hold { " mode=hold" } else { " mode=normal" });
                                 display.push_fixed(LineKind::Status, line);
-                                display.set_status("INIT.ELF completed");
+                                display.set_status("INIT.ELF running asynchronously");
                             }
-                            Err(error) => push_task_error(display, error),
                         }
-                    }
-                    Err(error) => {
-                        let text = match error {
-                            crate::userspace::LaunchError::ImageUnavailable => {
-                                "INIT.ELF is unavailable"
-                            }
-                            crate::userspace::LaunchError::ProcessBuildFailed => {
-                                "INIT.ELF failed validation or mapping"
-                            }
-                            crate::userspace::LaunchError::ProcessFaulted => {
-                                "INIT.ELF terminated with a CPU fault"
-                            }
-                            crate::userspace::LaunchError::InvalidResult => {
-                                "INIT.ELF returned an invalid result"
-                            }
-                        };
-                        display.push_line(LineKind::Error, text);
-                        display.set_status("ELF launch failed");
-                    }
+                        Err(error) => {
+                            let _ = tasks.update_user(task_pid, TaskState::Faulted, 126, tick);
+                            push_launch_error(display, error);
+                        }
+                    },
+                    Err(error) => push_task_error(display, error),
                 }
+            }
+            display.refresh_task_manager();
+        }
+        "wait" => {
+            match parse_u32(trim(args)) {
+                Some(task_pid) => match processes.wait(task_pid) {
+                    Ok(result) => {
+                        let mut line = FixedText::from_str("reaped task-pid=");
+                        line.push_u64(task_pid as u64);
+                        line.push_str(" ring-pid=");
+                        line.push_u64(result.pid as u64);
+                        line.push_str(" state=");
+                        line.push_str(managed_state_text(result.state));
+                        line.push_str(" exit=");
+                        line.push_u64(result.exit_code as u64);
+                        line.push_str(" preempt=");
+                        line.push_u64(result.preemptions);
+                        display.push_fixed(LineKind::Status, line);
+                        display.set_status("userspace process reaped");
+                    }
+                    Err(userspace::LaunchError::InvalidResult) => {
+                        display.push_line(LineKind::Output, "process is still running");
+                        display.set_status("wait pending");
+                    }
+                    Err(error) => push_launch_error(display, error),
+                },
+                None => display.push_line(LineKind::Error, "usage: wait PID"),
             }
             display.refresh_task_manager();
         }
@@ -434,13 +458,26 @@ fn execute(
         }
         "kill" => {
             match parse_u32(trim(args)) {
-                Some(pid) => match tasks.terminate(pid, 0, tick) {
-                    Ok(()) => {
-                        display.push_line(LineKind::Status, "worker terminated");
-                        display.set_status("worker terminated");
+                Some(pid) => {
+                    let class = tasks.find(pid).map(|task| task.class);
+                    if class == Some(TaskClass::User) && tasks.runtime_pid(pid).is_some() {
+                        match processes.kill(pid) {
+                            Ok(update) => {
+                                apply_process_update(display, tasks, update, tick);
+                                display.set_status("userspace process killed");
+                            }
+                            Err(error) => push_launch_error(display, error),
+                        }
+                    } else {
+                        match tasks.terminate(pid, 0, tick) {
+                            Ok(()) => {
+                                display.push_line(LineKind::Status, "worker terminated");
+                                display.set_status("worker terminated");
+                            }
+                            Err(error) => push_task_error(display, error),
+                        }
                     }
-                    Err(error) => push_task_error(display, error),
-                },
+                }
                 None => display.push_line(LineKind::Error, "usage: kill PID"),
             }
             display.refresh_task_manager();
@@ -507,15 +544,25 @@ fn execute(
             });
             line.push_str(" proc=");
             line.push_u64(crate::userspace::process_count() as u64);
-            line.push_str(" spaces=");
-            line.push_u64(crate::userspace::address_space_count() as u64);
-            line.push_str(" yields=");
-            line.push_u64(crate::userspace::yield_count() as u64);
-            line.push_str(" preempt=");
-            line.push_u64(crate::userspace::preemption_count() as u64);
-            line.push_str(" faults=");
-            line.push_u64(crate::userspace::local_fault_count() as u64);
+            line.push_str(" live=");
+            line.push_u64(crate::userspace::active_process_count() as u64);
             display.push_fixed(LineKind::Output, line);
+            let mut lifecycle = FixedText::from_str("spaces=");
+            lifecycle.push_u64(crate::userspace::address_space_count() as u64);
+            lifecycle.push_str(" reclaimed=");
+            lifecycle.push_u64(crate::userspace::reclaimed_space_count() as u64);
+            lifecycle.push_str(" yields=");
+            lifecycle.push_u64(crate::userspace::yield_count() as u64);
+            lifecycle.push_str(" preempt=");
+            lifecycle.push_u64(crate::userspace::preemption_count());
+            lifecycle.push_str(" faults=");
+            lifecycle.push_u64(crate::userspace::local_fault_count() as u64);
+            display.push_fixed(LineKind::Output, lifecycle);
+            let mut frames = FixedText::from_str("userframes reclaimed=");
+            frames.push_u64(crate::userspace::reclaimed_frame_count());
+            frames.push_str(" allocator-recycled=");
+            frames.push_u64(memory::recycled_frames() as u64);
+            display.push_fixed(LineKind::Output, frames);
             display.set_status("userspace ABI sampled");
         }
         "taskmgr" => {
@@ -547,7 +594,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.9 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.10 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -557,7 +604,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.9 validates, maps, and launches separate ELF applications with an initial no-std userspace runtime.",
+                "GenOS 0.10 runs asynchronous ELF processes with output, wait/kill lifecycle control, and frame reclamation.",
             );
             display.set_status("about");
         }
@@ -598,6 +645,60 @@ fn execute(
             display.set_status("command error");
         }
     }
+}
+
+fn apply_process_update(
+    display: &mut DisplayManager,
+    tasks: &mut TaskRegistry,
+    update: userspace::ProcessUpdate,
+    tick: u64,
+) {
+    let task_state = match update.state {
+        userspace::ManagedState::Ready => TaskState::Ready,
+        userspace::ManagedState::Exited | userspace::ManagedState::Killed => TaskState::Exited,
+        userspace::ManagedState::Faulted => TaskState::Faulted,
+    };
+    let _ = tasks.update_user(update.task_id, task_state, update.exit_code, tick);
+    if !update.output.is_empty() {
+        let mut line = FixedText::from_str("app[");
+        line.push_u64(update.pid as u64);
+        line.push_str("]: ");
+        line.push_str(update.output.as_str());
+        display.push_fixed(LineKind::Output, line);
+    }
+    if update.state != userspace::ManagedState::Ready {
+        let mut line = FixedText::from_str("ELF task-pid=");
+        line.push_u64(update.task_id as u64);
+        line.push_str(" state=");
+        line.push_str(managed_state_text(update.state));
+        line.push_str(" exit=");
+        line.push_u64(update.exit_code as u64);
+        line.push_str(" preempt=");
+        line.push_u64(update.preemptions);
+        display.push_fixed(LineKind::Status, line);
+        display.refresh_task_manager();
+    }
+}
+
+fn managed_state_text(state: userspace::ManagedState) -> &'static str {
+    match state {
+        userspace::ManagedState::Ready => "ready",
+        userspace::ManagedState::Exited => "exited",
+        userspace::ManagedState::Faulted => "fault",
+        userspace::ManagedState::Killed => "killed",
+    }
+}
+
+fn push_launch_error(display: &mut DisplayManager, error: userspace::LaunchError) {
+    let text = match error {
+        userspace::LaunchError::ImageUnavailable => "userspace process not found",
+        userspace::LaunchError::ProcessBuildFailed => "INIT.ELF failed validation or mapping",
+        userspace::LaunchError::ProcessFaulted => "INIT.ELF terminated with a CPU fault",
+        userspace::LaunchError::InvalidResult => "process is not in the required state",
+        userspace::LaunchError::ProcessTableFull => "userspace process table is full; wait first",
+    };
+    display.push_line(LineKind::Error, text);
+    display.set_status("userspace lifecycle error");
 }
 
 fn report_vfs_result(display: &mut DisplayManager, result: Result<(), VfsError>, ok: &str) {

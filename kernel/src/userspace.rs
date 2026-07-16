@@ -1,12 +1,13 @@
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use kernel::{
+    display::FixedText,
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     syscall::{self, SyscallAction},
 };
 
-use crate::{arch, paging};
+use crate::{arch, memory, paging};
 
 pub const SYSCALL_VECTOR: usize = 0x80;
 const PROCESS_COUNT: usize = 3;
@@ -16,6 +17,8 @@ const TOKEN_FAULT: u64 = 0xffff_ffff_ffff_fff0;
 const TOKEN_A: u64 = 0x1111_aaaa_1111_aaaa;
 const TOKEN_B: u64 = 0x2222_bbbb_2222_bbbb;
 const TOKEN_DYNAMIC_BASE: u64 = 0x3333_cccc_3333_0000;
+const TOKEN_HOLD_BIT: u64 = 1 << 63;
+pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
 static ELF_READY: AtomicBool = AtomicBool::new(false);
@@ -23,13 +26,17 @@ static CONTEXT_PASSED: AtomicBool = AtomicBool::new(false);
 static PING_COUNT: AtomicU8 = AtomicU8::new(0);
 static ABI_COUNT: AtomicU8 = AtomicU8::new(0);
 static REPORT_COUNT: AtomicU8 = AtomicU8::new(0);
+static WRITE_COUNT: AtomicU8 = AtomicU8::new(0);
 static COMPLETED_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static ADDRESS_SPACES: AtomicU8 = AtomicU8::new(0);
 static TOTAL_YIELDS: AtomicU8 = AtomicU8::new(0);
-static TOTAL_PREEMPTIONS: AtomicU8 = AtomicU8::new(0);
+static TOTAL_PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
 static LOCAL_FAULTS: AtomicU8 = AtomicU8::new(0);
 static COMPLETION_SEQUENCE: AtomicU8 = AtomicU8::new(0);
 static DYNAMIC_PROCESSES: AtomicU8 = AtomicU8::new(0);
+static ACTIVE_PROCESSES: AtomicU8 = AtomicU8::new(0);
+static RECLAIMED_SPACES: AtomicU8 = AtomicU8::new(0);
+static RECLAIMED_FRAMES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
 static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
@@ -106,7 +113,7 @@ struct UserProcess {
     report: u64,
     exit_code: u8,
     yields: u8,
-    preemptions: u8,
+    preemptions: u64,
     fault_vector: u8,
     fault_error: u64,
     fault_address: u64,
@@ -116,6 +123,10 @@ struct UserProcess {
     elf_pages: u8,
     executable_start: u64,
     executable_end: u64,
+    output: FixedText,
+    output_pending: bool,
+    frames_released: bool,
+    killed: bool,
     completed: bool,
 }
 
@@ -145,7 +156,7 @@ pub struct UserProbeResult {
 pub struct LaunchResult {
     pub pid: u8,
     pub exit_code: u8,
-    pub preemptions: u8,
+    pub preemptions: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +165,199 @@ pub enum LaunchError {
     ProcessBuildFailed,
     ProcessFaulted,
     InvalidResult,
+    ProcessTableFull,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedState {
+    Ready,
+    Exited,
+    Faulted,
+    Killed,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProcessUpdate {
+    pub task_id: u32,
+    pub pid: u8,
+    pub state: ManagedState,
+    pub exit_code: u8,
+    pub preemptions: u64,
+    pub output: FixedText,
+}
+
+#[derive(Clone, Copy)]
+pub struct WaitResult {
+    pub pid: u8,
+    pub state: ManagedState,
+    pub exit_code: u8,
+    pub preemptions: u64,
+}
+
+struct ManagedProcess {
+    task_id: u32,
+    process: UserProcess,
+}
+
+pub struct ProcessManager {
+    slots: [Option<ManagedProcess>; MAX_ASYNC_PROCESSES],
+    cursor: usize,
+}
+
+impl ProcessManager {
+    pub const fn new() -> Self {
+        Self {
+            slots: [const { None }; MAX_ASYNC_PROCESSES],
+            cursor: 0,
+        }
+    }
+
+    pub fn spawn_init(&mut self, task_id: u32, hold: bool) -> Result<u8, LaunchError> {
+        let slot = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or(LaunchError::ProcessTableFull)?;
+        let elf_bytes = user_elf()?;
+        let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let token = TOKEN_DYNAMIC_BASE | pid as u64 | if hold { TOKEN_HOLD_BIT } else { 0 };
+        let process =
+            build_process(pid, token, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
+        self.slots[slot] = Some(ManagedProcess { task_id, process });
+        DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
+        crate::serial::print("USER_ASYNC_SPAWN pid=");
+        crate::serial::print_u64(pid as u64);
+        crate::serial::print(" task=");
+        crate::serial::print_u64(task_id as u64);
+        crate::serial::print(" hold=");
+        crate::serial::print_u64(hold as u64);
+        crate::serial::println("");
+        Ok(pid)
+    }
+
+    pub fn poll(&mut self) -> Option<ProcessUpdate> {
+        for offset in 1..=MAX_ASYNC_PROCESSES {
+            let index = (self.cursor + offset) % MAX_ASYNC_PROCESSES;
+            let Some(managed) = self.slots[index].as_mut() else {
+                continue;
+            };
+            if managed.process.completed {
+                continue;
+            }
+            self.cursor = index;
+            run_slice(&mut managed.process);
+            let output = if managed.process.output_pending {
+                managed.process.output_pending = false;
+                managed.process.output
+            } else {
+                FixedText::empty()
+            };
+            let state = match managed.process.event {
+                ProcessEvent::Yield => {
+                    TOTAL_YIELDS.fetch_add(1, Ordering::AcqRel);
+                    ManagedState::Ready
+                }
+                ProcessEvent::Preempt => {
+                    TOTAL_PREEMPTIONS.fetch_add(1, Ordering::AcqRel);
+                    ManagedState::Ready
+                }
+                ProcessEvent::Exit => ManagedState::Exited,
+                ProcessEvent::Fault => ManagedState::Faulted,
+                ProcessEvent::None => return None,
+            };
+            if managed.process.completed && reclaim_process(&mut managed.process).is_err() {
+                fail("USER_RECLAIM_FAILED");
+            }
+            return Some(ProcessUpdate {
+                task_id: managed.task_id,
+                pid: managed.process.pid,
+                state,
+                exit_code: managed.process.exit_code,
+                preemptions: managed.process.preemptions,
+                output,
+            });
+        }
+        None
+    }
+
+    pub fn kill(&mut self, task_id: u32) -> Result<ProcessUpdate, LaunchError> {
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| managed.task_id == task_id)
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if managed.process.completed {
+            return Err(LaunchError::InvalidResult);
+        }
+        managed.process.completed = true;
+        managed.process.killed = true;
+        managed.process.event = ProcessEvent::Exit;
+        managed.process.exit_code = 137;
+        managed.process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+        reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
+        crate::serial::print("USER_KILLED pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" task=");
+        crate::serial::print_u64(task_id as u64);
+        crate::serial::println("");
+        Ok(ProcessUpdate {
+            task_id,
+            pid: managed.process.pid,
+            state: ManagedState::Killed,
+            exit_code: managed.process.exit_code,
+            preemptions: managed.process.preemptions,
+            output: FixedText::empty(),
+        })
+    }
+
+    pub fn wait(&mut self, task_id: u32) -> Result<WaitResult, LaunchError> {
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| {
+                slot.as_ref()
+                    .is_some_and(|managed| managed.task_id == task_id)
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        let managed = self.slots[index]
+            .as_ref()
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if !managed.process.completed {
+            return Err(LaunchError::InvalidResult);
+        }
+        let result = WaitResult {
+            pid: managed.process.pid,
+            state: if managed.process.killed {
+                ManagedState::Killed
+            } else if managed.process.event == ProcessEvent::Fault {
+                ManagedState::Faulted
+            } else {
+                ManagedState::Exited
+            },
+            exit_code: managed.process.exit_code,
+            preemptions: managed.process.preemptions,
+        };
+        self.slots[index] = None;
+        crate::serial::print("USER_WAIT_REAPED pid=");
+        crate::serial::print_u64(result.pid as u64);
+        crate::serial::println("");
+        Ok(result)
+    }
+
+    pub fn live_count(&self) -> usize {
+        self.slots
+            .iter()
+            .flatten()
+            .filter(|managed| !managed.process.completed)
+            .count()
+    }
+}
+
+impl Default for ProcessManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 global_asm!(
@@ -333,8 +537,14 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     if !verify_processes(&processes, switches) {
         fail("USER_ISOLATION_FAILED");
     }
+    let result = UserProbeResult {
+        exit_codes: [
+            processes[0].exit_code,
+            processes[1].exit_code,
+            processes[2].exit_code,
+        ],
+    };
     COMPLETED_PROCESSES.store(PROCESS_COUNT as u8, Ordering::Release);
-    ADDRESS_SPACES.store(PROCESS_COUNT as u8, Ordering::Release);
     TOTAL_YIELDS.store(
         processes
             .iter()
@@ -342,11 +552,17 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
         Ordering::Release,
     );
     TOTAL_PREEMPTIONS.store(
-        processes.iter().fold(0u8, |total, process| {
+        processes.iter().fold(0u64, |total, process| {
             total.saturating_add(process.preemptions)
         }),
         Ordering::Release,
     );
+    for process in &mut processes {
+        if reclaim_process(process).is_err() {
+            fail("USER_RECLAIM_FAILED");
+        }
+    }
+    crate::serial::println("USER_RECLAIM_OK");
     PROBE_PASSED.store(true, Ordering::Release);
     crate::serial::println("USER_CONTEXT_RESUME_OK");
     crate::serial::println("USER_PREEMPT_OK");
@@ -354,13 +570,7 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     crate::serial::println("USER_ISOLATION_OK");
     crate::serial::println("USERMODE_READY");
 
-    UserProbeResult {
-        exit_codes: [
-            processes[0].exit_code,
-            processes[1].exit_code,
-            processes[2].exit_code,
-        ],
-    }
+    result
 }
 
 pub fn probe_passed() -> bool {
@@ -385,7 +595,7 @@ pub fn yield_count() -> u8 {
     TOTAL_YIELDS.load(Ordering::Acquire)
 }
 
-pub fn preemption_count() -> u8 {
+pub fn preemption_count() -> u64 {
     TOTAL_PREEMPTIONS.load(Ordering::Acquire)
 }
 
@@ -393,13 +603,20 @@ pub fn local_fault_count() -> u8 {
     LOCAL_FAULTS.load(Ordering::Acquire)
 }
 
+pub fn active_process_count() -> u8 {
+    ACTIVE_PROCESSES.load(Ordering::Acquire)
+}
+
+pub fn reclaimed_space_count() -> u8 {
+    RECLAIMED_SPACES.load(Ordering::Acquire)
+}
+
+pub fn reclaimed_frame_count() -> u64 {
+    RECLAIMED_FRAMES.load(Ordering::Acquire)
+}
+
 pub fn launch_init() -> Result<LaunchResult, LaunchError> {
-    let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };
-    let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };
-    if address == 0 || length == 0 {
-        return Err(LaunchError::ImageUnavailable);
-    }
-    let elf_bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
+    let elf_bytes = user_elf()?;
     let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
     let token = TOKEN_DYNAMIC_BASE | pid as u64;
     let mut process =
@@ -415,6 +632,7 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
         run_slice(&mut process);
         if process.event == ProcessEvent::Fault {
             paging::activate_kernel();
+            let _ = reclaim_process(&mut process);
             return Err(LaunchError::ProcessFaulted);
         }
     }
@@ -425,22 +643,86 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
         || process.report != token
         || process.preemptions == 0
     {
+        let _ = reclaim_process(&mut process);
         return Err(LaunchError::InvalidResult);
     }
 
-    DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
-    ADDRESS_SPACES.fetch_add(1, Ordering::AcqRel);
-    TOTAL_PREEMPTIONS.fetch_add(process.preemptions, Ordering::AcqRel);
-    crate::serial::print("USER_ELF_LAUNCH_OK pid=");
-    crate::serial::print_u64(pid as u64);
-    crate::serial::print(" preemptions=");
-    crate::serial::print_u64(process.preemptions as u64);
-    crate::serial::println("");
-    Ok(LaunchResult {
+    let result = LaunchResult {
         pid,
         exit_code: process.exit_code,
         preemptions: process.preemptions,
-    })
+    };
+    reclaim_process(&mut process).map_err(|_| LaunchError::InvalidResult)?;
+    DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
+    TOTAL_PREEMPTIONS.fetch_add(result.preemptions, Ordering::AcqRel);
+    crate::serial::print("USER_ELF_LAUNCH_OK pid=");
+    crate::serial::print_u64(pid as u64);
+    crate::serial::print(" preemptions=");
+    crate::serial::print_u64(result.preemptions);
+    crate::serial::println("");
+    Ok(result)
+}
+
+pub fn run_lifecycle_probe() {
+    const NORMAL_TASK: u32 = 0x1000;
+    const HOLD_TASK: u32 = 0x1001;
+
+    let reclaimed_before = reclaimed_frame_count();
+    let mut manager = ProcessManager::new();
+
+    if manager.spawn_init(NORMAL_TASK, false).is_err() {
+        fail("USER_ASYNC_SPAWN_FAILED");
+    }
+    let first = manager.poll();
+    let second = manager.poll();
+    if !matches!(first, Some(update) if update.state == ManagedState::Ready)
+        || !matches!(second, Some(update) if update.state == ManagedState::Exited && update.exit_code == 0 && !update.output.is_empty())
+    {
+        fail("USER_ASYNC_EXIT_FAILED");
+    }
+    if !matches!(manager.wait(NORMAL_TASK), Ok(result) if result.state == ManagedState::Exited && result.exit_code == 0)
+    {
+        fail("USER_ASYNC_WAIT_FAILED");
+    }
+    crate::serial::println("USER_ASYNC_EXIT_OK");
+    crate::serial::println("USER_OUTPUT_ASYNC_OK");
+
+    if manager.spawn_init(HOLD_TASK, true).is_err() {
+        fail("USER_ASYNC_HOLD_FAILED");
+    }
+    let first = manager.poll();
+    let second = manager.poll();
+    if !matches!(first, Some(update) if update.state == ManagedState::Ready)
+        || !matches!(second, Some(update) if update.state == ManagedState::Ready && !update.output.is_empty())
+    {
+        fail("USER_ASYNC_HOLD_FAILED");
+    }
+    if !matches!(manager.kill(HOLD_TASK), Ok(update) if update.state == ManagedState::Killed && update.exit_code == 137)
+    {
+        fail("USER_KILL_FAILED");
+    }
+    if !matches!(manager.wait(HOLD_TASK), Ok(result) if result.state == ManagedState::Killed && result.exit_code == 137)
+    {
+        fail("USER_WAIT_FAILED");
+    }
+    if manager.live_count() != 0
+        || active_process_count() != 0
+        || reclaimed_frame_count() < reclaimed_before + 20
+    {
+        fail("USER_RECLAIM_FAILED");
+    }
+    crate::serial::println("USER_KILL_OK");
+    crate::serial::println("USER_WAIT_OK");
+    crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
+}
+
+fn user_elf() -> Result<&'static [u8], LaunchError> {
+    let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };
+    let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };
+    if address == 0 || length == 0 {
+        return Err(LaunchError::ImageUnavailable);
+    }
+    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
 }
 
 fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, ProcessBuildError> {
@@ -510,8 +792,10 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
                     );
                 }
             }
-            paging::map_user_page(space, virtual_address, frame, writable, executable)
-                .map_err(|_| ProcessBuildError::Paging)?;
+            if paging::map_user_page(space, virtual_address, frame, writable, executable).is_err() {
+                let _ = memory::free_frame(frame);
+                return Err(ProcessBuildError::Paging);
+            }
             if virtual_address == paging::USER_DATA
                 && writable
                 && segment.memory_size >= 16
@@ -546,17 +830,34 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
 
 fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, ProcessBuildError> {
     let space = paging::create_user_address_space().map_err(|_| ProcessBuildError::Paging)?;
-    let loaded = load_elf(space, elf_bytes)?;
+    let loaded = match load_elf(space, elf_bytes) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            let _ = paging::destroy_user_address_space(space);
+            return Err(error);
+        }
+    };
     for index in 0..paging::USER_STACK_PAGES {
-        let stack_frame = paging::allocate_zeroed_frame().map_err(|_| ProcessBuildError::Paging)?;
-        paging::map_user_page(
+        let stack_frame = match paging::allocate_zeroed_frame() {
+            Ok(frame) => frame,
+            Err(_) => {
+                let _ = paging::destroy_user_address_space(space);
+                return Err(ProcessBuildError::Paging);
+            }
+        };
+        if paging::map_user_page(
             space,
             paging::USER_STACK_BOTTOM + index as u64 * paging::PAGE_SIZE,
             stack_frame,
             true,
             false,
         )
-        .map_err(|_| ProcessBuildError::Paging)?;
+        .is_err()
+        {
+            let _ = memory::free_frame(stack_frame);
+            let _ = paging::destroy_user_address_space(space);
+            return Err(ProcessBuildError::Paging);
+        }
     }
 
     crate::serial::print("USER_ELF_LOADED pid=");
@@ -564,6 +865,9 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
     crate::serial::print(" root=0x");
     crate::serial::print_hex(space.root());
     crate::serial::println("");
+
+    ADDRESS_SPACES.fetch_add(1, Ordering::AcqRel);
+    ACTIVE_PROCESSES.fetch_add(1, Ordering::AcqRel);
 
     Ok(UserProcess {
         pid,
@@ -585,8 +889,30 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         elf_pages: loaded.page_count,
         executable_start: loaded.executable_start,
         executable_end: loaded.executable_end,
+        output: FixedText::empty(),
+        output_pending: false,
+        frames_released: false,
+        killed: false,
         completed: false,
     })
+}
+
+fn reclaim_process(process: &mut UserProcess) -> Result<u64, paging::PagingError> {
+    if process.frames_released {
+        return Ok(0);
+    }
+    paging::activate_kernel();
+    let released = paging::destroy_user_address_space(process.space)?;
+    process.frames_released = true;
+    ACTIVE_PROCESSES.fetch_sub(1, Ordering::AcqRel);
+    RECLAIMED_SPACES.fetch_add(1, Ordering::AcqRel);
+    RECLAIMED_FRAMES.fetch_add(released, Ordering::AcqRel);
+    crate::serial::print("USER_FRAMES_RECLAIMED pid=");
+    crate::serial::print_u64(process.pid as u64);
+    crate::serial::print(" frames=");
+    crate::serial::print_u64(released);
+    crate::serial::println("");
+    Ok(released)
 }
 
 fn run_slice(process: &mut UserProcess) {
@@ -625,14 +951,13 @@ pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
     process.event = ProcessEvent::Preempt;
     process.preemptions = process.preemptions.saturating_add(1);
     unsafe {
-        core::ptr::write_volatile(
-            (process.data_frame + 8) as *mut u64,
-            process.preemptions as u64,
-        );
+        core::ptr::write_volatile((process.data_frame + 8) as *mut u64, process.preemptions);
     }
-    crate::serial::print("USER_PREEMPT pid=");
-    crate::serial::print_u64(process.pid as u64);
-    crate::serial::println("");
+    if process.preemptions == 1 {
+        crate::serial::print("USER_PREEMPT pid=");
+        crate::serial::print_u64(process.pid as u64);
+        crate::serial::println("");
+    }
     true
 }
 
@@ -727,6 +1052,24 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             }
             0
         }
+        Ok(SyscallAction::Write { address, length }) => {
+            if let Some(text) = copy_user_text(process, address, length) {
+                process.output = text;
+                process.output_pending = true;
+                frame.rax = length;
+                let count = WRITE_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
+                crate::serial::print("USER_OUTPUT pid=");
+                crate::serial::print_u64(process.pid as u64);
+                crate::serial::print(" text=");
+                crate::serial::println(text.as_str());
+                if count == HEALTHY_PROCESS_COUNT {
+                    crate::serial::println("USER_OUTPUT_OK");
+                }
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+            }
+            0
+        }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;
             process.exit_code = code;
@@ -779,6 +1122,34 @@ fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64
     Some(unsafe { core::ptr::read_unaligned(address as *const u64) })
 }
 
+fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
+    if length == 0
+        || length > 80
+        || !syscall::validate_user_buffer(
+            address,
+            length,
+            paging::USER_CODE,
+            paging::USER_STACK_TOP - paging::USER_CODE,
+        )
+    {
+        return None;
+    }
+    let length = length as usize;
+    let mut bytes = [0u8; 80];
+    for (index, slot) in bytes.iter_mut().take(length).enumerate() {
+        let virtual_address = address.checked_add(index as u64)?;
+        paging::translate(process.space, virtual_address)?;
+        let byte = unsafe { core::ptr::read_volatile(virtual_address as *const u8) };
+        *slot = if byte.is_ascii() && !byte.is_ascii_control() {
+            byte
+        } else {
+            b'?'
+        };
+    }
+    let text = core::str::from_utf8(&bytes[..length]).ok()?;
+    Some(FixedText::from_str(text))
+}
+
 fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> bool {
     let roots_are_distinct = processes.iter().enumerate().all(|(index, process)| {
         processes
@@ -800,12 +1171,12 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
             && unsafe { core::ptr::read_volatile(process.data_frame as *const u64) }
                 == process.token
             && unsafe { core::ptr::read_volatile((process.data_frame + 8) as *const u64) }
-                == process.preemptions as u64
+                == process.preemptions
     });
     let faulting = &processes[0];
     let healthy = &processes[1..];
 
-    switches == 6
+    (6..=12).contains(&switches)
         && roots_are_distinct
         && frames_are_distinct
         && mappings_are_private
@@ -814,7 +1185,7 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
         && faulting.fault_vector == 14
         && faulting.fault_error == 0x6
         && faulting.fault_address == paging::USER_STACK_GUARD
-        && faulting.preemptions == 1
+        && (1..=4).contains(&faulting.preemptions)
         && faulting.preemption_armed
         && faulting.yields == 0
         && faulting.report == 0
@@ -823,7 +1194,7 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
             process.completed
                 && process.exit_code == 0
                 && process.fault_vector == 0
-                && process.preemptions == 1
+                && (1..=4).contains(&process.preemptions)
                 && process.preemption_armed
                 && process.yields == 0
                 && process.report == process.token
@@ -832,6 +1203,7 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
         && PING_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
         && ABI_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
         && REPORT_COUNT.load(Ordering::Acquire) == HEALTHY_PROCESS_COUNT
+        && WRITE_COUNT.load(Ordering::Acquire) == HEALTHY_PROCESS_COUNT
         && LOCAL_FAULTS.load(Ordering::Acquire) == 1
 }
 
