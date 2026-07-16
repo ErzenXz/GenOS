@@ -81,6 +81,9 @@ The current GenOS build already contains real operating-system infrastructure:
 - three ring-3 process instances with separate CR3 roots and private code, data, guard, and stack mappings;
 - timer-driven CPU preemption with saved contexts, address-space switching, and resume;
 - process-local user page-fault termination that leaves healthy processes and the kernel running;
+- a bounded ELF64 parser and W^X userspace segment loader;
+- a separately built `no_std` userspace runtime and `INIT.ELF` application packaged in the initrd;
+- boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
 - Shift, Caps Lock, symbols, and shell command history;
@@ -108,9 +111,9 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports the live ring-3 and syscall probe. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports the live ELF, ring-3, and syscall state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.8 executes three process instances at ring 3. A 100 Hz timer preempts each process without a cooperative syscall, saves its complete register frame, switches address spaces, and resumes it later. One process deliberately writes to an unmapped guard page and is terminated locally; the other two continue, report their private data through validated copy-in, and exit normally before the desktop starts. Scheduled shell-created workloads still run inside the kernel, however. Userspace ELF loading, dynamic process control, and general-purpose applications remain Stage 2 work. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.9 builds `genos-init` independently from the kernel, packages it as `INIT.ELF`, validates its ELF64 headers and load segments, and maps RX text and RW data into a fresh process root. The boot proof runs four ELF-backed instances while preserving timer preemption and local fault containment. `run init` launches another instance from the desktop shell, waits for its validated exit, records it in the task registry, and returns to the desktop. Launch is currently synchronous; general asynchronous process control remains Stage 2 work. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -124,7 +127,8 @@ GenOS bootloader
 GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe frames / protected page tables
-    |-- userspace               private CR3 / preemption / local faults / copy-in
+    |-- ELF loader              bounded parser / W^X segment mapping
+    |-- userspace               runtime / private CR3 / preemption / local faults
     |-- input                    PS/2 keyboard + mouse / event queue
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
@@ -202,6 +206,7 @@ A successful boot writes `GENOS_READY` to the serial console and opens the frame
 bootloader/       UEFI loader and ELF loading
 crates/abi/       Versioned bootloader-kernel contract
 kernel/           no_std kernel, hardware, filesystem, and desktop
+userspace/         no_std runtime and independently linked ELF application
 tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 .github/          CI and contribution workflows
 ```
@@ -210,7 +215,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, validated copy-in, timer preemption, and local fault containment work; ELF loading and dynamic process control come next
+- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, validated copy-in, preemption, local faults, ELF loading, and shell launch work; asynchronous lifecycle control comes next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design

@@ -38,6 +38,8 @@ jobs:
         run: |
           cargo clippy -p kernel --lib -- -D warnings
           cargo clippy -p kernel --bin kernel --target x86_64-unknown-none -- -D warnings
+          cargo clippy -p genos-user-runtime --target x86_64-unknown-none -- -D warnings
+          cargo clippy -p genos-init --profile userspace --target x86_64-unknown-none -- -D warnings
 
       - name: Run workspace tests
         run: cargo test --workspace

@@ -1,67 +1,86 @@
 # GenOS userspace boundary
 
-GenOS 0.8 extends the hardware-enforced user boundary with timer preemption and process-local fault containment. This document states exactly what that milestone proves and what it does not.
+GenOS 0.9 replaces the kernel-embedded user code page with an independently built ELF executable and an initial userspace runtime. This document states exactly what the milestone proves and what it does not.
 
-## Boot sequence
+## Build and packaging pipeline
 
-1. The bootloader supplies a typed UEFI memory map.
-2. The kernel builds a frame allocator from page-aligned `Usable` regions. Reserved gaps, firmware boot-services memory, and the null page are never returned.
-3. The kernel clones the active four-level page tables and clears the user-accessible bit from every existing mapping.
-4. Three process instances receive separate PML4 roots. Each root shares the supervisor template but owns an otherwise unused lower-half slot.
-5. Each root maps private physical code, data, and stack frames at the same user virtual addresses. A page below each stack remains unmapped as a guard.
-6. An `iretq` frame enters each process using user code and data selectors.
-7. Every process calls the DPL3 `int 0x80` gate, writes a distinct private token, and waits in userspace without yielding.
-8. A successful ABI query arms that process for scheduling. This prevents machine-speed differences from consuming a quantum before the boot probe reaches its validated starting point.
-9. A 100 Hz PIT interrupt captures every general-purpose register plus `rip`, `rsp`, selectors, and flags. The IRQ acknowledges the PIC and returns to the Ring 0 scheduler instead of the interrupted process.
-10. The scheduler switches CR3 and later resumes each process at the interrupted instruction. A private per-process probe flag makes this preemption proof deterministic without a cooperative syscall.
-11. The first process writes to its unmapped guard page. The page-fault handler recognizes a Ring 3 frame, records vector 14 and exit status 142, and returns to the scheduler instead of halting the kernel.
-12. The two healthy processes continue after that fault, report their private values through validated copy-in, and exit normally.
-13. GenOS verifies distinct roots and frames, preserved private values, three timer preemptions, fault-first completion order, two later successful exits, and a live desktop.
+1. `userspace/runtime` builds as a `no_std` library and owns the initial `int 0x80` syscall wrappers.
+2. `userspace/init` builds as a separate static `x86_64` executable using the dedicated `userspace` Cargo profile.
+3. Its linker script emits an RX text segment at the GenOS user entry and a separate RW data segment. The link fails if either segment grows beyond one page.
+4. `xtask` builds the userspace executable before the kernel and packages it into the boot initrd as `INIT.ELF`.
+5. The kernel locates `INIT.ELF` by name. A missing or invalid image stops the boot before any Ring 3 transition.
 
-The QEMU smoke test requires preemption, process-local termination, validated-copy, isolation, and long-lived desktop markers. CI therefore fails if timer context capture, CR3 ownership, fault containment, independent exit, or return to the desktop regresses.
+The kernel binary no longer contains a `.usertext` payload. Userspace behavior comes from the ELF bytes supplied through the boot filesystem.
+
+## ELF validation and mapping
+
+The bounded parser accepts only little-endian ELF64 executable files for x86_64. It validates the ELF and program-header sizes, caps the program-header count, checks every offset and length with overflow-safe arithmetic, requires at least one loadable segment, and rejects truncated file data.
+
+Before allocating user pages, the process loader additionally requires:
+
+- page-aligned segment virtual addresses and at least page alignment;
+- readable load segments with no unknown permission bits;
+- write and execute permissions are never both present on one segment;
+- segment memory ranges entirely inside the reserved user-image window;
+- no overlapping virtual pages;
+- an entry point inside an executable segment;
+- a writable data mapping at the ABI data address with space for the process token and preemption counter.
+
+Every accepted page receives a newly allocated zeroed physical frame. File bytes are copied into those frames, remaining memory is left zeroed, and page-table permissions come directly from the validated segment flags. Stacks are mapped separately with an unmapped guard page.
+
+## Execution proof
+
+At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
+
+1. all instances query ABI version 2 and become eligible for timer scheduling;
+2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
+3. the first instance writes to its guard page and is terminated with page-fault status 142;
+4. the two healthy instances resume afterward, report private values through validated copy-in, and exit with status 0.
+
+GenOS then launches a fourth instance through the general ELF launch function, verifies preemption, private memory, and exit status, and records it as `init-elf` in the task table. The QEMU smoke test requires the ELF validation, mapping, dynamic-launch, preemption, fault-containment, and long-lived desktop markers.
+
+From the desktop shell, `run init` invokes the same launch function again. A successful command creates another CR3 root, maps new segment and stack frames, enters Ring 3, receives a timer preemption, exits, appends completed task history, and returns control to the desktop.
 
 ## ABI version 2
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
-| Number | Name | Arguments | Result |
+| Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
 | 1 | `abi_version` | all zero | ABI version `2` |
-| 2 | `exit` | `rdi` = status `0..255`; remaining arguments zero | terminates the current process instance |
-| 3 | `yield` | all zero | saves the current context and returns to the kernel scheduler |
-| 4 | `report` | `rdi` = user address; `rsi` = `8`; remaining arguments zero | validated 64-bit value copied from owned user memory |
+| 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
+| 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
+| 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
 
-The cooperative `yield` call remains available for ABI compatibility, but the 0.8 proof does not use it. Unknown syscall numbers and invalid scalar arguments return stable negative-style error values without performing kernel work.
+The 0.9 application uses the runtime functions instead of handwritten assembly. Cooperative yield remains available for ABI compatibility, but the execution proof relies on timer preemption.
 
-## Interrupt and fault contract
+## Interrupt safety
 
-Timer IRQs and syscalls normalize their saved registers to the same `UserContext` layout. When IRQ0 interrupts Ring 3, the kernel copies that frame into the active process, switches back to the protected kernel root, and schedules another runnable process. Kernel and desktop timer interrupts follow the ordinary IRQ return path.
+Timer IRQs and syscalls normalize their saved registers to the same `UserContext` layout. The kernel disables interrupts around the active-process pointer and CR3 transition, then restores the caller's prior interrupt state after returning to Ring 0. This matters for shell-triggered launches because the desktop normally runs with hardware interrupts enabled.
 
-CPU faults include an error code before the interrupt-return frame. The fault stub passes the saved code selector to Rust so the handler can distinguish Ring 3 failures from kernel failures. A user page fault terminates only the current process. A kernel page fault still emits fatal diagnostics and halts because continuing after kernel corruption would be unsafe.
-
-The current fault probe produces error code `0x6`: a user-mode write to a non-present page. Its `cr2` value must equal the process stack-guard address.
+Only Ring 3 page faults and general-protection faults can become process-local termination. Double faults and all kernel faults remain fatal. Continuing after suspected kernel corruption would be unsafe.
 
 ## Current guarantees
 
-- All three process instances execute with CPU privilege level 3.
-- Existing kernel mappings remain supervisor-only in every process root.
-- Each process owns a distinct CR3 root and distinct user physical frames.
-- User code is read-only and executable; data and stack pages are writable and non-executable when NX is enabled.
-- The user stack has an unmapped guard page beneath it.
-- PIT interrupts preempt userspace without a syscall and preserve the complete user context.
-- A Ring 3 page fault becomes terminal status for only the active process.
-- Healthy processes resume and finish after a peer process faults.
+- Userspace is compiled and linked independently from the kernel.
+- ELF metadata and every load segment are validated before mapping or execution.
+- Executable pages are not writable, and writable data pages are not executable.
+- Every process instance owns a distinct CR3 root and distinct physical image, data, and stack frames.
+- Timer preemption preserves the complete user context without a cooperative syscall.
+- A Ring 3 page fault terminates only the active process.
+- Healthy processes and the desktop remain alive after a peer faults.
+- Both boot code and the shell can launch fresh instances from the packaged ELF image.
 - User pointers are range checked, translated through the owning root, and matched to the expected physical frame before access.
-- Returning to the kernel after preemption, fault, and exit preserves the later desktop interrupt path.
 
 ## Current limitations
 
-- The processes are built-in instances of one embedded code page, not dynamically loaded executables.
-- The scheduler's shell-created workers remain kernel-mode workloads.
-- There is no userspace sleep, wake, blocking I/O, or priority model yet.
-- Address-space frames are not yet reclaimed after exit or fault.
-- Only page fault, general protection fault, and double fault have dedicated diagnostic handlers.
+- `INIT.ELF` is the only packaged userspace program.
+- Shell launch is synchronous; the command waits for the short-lived program to exit.
+- There is no asynchronous start, live-process inspection, kill, wait, or parent/child model for userspace yet.
+- The immutable initrd ELF is registered directly with the loader and is not copied into the small writable session VFS.
+- Address-space and process frames are not reclaimed after exit or fault, so repeated launches are intentionally bounded by available memory and task history.
+- There is no userspace sleep, blocking I/O, standard output, heap allocator, or window API.
 - The transition state is single-core and supports one active user process at a time.
 
-The next slice is a validated userspace ELF loader and initial runtime crate, followed by dynamic launch and lifecycle controls.
+The next slice is an asynchronous userspace process manager with wait/kill lifecycle controls, frame reclamation, and a small output syscall so ELF applications can interact with the shell.

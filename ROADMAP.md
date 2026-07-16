@@ -82,15 +82,18 @@ Delivered so far:
 - 100 Hz timer-driven userspace preemption without a cooperative syscall;
 - process-local page-fault classification, termination, and fault status;
 - continued execution of healthy processes after a peer faults.
+- bounded ELF64 header and program-segment validation;
+- page-aligned W^X mapping of independently built userspace executables;
+- initial `no_std` userspace runtime with typed syscall wrappers;
+- initrd packaging for `INIT.ELF` and boot-time executable discovery;
+- synchronous `run init` shell launch with fresh CR3, PID, preemption, exit status, and task history.
 
 Remaining work:
 
 - broader syscall entry/exit surface and copy-out;
 - integrate preemptive userspace with general sleep and wake primitives;
-- userspace ELF loader;
 - generalize lifecycle and exit status to dynamically loaded programs;
 - pipes or bounded message channels;
-- initial userspace runtime crate;
 - move the shell into userspace.
 
 Acceptance criteria:
@@ -107,6 +110,8 @@ Acceptance criteria:
 - [x] A userspace crash terminates only the failing process.
 - [x] The scheduler demonstrates preemption rather than cooperative polling.
 - [x] Initial userspace pointer and buffer ranges are validated before kernel access.
+- [x] A separately built ELF application is validated, mapped, preempted, and exited in isolated address spaces.
+- [x] The shell can launch the packaged ELF and retain its completed task status.
 - [ ] The shell can launch, inspect, and terminate a userspace process.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 

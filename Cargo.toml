@@ -3,6 +3,8 @@ members = [
     "crates/abi",
     "bootloader",
     "kernel",
+    "userspace/runtime",
+    "userspace/init",
     "tools/xtask",
 ]
 resolver = "2"
@@ -21,4 +23,10 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 lto = true
+codegen-units = 1
+
+[profile.userspace]
+inherits = "release"
+panic = "abort"
+lto = false
 codegen-units = 1

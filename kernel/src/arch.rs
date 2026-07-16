@@ -199,6 +199,19 @@ pub fn disable_interrupts() {
     unsafe { asm!("cli", options(nomem, nostack, preserves_flags)) };
 }
 
+pub fn interrupts_enabled() -> bool {
+    let flags: u64;
+    unsafe {
+        asm!(
+            "pushfq",
+            "pop {}",
+            out(reg) flags,
+            options(preserves_flags),
+        )
+    };
+    flags & (1 << 9) != 0
+}
+
 pub fn halt_loop() -> ! {
     loop {
         unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)) };

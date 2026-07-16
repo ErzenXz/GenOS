@@ -12,6 +12,7 @@ use std::{
 const BUILD_DIR: &str = "build";
 const IMAGE: &str = "build/genos.img";
 const INITRD: &str = "build/INITRD.GRD";
+const USER_INIT: &str = "target/x86_64-unknown-none/userspace/genos-init";
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -38,6 +39,15 @@ fn build() -> Result<(), String> {
         "bootloader",
         "--target",
         "x86_64-unknown-uefi",
+    ])?;
+    cargo([
+        "build",
+        "-p",
+        "genos-init",
+        "--profile",
+        "userspace",
+        "--target",
+        "x86_64-unknown-none",
     ])?;
     cargo(["build", "-p", "kernel", "--target", "x86_64-unknown-none"])?;
     write_initrd(Path::new(INITRD))?;
@@ -105,16 +115,19 @@ where
 }
 
 fn write_initrd(path: &Path) -> Result<(), String> {
-    let files = [
+    let user_init =
+        fs::read(USER_INIT).map_err(|error| format!("failed to read {USER_INIT}: {error}"))?;
+    let files = vec![
         (
             "README.TXT",
-            "Welcome to GenOS.\nThis file lives in the V1 RAM disk.\n",
+            b"Welcome to GenOS.\nThis file lives in the V1 RAM disk.\n".to_vec(),
         ),
-        ("USER.TXT", "user.name=genos\nhome=/users/genos\n"),
+        ("USER.TXT", b"user.name=genos\nhome=/users/genos\n".to_vec()),
         (
             "NOTES.TXT",
-            "Next milestones: storage drivers, userspace, networking.\n",
+            b"INIT.ELF is a separately built GenOS userspace executable.\n".to_vec(),
         ),
+        ("INIT.ELF", user_init),
     ];
 
     let mut bytes = Vec::new();
@@ -124,7 +137,7 @@ fn write_initrd(path: &Path) -> Result<(), String> {
         bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
         bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
         bytes.extend_from_slice(name.as_bytes());
-        bytes.extend_from_slice(data.as_bytes());
+        bytes.extend_from_slice(&data);
     }
     fs::write(path, bytes).map_err(|e| e.to_string())
 }
@@ -257,6 +270,9 @@ fn smoke_markers_ready(output: &str) -> bool {
         "SCHED_READY",
         "PAGING_READY",
         "ADDRESS_SPACES_READY",
+        "USER_ELF_VALIDATED",
+        "USER_ELF_LOADED",
+        "USER_ELF_LAUNCH_OK",
         "USER_CONTEXT_OK",
         "USER_CONTEXT_RESUME_OK",
         "USER_PREEMPT_OK",
@@ -303,9 +319,9 @@ mod tests {
     }
 
     #[test]
-    fn smoke_requires_stage2_preemption_and_fault_markers() {
+    fn smoke_requires_elf_preemption_and_fault_markers() {
         assert!(smoke_markers_ready(
-            "IRQ_READY\nVFS_READY\nTASKS_READY\nSCHED_READY\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_ISOLATION_OK\nUSERMODE_READY\nBACKBUFFER_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nDISPLAY_IDLE_OK\n"
+            "IRQ_READY\nVFS_READY\nTASKS_READY\nSCHED_READY\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_ISOLATION_OK\nUSERMODE_READY\nBACKBUFFER_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nDISPLAY_IDLE_OK\n"
         ));
         assert!(!smoke_markers_ready("GENOS_READY\n"));
     }

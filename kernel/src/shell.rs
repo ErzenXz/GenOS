@@ -4,7 +4,7 @@ use genos_abi::BootInfo;
 use kernel::{
     display::{DisplayManager, FixedText, LineKind},
     input::{InputEvent, KeyEvent},
-    tasks::{TaskError, TaskRegistry, TaskState},
+    tasks::{TaskError, TaskRegistry, TaskState, MAX_TASKS},
     vfs::{NodeKind, RamVfs, VfsError},
 };
 
@@ -207,7 +207,7 @@ fn execute(
         "help" => {
             display.push_line(
                 LineKind::Output,
-                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
+                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps run spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
             );
             display.set_status("help printed");
         }
@@ -361,6 +361,58 @@ fn execute(
             }
             display.set_status("processes listed");
         }
+        "run" => {
+            let program = trim(args);
+            if program != "init" && program != "INIT.ELF" {
+                display.push_line(LineKind::Error, "usage: run init");
+                display.set_status("ELF launch failed");
+            } else if tasks.len() >= MAX_TASKS {
+                push_task_error(display, TaskError::TableFull);
+            } else {
+                match crate::userspace::launch_init() {
+                    Ok(result) => {
+                        match tasks.record_user_exit(
+                            "init-elf",
+                            result.exit_code,
+                            interrupts::ticks(),
+                        ) {
+                            Ok(task_pid) => {
+                                let mut line = FixedText::from_str("ELF launched ring-pid=");
+                                line.push_u64(result.pid as u64);
+                                line.push_str(" task-pid=");
+                                line.push_u64(task_pid as u64);
+                                line.push_str(" exit=");
+                                line.push_u64(result.exit_code as u64);
+                                line.push_str(" preempt=");
+                                line.push_u64(result.preemptions as u64);
+                                display.push_fixed(LineKind::Status, line);
+                                display.set_status("INIT.ELF completed");
+                            }
+                            Err(error) => push_task_error(display, error),
+                        }
+                    }
+                    Err(error) => {
+                        let text = match error {
+                            crate::userspace::LaunchError::ImageUnavailable => {
+                                "INIT.ELF is unavailable"
+                            }
+                            crate::userspace::LaunchError::ProcessBuildFailed => {
+                                "INIT.ELF failed validation or mapping"
+                            }
+                            crate::userspace::LaunchError::ProcessFaulted => {
+                                "INIT.ELF terminated with a CPU fault"
+                            }
+                            crate::userspace::LaunchError::InvalidResult => {
+                                "INIT.ELF returned an invalid result"
+                            }
+                        };
+                        display.push_line(LineKind::Error, text);
+                        display.set_status("ELF launch failed");
+                    }
+                }
+            }
+            display.refresh_task_manager();
+        }
         "spawn" => {
             let name = trim(args);
             if name.is_empty() {
@@ -447,6 +499,12 @@ fn execute(
             });
             line.push_str(" abi=");
             line.push_u64(kernel::syscall::USER_ABI_VERSION);
+            line.push_str(" elf=");
+            line.push_str(if crate::userspace::elf_ready() {
+                "ready"
+            } else {
+                "missing"
+            });
             line.push_str(" proc=");
             line.push_u64(crate::userspace::process_count() as u64);
             line.push_str(" spaces=");
@@ -489,7 +547,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.8 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.9 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -499,7 +557,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.8 preempts isolated ring-3 processes and contains user page faults without stopping healthy processes or the desktop.",
+                "GenOS 0.9 validates, maps, and launches separate ELF applications with an initial no-std userspace runtime.",
             );
             display.set_status("about");
         }

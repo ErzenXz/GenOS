@@ -43,6 +43,10 @@ impl<'a> RamFs<'a> {
             offset: 8,
         }
     }
+
+    pub fn find(&self, name: &str) -> Option<File<'a>> {
+        self.iter().find(|file| file.name == name)
+    }
 }
 
 pub struct RamFsIter<'a> {

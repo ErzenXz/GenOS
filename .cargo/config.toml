@@ -3,7 +3,7 @@ rustflags = [
     "-C", "force-frame-pointers=yes",
     "-C", "no-redzone=yes",
     "-C", "relocation-model=static",
-    "-C", "link-arg=-Tkernel/linker.ld",
+    "-C", "code-model=large",
 ]
 
 [alias]

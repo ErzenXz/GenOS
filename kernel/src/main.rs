@@ -36,13 +36,26 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     }
 
     interrupts::init();
-    let user_probe = userspace::run_probe();
-
     let initrd = ramfs::RamFs::from_initrd(boot_info.initrd.base, boot_info.initrd.size);
+    let Some(init_program) = initrd.find("INIT.ELF") else {
+        serial::println("USER_ELF_MISSING");
+        arch::halt_loop();
+    };
+    let user_probe = userspace::run_probe(init_program.data);
+    let dynamic_probe = match userspace::launch_init() {
+        Ok(result) => result,
+        Err(_) => {
+            serial::println("USER_ELF_BOOT_LAUNCH_FAILED");
+            arch::halt_loop();
+        }
+    };
+
     let mut vfs = RamVfs::new();
     vfs.init_root();
     for file in initrd.iter() {
-        vfs.seed_file(file.name, file.data);
+        if file.name != "INIT.ELF" {
+            vfs.seed_file(file.name, file.data);
+        }
     }
     serial::println("VFS_READY");
 
@@ -58,6 +71,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     let _ = tasks.record_user_fault("user-crash", user_probe.exit_codes[0], interrupts::ticks());
     let _ = tasks.record_user_exit("user-a", user_probe.exit_codes[1], interrupts::ticks());
     let _ = tasks.record_user_exit("user-b", user_probe.exit_codes[2], interrupts::ticks());
+    let _ = tasks.record_user_exit("init-elf", dynamic_probe.exit_code, interrupts::ticks());
     serial::println("TASKS_READY");
     serial::println("SCHED_READY");
 

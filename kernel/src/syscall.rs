@@ -1,10 +1,9 @@
-pub const USER_ABI_VERSION: u64 = 2;
-pub const SYSCALL_PING: u64 = 0;
-pub const SYSCALL_ABI_VERSION: u64 = 1;
-pub const SYSCALL_EXIT: u64 = 2;
-pub const SYSCALL_YIELD: u64 = 3;
-pub const SYSCALL_REPORT: u64 = 4;
-pub const PING_REPLY: u64 = 0x4745_4e4f_535f_4f4b;
+pub use genos_abi::{
+    USER_ABI_VERSION, USER_PING_REPLY as PING_REPLY,
+    USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_REPORT as SYSCALL_REPORT,
+    USER_SYSCALL_YIELD as SYSCALL_YIELD,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallAction {

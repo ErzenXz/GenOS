@@ -1356,7 +1356,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.8",
+            "GenOS 0.9",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1370,7 +1370,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "PREEMPTIVE RING 3  /  LOCAL FAULTS  /  ABI 2",
+            "ELF APPLICATIONS  /  PREEMPTIVE RING 3  /  ABI 2",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

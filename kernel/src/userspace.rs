@@ -1,7 +1,10 @@
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use kernel::syscall::{self, SyscallAction};
+use kernel::{
+    elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
+    syscall::{self, SyscallAction},
+};
 
 use crate::{arch, paging};
 
@@ -12,8 +15,10 @@ const FAULT_EXIT_CODE: u8 = 128 + 14;
 const TOKEN_FAULT: u64 = 0xffff_ffff_ffff_fff0;
 const TOKEN_A: u64 = 0x1111_aaaa_1111_aaaa;
 const TOKEN_B: u64 = 0x2222_bbbb_2222_bbbb;
+const TOKEN_DYNAMIC_BASE: u64 = 0x3333_cccc_3333_0000;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
+static ELF_READY: AtomicBool = AtomicBool::new(false);
 static CONTEXT_PASSED: AtomicBool = AtomicBool::new(false);
 static PING_COUNT: AtomicU8 = AtomicU8::new(0);
 static ABI_COUNT: AtomicU8 = AtomicU8::new(0);
@@ -24,6 +29,10 @@ static TOTAL_YIELDS: AtomicU8 = AtomicU8::new(0);
 static TOTAL_PREEMPTIONS: AtomicU8 = AtomicU8::new(0);
 static LOCAL_FAULTS: AtomicU8 = AtomicU8::new(0);
 static COMPLETION_SEQUENCE: AtomicU8 = AtomicU8::new(0);
+static DYNAMIC_PROCESSES: AtomicU8 = AtomicU8::new(0);
+static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
+static mut USER_ELF_ADDRESS: u64 = 0;
+static mut USER_ELF_LENGTH: usize = 0;
 static mut CURRENT_PROCESS: *mut UserProcess = core::ptr::null_mut();
 
 #[derive(Clone, Copy)]
@@ -52,7 +61,7 @@ pub(crate) struct UserContext {
 }
 
 impl UserContext {
-    const fn initial(token: u64) -> Self {
+    const fn initial(token: u64, entry: u64) -> Self {
         Self {
             r15: 0,
             r14: 0,
@@ -69,7 +78,7 @@ impl UserContext {
             rdx: 0,
             rcx: 0,
             rax: 0,
-            rip: paging::USER_CODE,
+            rip: entry,
             cs: arch::USER_CODE_SELECTOR as u64,
             rflags: 0x202,
             rsp: paging::USER_STACK_TOP,
@@ -103,12 +112,48 @@ struct UserProcess {
     fault_address: u64,
     completion_order: u8,
     preemption_armed: bool,
+    elf_segments: u8,
+    elf_pages: u8,
+    executable_start: u64,
+    executable_end: u64,
     completed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct LoadedImage {
+    entry: u64,
+    data_frame: u64,
+    segment_count: u8,
+    page_count: u8,
+    executable_start: u64,
+    executable_end: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessBuildError {
+    InvalidElf,
+    InvalidLayout,
+    Paging,
 }
 
 #[derive(Clone, Copy)]
 pub struct UserProbeResult {
     pub exit_codes: [u8; PROCESS_COUNT],
+}
+
+#[derive(Clone, Copy)]
+pub struct LaunchResult {
+    pub pid: u8,
+    pub exit_code: u8,
+    pub preemptions: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchError {
+    ImageUnavailable,
+    ProcessBuildFailed,
+    ProcessFaulted,
+    InvalidResult,
 }
 
 global_asm!(
@@ -214,75 +259,6 @@ genos_user_return_rsp:
 genos_user_return_rip:
     .quad 0
 
-    .section .usertext,"ax"
-    .balign 4096
-    .global genos_user_text_start
-genos_user_text_start:
-    mov r12, rdi
-    mov rbx, {user_data_address}
-    mov [rbx], r12
-    xor rdi, rdi
-    xor rsi, rsi
-    xor rdx, rdx
-    xor r10, r10
-    xor r8, r8
-    xor r9, r9
-    mov rax, {sys_ping}
-    int {syscall_vector}
-    mov r13, {ping_reply}
-    cmp rax, r13
-    jne genos_user_probe_failed
-    mov rax, {sys_abi}
-    int {syscall_vector}
-    cmp rax, {abi_version}
-    jne genos_user_probe_failed
-    lea rcx, [rbx + 8]
-genos_user_wait_for_preemption:
-    cmp qword ptr [rcx], 0
-    je genos_user_wait_for_preemption
-    mov r13, {fault_token}
-    cmp r12, r13
-    je genos_user_trigger_fault
-    mov rdi, rbx
-    mov rsi, 8
-    xor rdx, rdx
-    xor r10, r10
-    xor r8, r8
-    xor r9, r9
-    mov rax, {sys_report}
-    int {syscall_vector}
-    cmp rax, r12
-    jne genos_user_probe_failed
-    xor rdi, rdi
-    xor rsi, rsi
-    xor rdx, rdx
-    xor r10, r10
-    xor r8, r8
-    xor r9, r9
-    mov rax, {sys_exit}
-    int {syscall_vector}
-
-genos_user_trigger_fault:
-    mov rax, {guard_address}
-    mov qword ptr [rax], 1
-    jmp genos_user_probe_failed
-
-genos_user_probe_failed:
-    mov rdi, 255
-    xor rsi, rsi
-    xor rdx, rdx
-    xor r10, r10
-    xor r8, r8
-    xor r9, r9
-    mov rax, {sys_exit}
-    int {syscall_vector}
-1:
-    pause
-    jmp 1b
-    .balign 4096
-    .global genos_user_text_end
-genos_user_text_end:
-
     .section .text
 "#,
     ctx_r15 = const core::mem::offset_of!(UserContext, r15),
@@ -305,33 +281,35 @@ genos_user_text_end:
     ctx_rflags = const core::mem::offset_of!(UserContext, rflags),
     ctx_rsp = const core::mem::offset_of!(UserContext, rsp),
     ctx_ss = const core::mem::offset_of!(UserContext, ss),
-    syscall_vector = const SYSCALL_VECTOR,
-    user_data_address = const paging::USER_DATA,
-    guard_address = const paging::USER_STACK_GUARD,
-    fault_token = const TOKEN_FAULT,
-    sys_ping = const syscall::SYSCALL_PING,
-    sys_abi = const syscall::SYSCALL_ABI_VERSION,
-    sys_exit = const syscall::SYSCALL_EXIT,
-    sys_report = const syscall::SYSCALL_REPORT,
-    ping_reply = const syscall::PING_REPLY,
-    abi_version = const syscall::USER_ABI_VERSION,
 );
 
 unsafe extern "C" {
     fn genos_enter_user_context(context: *const UserContext);
     fn genos_syscall_stub();
-    static genos_user_text_start: u8;
-    static genos_user_text_end: u8;
 }
 
 pub fn syscall_handler() -> unsafe extern "C" fn() {
     genos_syscall_stub
 }
 
-pub fn run_probe() -> UserProbeResult {
-    let faulting = require_process(build_process(1, TOKEN_FAULT));
-    let first = require_process(build_process(2, TOKEN_A));
-    let second = require_process(build_process(3, TOKEN_B));
+pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
+    unsafe {
+        core::ptr::addr_of_mut!(USER_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
+        core::ptr::addr_of_mut!(USER_ELF_LENGTH).write(elf_bytes.len());
+    }
+    let faulting = require_process(build_process(1, TOKEN_FAULT, elf_bytes));
+    ELF_READY.store(true, Ordering::Release);
+    crate::serial::print("USER_ELF_VALIDATED entry=0x");
+    crate::serial::print_hex(faulting.context.rip);
+    crate::serial::print(" segments=");
+    crate::serial::print_u64(faulting.elf_segments as u64);
+    crate::serial::print(" pages=");
+    crate::serial::print_u64(faulting.elf_pages as u64);
+    crate::serial::print(" bytes=");
+    crate::serial::print_u64(elf_bytes.len() as u64);
+    crate::serial::println("");
+    let first = require_process(build_process(2, TOKEN_A, elf_bytes));
+    let second = require_process(build_process(3, TOKEN_B, elf_bytes));
     let mut processes = [faulting, first, second];
     crate::serial::println("ADDRESS_SPACES_READY count=3");
 
@@ -389,8 +367,14 @@ pub fn probe_passed() -> bool {
     PROBE_PASSED.load(Ordering::Acquire)
 }
 
+pub fn elf_ready() -> bool {
+    ELF_READY.load(Ordering::Acquire)
+}
+
 pub fn process_count() -> u8 {
-    COMPLETED_PROCESSES.load(Ordering::Acquire)
+    COMPLETED_PROCESSES
+        .load(Ordering::Acquire)
+        .saturating_add(DYNAMIC_PROCESSES.load(Ordering::Acquire))
 }
 
 pub fn address_space_count() -> u8 {
@@ -409,40 +393,183 @@ pub fn local_fault_count() -> u8 {
     LOCAL_FAULTS.load(Ordering::Acquire)
 }
 
-fn build_process(pid: u8, token: u64) -> Result<UserProcess, paging::PagingError> {
-    let space = paging::create_user_address_space()?;
-    let code_frame = paging::allocate_zeroed_frame()?;
-    let data_frame = paging::allocate_zeroed_frame()?;
-    let text_start = core::ptr::addr_of!(genos_user_text_start) as u64;
-    let text_end = core::ptr::addr_of!(genos_user_text_end) as u64;
-    if text_end.saturating_sub(text_start) != paging::PAGE_SIZE {
-        return Err(paging::PagingError::InvalidAddress);
+pub fn launch_init() -> Result<LaunchResult, LaunchError> {
+    let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };
+    let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };
+    if address == 0 || length == 0 {
+        return Err(LaunchError::ImageUnavailable);
     }
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            text_start as *const u8,
-            code_frame as *mut u8,
-            paging::PAGE_SIZE as usize,
-        );
+    let elf_bytes = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
+    let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+    let token = TOKEN_DYNAMIC_BASE | pid as u64;
+    let mut process =
+        build_process(pid, token, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
+    crate::serial::print("USER_ELF_LAUNCH pid=");
+    crate::serial::print_u64(pid as u64);
+    crate::serial::println(" image=INIT.ELF");
+
+    for _ in 0..8 {
+        if process.completed {
+            break;
+        }
+        run_slice(&mut process);
+        if process.event == ProcessEvent::Fault {
+            paging::activate_kernel();
+            return Err(LaunchError::ProcessFaulted);
+        }
     }
-    paging::map_user_page(space, paging::USER_CODE, code_frame, false, true)?;
-    paging::map_user_page(space, paging::USER_DATA, data_frame, true, false)?;
+    paging::activate_kernel();
+    if !process.completed
+        || process.event != ProcessEvent::Exit
+        || process.exit_code != 0
+        || process.report != token
+        || process.preemptions == 0
+    {
+        return Err(LaunchError::InvalidResult);
+    }
+
+    DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
+    ADDRESS_SPACES.fetch_add(1, Ordering::AcqRel);
+    TOTAL_PREEMPTIONS.fetch_add(process.preemptions, Ordering::AcqRel);
+    crate::serial::print("USER_ELF_LAUNCH_OK pid=");
+    crate::serial::print_u64(pid as u64);
+    crate::serial::print(" preemptions=");
+    crate::serial::print_u64(process.preemptions as u64);
+    crate::serial::println("");
+    Ok(LaunchResult {
+        pid,
+        exit_code: process.exit_code,
+        preemptions: process.preemptions,
+    })
+}
+
+fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, ProcessBuildError> {
+    let image = ElfImage::parse(bytes).map_err(|_| ProcessBuildError::InvalidElf)?;
+    if image.entry() < paging::USER_CODE || image.entry() >= paging::USER_STACK_GUARD {
+        return Err(ProcessBuildError::InvalidLayout);
+    }
+
+    let mut mapped_pages = 0u64;
+    let mut entry_is_executable = false;
+    let mut executable_start = u64::MAX;
+    let mut executable_end = 0u64;
+    let mut data_frame = 0u64;
+    let mut segment_count = 0u8;
+    let mut page_count = 0u8;
+    for segment in image.segments() {
+        let segment = segment.map_err(|_| ProcessBuildError::InvalidElf)?;
+        let writable = segment.flags & FLAG_WRITE != 0;
+        let executable = segment.flags & FLAG_EXECUTE != 0;
+        if segment.flags & FLAG_READ == 0
+            || segment.flags & !(FLAG_READ | FLAG_WRITE | FLAG_EXECUTE) != 0
+            || (writable && executable)
+            || segment.align < paging::PAGE_SIZE
+            || segment.virtual_address & (segment.align - 1)
+                != segment.file_offset & (segment.align - 1)
+            || segment.virtual_address & (paging::PAGE_SIZE - 1) != 0
+        {
+            return Err(ProcessBuildError::InvalidLayout);
+        }
+        let segment_end = segment
+            .virtual_address
+            .checked_add(segment.memory_size)
+            .ok_or(ProcessBuildError::InvalidLayout)?;
+        if segment.virtual_address < paging::USER_CODE || segment_end > paging::USER_STACK_GUARD {
+            return Err(ProcessBuildError::InvalidLayout);
+        }
+        if executable && image.entry() >= segment.virtual_address && image.entry() < segment_end {
+            entry_is_executable = true;
+        }
+        if executable {
+            executable_start = executable_start.min(segment.virtual_address);
+            executable_end = executable_end.max(segment_end);
+        }
+
+        let pages = segment.memory_size.div_ceil(paging::PAGE_SIZE);
+        if pages == 0 || pages > 16 {
+            return Err(ProcessBuildError::InvalidLayout);
+        }
+        for page in 0..pages {
+            let virtual_address = segment.virtual_address + page * paging::PAGE_SIZE;
+            let image_page = (virtual_address - paging::USER_CODE) / paging::PAGE_SIZE;
+            if image_page >= 64 || mapped_pages & (1 << image_page) != 0 {
+                return Err(ProcessBuildError::InvalidLayout);
+            }
+            mapped_pages |= 1 << image_page;
+
+            let frame = paging::allocate_zeroed_frame().map_err(|_| ProcessBuildError::Paging)?;
+            let file_offset = (page * paging::PAGE_SIZE) as usize;
+            if file_offset < segment.file_data.len() {
+                let copy_len =
+                    (segment.file_data.len() - file_offset).min(paging::PAGE_SIZE as usize);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        segment.file_data.as_ptr().add(file_offset),
+                        frame as *mut u8,
+                        copy_len,
+                    );
+                }
+            }
+            paging::map_user_page(space, virtual_address, frame, writable, executable)
+                .map_err(|_| ProcessBuildError::Paging)?;
+            if virtual_address == paging::USER_DATA
+                && writable
+                && segment.memory_size >= 16
+                && segment.file_data.len() >= 16
+            {
+                data_frame = frame;
+            }
+            page_count = page_count
+                .checked_add(1)
+                .ok_or(ProcessBuildError::InvalidLayout)?;
+        }
+        segment_count = segment_count
+            .checked_add(1)
+            .ok_or(ProcessBuildError::InvalidLayout)?;
+    }
+
+    if !entry_is_executable
+        || data_frame == 0
+        || paging::translate(space, paging::USER_DATA) != Some(data_frame)
+    {
+        return Err(ProcessBuildError::InvalidLayout);
+    }
+    Ok(LoadedImage {
+        entry: image.entry(),
+        data_frame,
+        segment_count,
+        page_count,
+        executable_start,
+        executable_end,
+    })
+}
+
+fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, ProcessBuildError> {
+    let space = paging::create_user_address_space().map_err(|_| ProcessBuildError::Paging)?;
+    let loaded = load_elf(space, elf_bytes)?;
     for index in 0..paging::USER_STACK_PAGES {
-        let stack_frame = paging::allocate_zeroed_frame()?;
+        let stack_frame = paging::allocate_zeroed_frame().map_err(|_| ProcessBuildError::Paging)?;
         paging::map_user_page(
             space,
             paging::USER_STACK_BOTTOM + index as u64 * paging::PAGE_SIZE,
             stack_frame,
             true,
             false,
-        )?;
+        )
+        .map_err(|_| ProcessBuildError::Paging)?;
     }
+
+    crate::serial::print("USER_ELF_LOADED pid=");
+    crate::serial::print_u64(pid as u64);
+    crate::serial::print(" root=0x");
+    crate::serial::print_hex(space.root());
+    crate::serial::println("");
 
     Ok(UserProcess {
         pid,
         space,
-        context: UserContext::initial(token),
-        data_frame,
+        context: UserContext::initial(token, loaded.entry),
+        data_frame: loaded.data_frame,
         token,
         event: ProcessEvent::None,
         report: 0,
@@ -454,11 +581,17 @@ fn build_process(pid: u8, token: u64) -> Result<UserProcess, paging::PagingError
         fault_address: 0,
         completion_order: 0,
         preemption_armed: false,
+        elf_segments: loaded.segment_count,
+        elf_pages: loaded.page_count,
+        executable_start: loaded.executable_start,
+        executable_end: loaded.executable_end,
         completed: false,
     })
 }
 
 fn run_slice(process: &mut UserProcess) {
+    let restore_interrupts = arch::interrupts_enabled();
+    arch::disable_interrupts();
     process.event = ProcessEvent::None;
     let context = process.context;
     unsafe {
@@ -469,6 +602,9 @@ fn run_slice(process: &mut UserProcess) {
     paging::activate_kernel();
     unsafe {
         core::ptr::addr_of_mut!(CURRENT_PROCESS).write(core::ptr::null_mut());
+    }
+    if restore_interrupts {
+        arch::enable_interrupts();
     }
 }
 
@@ -622,8 +758,8 @@ fn current_process() -> Option<&'static mut UserProcess> {
 fn valid_user_frame(frame: &UserContext, process: &UserProcess) -> bool {
     frame.cs == arch::USER_CODE_SELECTOR as u64
         && frame.ss == arch::USER_DATA_SELECTOR as u64
-        && frame.rip >= paging::USER_CODE
-        && frame.rip < paging::USER_CODE + paging::PAGE_SIZE
+        && frame.rip >= process.executable_start
+        && frame.rip < process.executable_end
         && frame.rsp > paging::USER_STACK_BOTTOM
         && frame.rsp <= paging::USER_STACK_TOP
         && paging::active_root() == process.space.root()
@@ -659,6 +795,8 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
     let mappings_are_private = processes.iter().all(|process| {
         paging::translate(process.space, paging::USER_DATA) == Some(process.data_frame)
             && paging::translate(process.space, paging::USER_STACK_GUARD).is_none()
+            && process.elf_segments == 2
+            && process.elf_pages == 2
             && unsafe { core::ptr::read_volatile(process.data_frame as *const u64) }
                 == process.token
             && unsafe { core::ptr::read_volatile((process.data_frame + 8) as *const u64) }
@@ -697,7 +835,7 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
         && LOCAL_FAULTS.load(Ordering::Acquire) == 1
 }
 
-fn require_process(result: Result<UserProcess, paging::PagingError>) -> UserProcess {
+fn require_process(result: Result<UserProcess, ProcessBuildError>) -> UserProcess {
     match result {
         Ok(process) => process,
         Err(_) => fail("USER_PROCESS_BUILD_FAILED"),
