@@ -173,7 +173,7 @@ pub fn run(
         }
 
         if tick != last_tick {
-            if let Some(update) = processes.poll() {
+            if let Some(update) = processes.poll(tick) {
                 apply_process_update(&mut display, &mut tasks, update, tick);
             }
             tasks.scheduler_tick(tick);
@@ -379,12 +379,19 @@ fn execute(
         "run" => {
             let program = trim(args);
             let hold = program == "init hold" || program == "INIT.ELF hold";
-            if program != "init" && program != "INIT.ELF" && !hold {
-                display.push_line(LineKind::Error, "usage: run init [hold]");
+            let sleep = program == "init sleep" || program == "INIT.ELF sleep";
+            if program == "pair" {
+                launch_coordination_pair(display, tasks, processes, tick);
+            } else if program != "init" && program != "INIT.ELF" && !hold && !sleep {
+                display.push_line(LineKind::Error, "usage: run init [hold|sleep] | run pair");
                 display.set_status("ELF launch failed");
             } else {
                 match tasks.reserve_user("init-elf", tick) {
-                    Ok(task_pid) => match processes.spawn_init(task_pid, hold) {
+                    Ok(task_pid) => match if sleep {
+                        processes.spawn_sleep_init(task_pid)
+                    } else {
+                        processes.spawn_init(task_pid, hold)
+                    } {
                         Ok(ring_pid) => {
                             if tasks.bind_user_runtime(task_pid, ring_pid).is_err() {
                                 let _ = processes.kill(task_pid);
@@ -395,7 +402,13 @@ fn execute(
                                 line.push_u64(task_pid as u64);
                                 line.push_str(" ring-pid=");
                                 line.push_u64(ring_pid as u64);
-                                line.push_str(if hold { " mode=hold" } else { " mode=normal" });
+                                line.push_str(if hold {
+                                    " mode=hold"
+                                } else if sleep {
+                                    " mode=sleep"
+                                } else {
+                                    " mode=normal"
+                                });
                                 display.push_fixed(LineKind::Status, line);
                                 display.set_status("INIT.ELF running asynchronously");
                             }
@@ -594,7 +607,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.10 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.11 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -604,7 +617,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.10 runs asynchronous ELF processes with output, wait/kill lifecycle control, and frame reclamation.",
+                "GenOS 0.11 runs isolated ELF processes with deadline sleep, owned child wait, bounded messaging, and frame reclamation.",
             );
             display.set_status("about");
         }
@@ -647,6 +660,56 @@ fn execute(
     }
 }
 
+fn launch_coordination_pair(
+    display: &mut DisplayManager,
+    tasks: &mut TaskRegistry,
+    processes: &mut userspace::ProcessManager,
+    tick: u64,
+) {
+    let parent_task = match tasks.reserve_user("coord-parent", tick) {
+        Ok(pid) => pid,
+        Err(error) => {
+            push_task_error(display, error);
+            return;
+        }
+    };
+    let child_task = match tasks.reserve_user("coord-child", tick) {
+        Ok(pid) => pid,
+        Err(error) => {
+            let _ = tasks.update_user(parent_task, TaskState::Faulted, 126, tick);
+            push_task_error(display, error);
+            return;
+        }
+    };
+    match processes.spawn_coordination_pair(parent_task, child_task) {
+        Ok((parent_pid, child_pid)) => {
+            if tasks.bind_user_runtime(parent_task, parent_pid).is_err()
+                || tasks.bind_user_runtime(child_task, child_pid).is_err()
+            {
+                let _ = processes.kill(parent_task);
+                let _ = processes.kill(child_task);
+                display.push_line(LineKind::Error, "failed to bind process identities");
+                return;
+            }
+            let mut line = FixedText::from_str("pair started parent-task=");
+            line.push_u64(parent_task as u64);
+            line.push_str(" parent-ring=");
+            line.push_u64(parent_pid as u64);
+            line.push_str(" child-task=");
+            line.push_u64(child_task as u64);
+            line.push_str(" child-ring=");
+            line.push_u64(child_pid as u64);
+            display.push_fixed(LineKind::Status, line);
+            display.set_status("parent-child IPC pair running");
+        }
+        Err(error) => {
+            let _ = tasks.update_user(parent_task, TaskState::Faulted, 126, tick);
+            let _ = tasks.update_user(child_task, TaskState::Faulted, 126, tick);
+            push_launch_error(display, error);
+        }
+    }
+}
+
 fn apply_process_update(
     display: &mut DisplayManager,
     tasks: &mut TaskRegistry,
@@ -655,6 +718,8 @@ fn apply_process_update(
 ) {
     let task_state = match update.state {
         userspace::ManagedState::Ready => TaskState::Ready,
+        userspace::ManagedState::Sleeping => TaskState::Sleeping,
+        userspace::ManagedState::Waiting => TaskState::Waiting,
         userspace::ManagedState::Exited | userspace::ManagedState::Killed => TaskState::Exited,
         userspace::ManagedState::Faulted => TaskState::Faulted,
     };
@@ -683,6 +748,8 @@ fn apply_process_update(
 fn managed_state_text(state: userspace::ManagedState) -> &'static str {
     match state {
         userspace::ManagedState::Ready => "ready",
+        userspace::ManagedState::Sleeping => "sleeping",
+        userspace::ManagedState::Waiting => "waiting",
         userspace::ManagedState::Exited => "exited",
         userspace::ManagedState::Faulted => "fault",
         userspace::ManagedState::Killed => "killed",

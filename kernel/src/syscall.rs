@@ -1,7 +1,9 @@
 pub use genos_abi::{
     USER_ABI_VERSION, USER_PING_REPLY as PING_REPLY,
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_REPORT as SYSCALL_REPORT,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
+    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
+    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
     USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
@@ -12,12 +14,17 @@ pub enum SyscallAction {
     Yield,
     Report { address: u64, length: u64 },
     Write { address: u64, length: u64 },
+    Sleep { ticks: u64 },
+    Send { pid: u8, value: u64 },
+    Receive,
+    WaitChild { pid: u8 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyscallError {
     UnknownNumber,
     InvalidArgument,
+    Unavailable,
 }
 
 pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallError> {
@@ -40,8 +47,23 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 length: args[1],
             })
         }
+        SYSCALL_SLEEP if (1..=10_000).contains(&args[0]) && args[1..] == [0; 5] => {
+            Ok(SyscallAction::Sleep { ticks: args[0] })
+        }
+        SYSCALL_SEND if (1..=u8::MAX as u64).contains(&args[0]) && args[2..] == [0; 4] => {
+            Ok(SyscallAction::Send {
+                pid: args[0] as u8,
+                value: args[1],
+            })
+        }
+        SYSCALL_RECEIVE if args == [0; 6] => Ok(SyscallAction::Receive),
+        SYSCALL_WAIT_CHILD if (1..=u8::MAX as u64).contains(&args[0]) && args[1..] == [0; 5] => {
+            Ok(SyscallAction::WaitChild { pid: args[0] as u8 })
+        }
         SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT | SYSCALL_YIELD | SYSCALL_REPORT
-        | SYSCALL_WRITE => Err(SyscallError::InvalidArgument),
+        | SYSCALL_WRITE | SYSCALL_SLEEP | SYSCALL_SEND | SYSCALL_RECEIVE | SYSCALL_WAIT_CHILD => {
+            Err(SyscallError::InvalidArgument)
+        }
         _ => Err(SyscallError::UnknownNumber),
     }
 }
@@ -50,6 +72,7 @@ pub const fn error_code(error: SyscallError) -> u64 {
     match error {
         SyscallError::UnknownNumber => u64::MAX,
         SyscallError::InvalidArgument => u64::MAX - 1,
+        SyscallError::Unavailable => u64::MAX - 2,
     }
 }
 
@@ -99,6 +122,25 @@ mod tests {
                 length: 12
             })
         );
+        assert_eq!(
+            dispatch(SYSCALL_SLEEP, [25, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::Sleep { ticks: 25 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SEND, [7, 0xfeed, 0, 0, 0, 0]),
+            Ok(SyscallAction::Send {
+                pid: 7,
+                value: 0xfeed
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_RECEIVE, [0; 6]),
+            Ok(SyscallAction::Receive)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WAIT_CHILD, [8, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::WaitChild { pid: 8 })
+        );
     }
 
     #[test]
@@ -121,6 +163,14 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_WRITE, [0x4000, 81, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SLEEP, [0; 6]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SEND, [0, 1, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));

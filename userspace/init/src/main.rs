@@ -8,7 +8,14 @@ use genos_user_runtime as runtime;
 
 const FAULT_TOKEN: u64 = 0xffff_ffff_ffff_fff0;
 const HOLD_TOKEN_BIT: u64 = 1 << 63;
+const TOKEN_MODE_MASK: u64 = 0xf000_0000_0000_0000;
+const SLEEP_TOKEN_MODE: u64 = 0x4000_0000_0000_0000;
+const CHILD_TOKEN_MODE: u64 = 0x5000_0000_0000_0000;
+const PARENT_TOKEN_MODE: u64 = 0x6000_0000_0000_0000;
+const COORDINATION_MESSAGE: u64 = 0x4745_4e4f_535f_4950;
 const GREETING: &[u8] = b"hello from INIT.ELF in ring 3";
+const AWAKENED: &[u8] = b"INIT.ELF woke after deadline";
+const COORDINATED: &[u8] = b"parent received child exit + message";
 
 #[repr(C)]
 struct ProcessData {
@@ -46,6 +53,30 @@ pub extern "C" fn _start(token: u64) -> ! {
 
     if runtime::write(GREETING) != GREETING.len() as u64 {
         runtime::exit(251);
+    }
+
+    if token & TOKEN_MODE_MASK == SLEEP_TOKEN_MODE
+        && (runtime::sleep(3) != 0 || runtime::write(AWAKENED) != AWAKENED.len() as u64)
+    {
+        runtime::exit(250);
+    }
+
+    if token & TOKEN_MODE_MASK == CHILD_TOKEN_MODE {
+        let parent = token as u8;
+        if runtime::sleep(3) != 0 || runtime::send(parent, COORDINATION_MESSAGE) != 0 {
+            runtime::exit(249);
+        }
+        runtime::exit(7);
+    }
+
+    if token & TOKEN_MODE_MASK == PARENT_TOKEN_MODE {
+        let child = token as u8;
+        if runtime::wait_child(child) != 7 || runtime::receive() != COORDINATION_MESSAGE {
+            runtime::exit(248);
+        }
+        if runtime::write(COORDINATED) != COORDINATED.len() as u64 {
+            runtime::exit(247);
+        }
     }
 
     if token & HOLD_TOKEN_BIT != 0 {

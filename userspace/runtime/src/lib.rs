@@ -8,7 +8,9 @@ pub const STACK_GUARD: u64 = 0x0000_4000_0000_7000;
 
 use genos_abi::{
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_REPORT as SYSCALL_REPORT,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
+    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
+    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
     USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
@@ -35,6 +37,22 @@ pub fn write(bytes: &[u8]) -> u64 {
             [bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0],
         )
     }
+}
+
+pub fn sleep(ticks: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SLEEP, [ticks, 0, 0, 0, 0, 0]) }
+}
+
+pub fn send(pid: u8, value: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SEND, [pid as u64, value, 0, 0, 0, 0]) }
+}
+
+pub fn receive() -> u64 {
+    unsafe { syscall(SYSCALL_RECEIVE, [0; 6]) }
+}
+
+pub fn wait_child(pid: u8) -> u64 {
+    unsafe { syscall(SYSCALL_WAIT_CHILD, [pid as u64, 0, 0, 0, 0, 0]) }
 }
 
 pub fn exit(status: u8) -> ! {

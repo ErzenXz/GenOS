@@ -91,14 +91,18 @@ Delivered so far:
 - `kill PID` and non-blocking `wait PID` for userspace tasks;
 - complete teardown of user leaf pages, page-table branches, and CR3 roots;
 - bounded physical-frame recycling with double-free rejection and reuse tests;
-- ABI 3 validated application output from mapped userspace memory.
+- ABI 3 validated application output from mapped userspace memory;
+- ABI 4 blocking sleep with scheduler tick deadlines and saved-context wakeup;
+- explicit parent ownership and blocking wait on a specific child PID;
+- bounded four-message per-process inboxes with blocking receive and direct wakeup;
+- `run init sleep` and `run pair` desktop proofs for coordination across isolated ELF instances.
 
 Remaining work:
 
 - broader syscall entry/exit surface and copy-out;
-- integrate preemptive userspace with general sleep and wake primitives;
-- parent/child ownership and blocking wait semantics;
-- pipes or bounded message channels;
+- copy-out and structured userspace buffers;
+- blocking device and filesystem I/O;
+- multi-producer channel policy and endpoint handles;
 - move the shell into userspace.
 
 Acceptance criteria:
@@ -120,6 +124,9 @@ Acceptance criteria:
 - [x] The shell can asynchronously launch, inspect, terminate, and reap a userspace process.
 - [x] Exit, fault, and kill reclaim every owned user image, stack, page-table, and root frame.
 - [x] A userspace application can write bounded validated text to the desktop shell.
+- [x] A sleeping userspace process leaves the runnable set and resumes at its deadline with preserved context.
+- [x] A parent can block only on its own child and receive the child's exit status on wake.
+- [x] Isolated processes can exchange fixed-width values through bounded per-process inboxes.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

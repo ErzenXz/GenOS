@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use kernel::{
     display::FixedText,
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
+    ipc::MessageQueue,
     syscall::{self, SyscallAction},
 };
 
@@ -18,6 +19,10 @@ const TOKEN_A: u64 = 0x1111_aaaa_1111_aaaa;
 const TOKEN_B: u64 = 0x2222_bbbb_2222_bbbb;
 const TOKEN_DYNAMIC_BASE: u64 = 0x3333_cccc_3333_0000;
 const TOKEN_HOLD_BIT: u64 = 1 << 63;
+const TOKEN_SLEEP_MODE: u64 = 0x4000_0000_0000_0000;
+const TOKEN_CHILD_MODE: u64 = 0x5000_0000_0000_0000;
+const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
+const MESSAGE_CAPACITY: usize = 4;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
@@ -99,6 +104,10 @@ enum ProcessEvent {
     None,
     Yield,
     Preempt,
+    Sleep(u64),
+    Send { pid: u8, value: u64 },
+    Receive,
+    WaitChild(u8),
     Exit,
     Fault,
 }
@@ -171,6 +180,8 @@ pub enum LaunchError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagedState {
     Ready,
+    Sleeping,
+    Waiting,
     Exited,
     Faulted,
     Killed,
@@ -196,7 +207,41 @@ pub struct WaitResult {
 
 struct ManagedProcess {
     task_id: u32,
+    parent_pid: u8,
+    state: ManagedState,
+    wake_at: u64,
+    blocked_on: BlockReason,
+    inbox: MessageQueue<MESSAGE_CAPACITY>,
     process: UserProcess,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BlockReason {
+    None,
+    Receive,
+    Child(u8),
+}
+
+impl ManagedProcess {
+    fn new(task_id: u32, parent_pid: u8, process: UserProcess) -> Self {
+        Self {
+            task_id,
+            parent_pid,
+            state: ManagedState::Ready,
+            wake_at: 0,
+            blocked_on: BlockReason::None,
+            inbox: MessageQueue::new(),
+            process,
+        }
+    }
+
+    fn push_message(&mut self, value: u64) -> bool {
+        self.inbox.push(value)
+    }
+
+    fn pop_message(&mut self) -> Option<u64> {
+        self.inbox.pop()
+    }
 }
 
 pub struct ProcessManager {
@@ -213,6 +258,20 @@ impl ProcessManager {
     }
 
     pub fn spawn_init(&mut self, task_id: u32, hold: bool) -> Result<u8, LaunchError> {
+        let token_mode = if hold { TOKEN_HOLD_BIT } else { 0 };
+        self.spawn_single(task_id, token_mode, if hold { "hold" } else { "normal" })
+    }
+
+    pub fn spawn_sleep_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
+        self.spawn_single(task_id, TOKEN_SLEEP_MODE, "sleep")
+    }
+
+    fn spawn_single(
+        &mut self,
+        task_id: u32,
+        token_mode: u64,
+        mode: &str,
+    ) -> Result<u8, LaunchError> {
         let slot = self
             .slots
             .iter()
@@ -220,64 +279,257 @@ impl ProcessManager {
             .ok_or(LaunchError::ProcessTableFull)?;
         let elf_bytes = user_elf()?;
         let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
-        let token = TOKEN_DYNAMIC_BASE | pid as u64 | if hold { TOKEN_HOLD_BIT } else { 0 };
+        let token = if token_mode == 0 || token_mode == TOKEN_HOLD_BIT {
+            TOKEN_DYNAMIC_BASE | token_mode | pid as u64
+        } else {
+            token_mode | pid as u64
+        };
         let process =
             build_process(pid, token, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
-        self.slots[slot] = Some(ManagedProcess { task_id, process });
+        self.slots[slot] = Some(ManagedProcess::new(task_id, 0, process));
         DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
         crate::serial::print("USER_ASYNC_SPAWN pid=");
         crate::serial::print_u64(pid as u64);
         crate::serial::print(" task=");
         crate::serial::print_u64(task_id as u64);
-        crate::serial::print(" hold=");
-        crate::serial::print_u64(hold as u64);
+        crate::serial::print(" mode=");
+        crate::serial::print(mode);
         crate::serial::println("");
         Ok(pid)
     }
 
-    pub fn poll(&mut self) -> Option<ProcessUpdate> {
+    pub fn spawn_coordination_pair(
+        &mut self,
+        parent_task_id: u32,
+        child_task_id: u32,
+    ) -> Result<(u8, u8), LaunchError> {
+        let parent_slot = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or(LaunchError::ProcessTableFull)?;
+        let child_slot = self
+            .slots
+            .iter()
+            .enumerate()
+            .find_map(|(index, slot)| (index != parent_slot && slot.is_none()).then_some(index))
+            .ok_or(LaunchError::ProcessTableFull)?;
+        let elf_bytes = user_elf()?;
+        let parent_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let child_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let mut parent = build_process(parent_pid, TOKEN_PARENT_MODE | child_pid as u64, elf_bytes)
+            .map_err(|_| LaunchError::ProcessBuildFailed)?;
+        let child = match build_process(child_pid, TOKEN_CHILD_MODE | parent_pid as u64, elf_bytes)
+        {
+            Ok(process) => process,
+            Err(_) => {
+                let _ = reclaim_process(&mut parent);
+                return Err(LaunchError::ProcessBuildFailed);
+            }
+        };
+        self.slots[parent_slot] = Some(ManagedProcess::new(parent_task_id, 0, parent));
+        self.slots[child_slot] = Some(ManagedProcess::new(child_task_id, parent_pid, child));
+        DYNAMIC_PROCESSES.fetch_add(2, Ordering::AcqRel);
+        crate::serial::print("USER_PAIR_SPAWN parent=");
+        crate::serial::print_u64(parent_pid as u64);
+        crate::serial::print(" child=");
+        crate::serial::print_u64(child_pid as u64);
+        crate::serial::println("");
+        Ok((parent_pid, child_pid))
+    }
+
+    pub fn poll(&mut self, tick: u64) -> Option<ProcessUpdate> {
+        self.wake_sleepers(tick);
         for offset in 1..=MAX_ASYNC_PROCESSES {
             let index = (self.cursor + offset) % MAX_ASYNC_PROCESSES;
-            let Some(managed) = self.slots[index].as_mut() else {
+            let Some(managed) = self.slots[index].as_ref() else {
                 continue;
             };
-            if managed.process.completed {
+            if managed.state != ManagedState::Ready || managed.process.completed {
                 continue;
             }
             self.cursor = index;
-            run_slice(&mut managed.process);
+            let event = {
+                let managed = self.slots[index].as_mut().expect("selected process exists");
+                run_slice(&mut managed.process);
+                managed.process.event
+            };
+            match event {
+                ProcessEvent::Yield => {
+                    TOTAL_YIELDS.fetch_add(1, Ordering::AcqRel);
+                }
+                ProcessEvent::Preempt => {
+                    TOTAL_PREEMPTIONS.fetch_add(1, Ordering::AcqRel);
+                }
+                ProcessEvent::Sleep(ticks) => self.block_sleep(index, tick, ticks),
+                ProcessEvent::Send { pid, value } => self.complete_send(index, pid, value),
+                ProcessEvent::Receive => self.complete_receive(index),
+                ProcessEvent::WaitChild(pid) => self.complete_child_wait(index, pid),
+                ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
+                ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
+                ProcessEvent::None => return None,
+            }
+            let managed = self.slots[index].as_mut().expect("selected process exists");
             let output = if managed.process.output_pending {
                 managed.process.output_pending = false;
                 managed.process.output
             } else {
                 FixedText::empty()
             };
-            let state = match managed.process.event {
-                ProcessEvent::Yield => {
-                    TOTAL_YIELDS.fetch_add(1, Ordering::AcqRel);
-                    ManagedState::Ready
-                }
-                ProcessEvent::Preempt => {
-                    TOTAL_PREEMPTIONS.fetch_add(1, Ordering::AcqRel);
-                    ManagedState::Ready
-                }
-                ProcessEvent::Exit => ManagedState::Exited,
-                ProcessEvent::Fault => ManagedState::Faulted,
-                ProcessEvent::None => return None,
-            };
-            if managed.process.completed && reclaim_process(&mut managed.process).is_err() {
-                fail("USER_RECLAIM_FAILED");
-            }
             return Some(ProcessUpdate {
                 task_id: managed.task_id,
                 pid: managed.process.pid,
-                state,
+                state: managed.state,
                 exit_code: managed.process.exit_code,
                 preemptions: managed.process.preemptions,
                 output,
             });
         }
         None
+    }
+
+    fn wake_sleepers(&mut self, tick: u64) {
+        for managed in self.slots.iter_mut().flatten() {
+            if managed.state == ManagedState::Sleeping && tick >= managed.wake_at {
+                managed.state = ManagedState::Ready;
+                managed.wake_at = 0;
+                managed.process.context.rax = 0;
+                crate::serial::print("USER_SLEEP_WAKE pid=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::println("");
+            }
+        }
+    }
+
+    fn block_sleep(&mut self, index: usize, tick: u64, ticks: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        managed.state = ManagedState::Sleeping;
+        managed.wake_at = tick.saturating_add(ticks);
+        crate::serial::print("USER_SLEEP_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" until=");
+        crate::serial::print_u64(managed.wake_at);
+        crate::serial::println("");
+    }
+
+    fn complete_send(&mut self, sender_index: usize, target_pid: u8, value: u64) {
+        let target_index = self.slots.iter().position(|slot| {
+            slot.as_ref().is_some_and(|managed| {
+                managed.process.pid == target_pid && !managed.process.completed
+            })
+        });
+        let delivered = target_index.is_some_and(|index| {
+            let target = self.slots[index].as_mut().expect("target process exists");
+            if target.state == ManagedState::Waiting && target.blocked_on == BlockReason::Receive {
+                target.process.context.rax = value;
+                target.state = ManagedState::Ready;
+                target.blocked_on = BlockReason::None;
+                true
+            } else {
+                target.push_message(value)
+            }
+        });
+        let sender = self.slots[sender_index]
+            .as_mut()
+            .expect("selected process exists");
+        sender.process.context.rax = if delivered {
+            0
+        } else {
+            syscall::error_code(syscall::SyscallError::Unavailable)
+        };
+        sender.state = ManagedState::Ready;
+        if delivered {
+            crate::serial::print("USER_MESSAGE_SENT from=");
+            crate::serial::print_u64(sender.process.pid as u64);
+            crate::serial::print(" to=");
+            crate::serial::print_u64(target_pid as u64);
+            crate::serial::println("");
+        }
+    }
+
+    fn complete_receive(&mut self, index: usize) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        if let Some(value) = managed.pop_message() {
+            managed.process.context.rax = value;
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_MESSAGE_RECEIVED pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::println("");
+        } else {
+            managed.state = ManagedState::Waiting;
+            managed.blocked_on = BlockReason::Receive;
+        }
+    }
+
+    fn complete_child_wait(&mut self, parent_index: usize, child_pid: u8) {
+        let parent_pid = self.slots[parent_index]
+            .as_ref()
+            .expect("selected process exists")
+            .process
+            .pid;
+        let child =
+            self.slots.iter().flatten().find(|managed| {
+                managed.process.pid == child_pid && managed.parent_pid == parent_pid
+            });
+        let result = child.map(|managed| {
+            if managed.process.completed {
+                Some(managed.process.exit_code as u64)
+            } else {
+                None
+            }
+        });
+        let parent = self.slots[parent_index]
+            .as_mut()
+            .expect("selected process exists");
+        match result {
+            Some(Some(status)) => {
+                parent.process.context.rax = status;
+                parent.state = ManagedState::Ready;
+            }
+            Some(None) => {
+                parent.state = ManagedState::Waiting;
+                parent.blocked_on = BlockReason::Child(child_pid);
+                crate::serial::print("USER_CHILD_WAIT parent=");
+                crate::serial::print_u64(parent_pid as u64);
+                crate::serial::print(" child=");
+                crate::serial::print_u64(child_pid as u64);
+                crate::serial::println("");
+            }
+            None => {
+                parent.process.context.rax =
+                    syscall::error_code(syscall::SyscallError::InvalidArgument);
+                parent.state = ManagedState::Ready;
+            }
+        }
+    }
+
+    fn complete_terminal(&mut self, index: usize, state: ManagedState) {
+        let (pid, exit_code) = {
+            let managed = self.slots[index].as_mut().expect("selected process exists");
+            managed.state = state;
+            if reclaim_process(&mut managed.process).is_err() {
+                fail("USER_RECLAIM_FAILED");
+            }
+            (managed.process.pid, managed.process.exit_code)
+        };
+        self.wake_waiting_parent(pid, exit_code);
+    }
+
+    fn wake_waiting_parent(&mut self, child_pid: u8, exit_code: u8) {
+        for managed in self.slots.iter_mut().flatten() {
+            if managed.state == ManagedState::Waiting
+                && managed.blocked_on == BlockReason::Child(child_pid)
+            {
+                managed.process.context.rax = exit_code as u64;
+                managed.state = ManagedState::Ready;
+                managed.blocked_on = BlockReason::None;
+                crate::serial::print("USER_CHILD_WAKE parent=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::print(" child=");
+                crate::serial::print_u64(child_pid as u64);
+                crate::serial::println("");
+            }
+        }
     }
 
     pub fn kill(&mut self, task_id: u32) -> Result<ProcessUpdate, LaunchError> {
@@ -295,20 +547,24 @@ impl ProcessManager {
         managed.process.event = ProcessEvent::Exit;
         managed.process.exit_code = 137;
         managed.process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+        managed.state = ManagedState::Killed;
+        let pid = managed.process.pid;
         reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
         crate::serial::print("USER_KILLED pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print_u64(pid as u64);
         crate::serial::print(" task=");
         crate::serial::print_u64(task_id as u64);
         crate::serial::println("");
-        Ok(ProcessUpdate {
+        let update = ProcessUpdate {
             task_id,
-            pid: managed.process.pid,
+            pid,
             state: ManagedState::Killed,
             exit_code: managed.process.exit_code,
             preemptions: managed.process.preemptions,
             output: FixedText::empty(),
-        })
+        };
+        self.wake_waiting_parent(pid, 137);
+        Ok(update)
     }
 
     pub fn wait(&mut self, task_id: u32) -> Result<WaitResult, LaunchError> {
@@ -527,6 +783,10 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
             match processes[cursor].event {
                 ProcessEvent::Yield | ProcessEvent::Preempt => {}
                 ProcessEvent::Exit | ProcessEvent::Fault => live -= 1,
+                ProcessEvent::Sleep(_)
+                | ProcessEvent::Send { .. }
+                | ProcessEvent::Receive
+                | ProcessEvent::WaitChild(_) => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -666,6 +926,8 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
 pub fn run_lifecycle_probe() {
     const NORMAL_TASK: u32 = 0x1000;
     const HOLD_TASK: u32 = 0x1001;
+    const PARENT_TASK: u32 = 0x1002;
+    const CHILD_TASK: u32 = 0x1003;
 
     let reclaimed_before = reclaimed_frame_count();
     let mut manager = ProcessManager::new();
@@ -673,8 +935,8 @@ pub fn run_lifecycle_probe() {
     if manager.spawn_init(NORMAL_TASK, false).is_err() {
         fail("USER_ASYNC_SPAWN_FAILED");
     }
-    let first = manager.poll();
-    let second = manager.poll();
+    let first = manager.poll(0);
+    let second = manager.poll(0);
     if !matches!(first, Some(update) if update.state == ManagedState::Ready)
         || !matches!(second, Some(update) if update.state == ManagedState::Exited && update.exit_code == 0 && !update.output.is_empty())
     {
@@ -690,8 +952,8 @@ pub fn run_lifecycle_probe() {
     if manager.spawn_init(HOLD_TASK, true).is_err() {
         fail("USER_ASYNC_HOLD_FAILED");
     }
-    let first = manager.poll();
-    let second = manager.poll();
+    let first = manager.poll(0);
+    let second = manager.poll(0);
     if !matches!(first, Some(update) if update.state == ManagedState::Ready)
         || !matches!(second, Some(update) if update.state == ManagedState::Ready && !update.output.is_empty())
     {
@@ -713,6 +975,42 @@ pub fn run_lifecycle_probe() {
     }
     crate::serial::println("USER_KILL_OK");
     crate::serial::println("USER_WAIT_OK");
+
+    let (parent_pid, child_pid) = manager
+        .spawn_coordination_pair(PARENT_TASK, CHILD_TASK)
+        .unwrap_or_else(|_| fail("USER_PAIR_SPAWN_FAILED"));
+    let mut saw_parent_wait = false;
+    let mut saw_child_sleep = false;
+    let mut saw_child_exit = false;
+    let mut saw_parent_exit = false;
+    for tick in 1..=24 {
+        if let Some(update) = manager.poll(tick) {
+            saw_parent_wait |= update.pid == parent_pid && update.state == ManagedState::Waiting;
+            saw_child_sleep |= update.pid == child_pid && update.state == ManagedState::Sleeping;
+            saw_child_exit |= update.pid == child_pid
+                && update.state == ManagedState::Exited
+                && update.exit_code == 7;
+            saw_parent_exit |= update.pid == parent_pid
+                && update.state == ManagedState::Exited
+                && update.exit_code == 0
+                && !update.output.is_empty();
+        }
+    }
+    if !saw_parent_wait || !saw_child_sleep || !saw_child_exit || !saw_parent_exit {
+        fail("USER_COORDINATION_FAILED");
+    }
+    if !matches!(manager.wait(CHILD_TASK), Ok(result) if result.pid == child_pid && result.exit_code == 7)
+        || !matches!(manager.wait(PARENT_TASK), Ok(result) if result.pid == parent_pid && result.exit_code == 0)
+        || manager.live_count() != 0
+        || active_process_count() != 0
+        || reclaimed_frame_count() < reclaimed_before + 40
+    {
+        fail("USER_COORDINATION_REAP_FAILED");
+    }
+    crate::serial::println("USER_SLEEP_OK");
+    crate::serial::println("USER_CHILD_WAIT_OK");
+    crate::serial::println("USER_MESSAGE_OK");
+    crate::serial::println("USER_COORDINATION_OK");
     crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
 }
 
@@ -1069,6 +1367,30 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
             }
             0
+        }
+        Ok(SyscallAction::Sleep { ticks }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::Sleep(ticks);
+            1
+        }
+        Ok(SyscallAction::Send { pid, value }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::Send { pid, value };
+            1
+        }
+        Ok(SyscallAction::Receive) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::Receive;
+            1
+        }
+        Ok(SyscallAction::WaitChild { pid }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::WaitChild(pid);
+            1
         }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;
