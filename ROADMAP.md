@@ -79,12 +79,14 @@ Delivered so far:
 - saved general-purpose register and interrupt-return contexts;
 - cooperative user yield, address-space switch, resume, and independent exit;
 - bounded user-buffer validation and copy-in for the first pointer syscall.
+- 100 Hz timer-driven userspace preemption without a cooperative syscall;
+- process-local page-fault classification, termination, and fault status;
+- continued execution of healthy processes after a peer faults.
 
 Remaining work:
 
-- page-fault handling and process-local fault termination;
 - broader syscall entry/exit surface and copy-out;
-- preemptive scheduler with sleep and wake primitives;
+- integrate preemptive userspace with general sleep and wake primitives;
 - userspace ELF loader;
 - generalize lifecycle and exit status to dynamically loaded programs;
 - pipes or bounded message channels;
@@ -102,8 +104,8 @@ Acceptance criteria:
 - [x] Two independent userspace processes run with separate address spaces.
 - [x] Both processes yield and resume with preserved CPU registers and private memory.
 - [x] A validated user pointer is translated through the owning address space before copy-in.
-- [ ] A userspace crash terminates only the failing process.
-- [ ] The scheduler demonstrates preemption rather than cooperative polling.
+- [x] A userspace crash terminates only the failing process.
+- [x] The scheduler demonstrates preemption rather than cooperative polling.
 - [x] Initial userspace pointer and buffer ranges are validated before kernel access.
 - [ ] The shell can launch, inspect, and terminate a userspace process.
 - [ ] Scheduler latency and context-switch cost are benchmarked.

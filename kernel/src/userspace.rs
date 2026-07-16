@@ -6,7 +6,10 @@ use kernel::syscall::{self, SyscallAction};
 use crate::{arch, paging};
 
 pub const SYSCALL_VECTOR: usize = 0x80;
-const PROCESS_COUNT: usize = 2;
+const PROCESS_COUNT: usize = 3;
+const HEALTHY_PROCESS_COUNT: u8 = 2;
+const FAULT_EXIT_CODE: u8 = 128 + 14;
+const TOKEN_FAULT: u64 = 0xffff_ffff_ffff_fff0;
 const TOKEN_A: u64 = 0x1111_aaaa_1111_aaaa;
 const TOKEN_B: u64 = 0x2222_bbbb_2222_bbbb;
 
@@ -18,11 +21,14 @@ static REPORT_COUNT: AtomicU8 = AtomicU8::new(0);
 static COMPLETED_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static ADDRESS_SPACES: AtomicU8 = AtomicU8::new(0);
 static TOTAL_YIELDS: AtomicU8 = AtomicU8::new(0);
+static TOTAL_PREEMPTIONS: AtomicU8 = AtomicU8::new(0);
+static LOCAL_FAULTS: AtomicU8 = AtomicU8::new(0);
+static COMPLETION_SEQUENCE: AtomicU8 = AtomicU8::new(0);
 static mut CURRENT_PROCESS: *mut UserProcess = core::ptr::null_mut();
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct UserContext {
+pub(crate) struct UserContext {
     r15: u64,
     r14: u64,
     r13: u64,
@@ -76,6 +82,7 @@ impl UserContext {
 enum ProcessEvent {
     None,
     Yield,
+    Preempt,
     Exit,
     Fault,
 }
@@ -90,6 +97,12 @@ struct UserProcess {
     report: u64,
     exit_code: u8,
     yields: u8,
+    preemptions: u8,
+    fault_vector: u8,
+    fault_error: u64,
+    fault_address: u64,
+    completion_order: u8,
+    preemption_armed: bool,
     completed: bool,
 }
 
@@ -189,6 +202,7 @@ genos_syscall_stub:
     pop rax
     iretq
 
+    .global genos_leave_userspace
 genos_leave_userspace:
     mov rsp, [rip + genos_user_return_rsp]
     jmp [rip + genos_user_return_rip]
@@ -222,8 +236,13 @@ genos_user_text_start:
     int {syscall_vector}
     cmp rax, {abi_version}
     jne genos_user_probe_failed
-    mov rax, {sys_yield}
-    int {syscall_vector}
+    lea rcx, [rbx + 8]
+genos_user_wait_for_preemption:
+    cmp qword ptr [rcx], 0
+    je genos_user_wait_for_preemption
+    mov r13, {fault_token}
+    cmp r12, r13
+    je genos_user_trigger_fault
     mov rdi, rbx
     mov rsi, 8
     xor rdx, rdx
@@ -242,6 +261,11 @@ genos_user_text_start:
     xor r9, r9
     mov rax, {sys_exit}
     int {syscall_vector}
+
+genos_user_trigger_fault:
+    mov rax, {guard_address}
+    mov qword ptr [rax], 1
+    jmp genos_user_probe_failed
 
 genos_user_probe_failed:
     mov rdi, 255
@@ -283,10 +307,11 @@ genos_user_text_end:
     ctx_ss = const core::mem::offset_of!(UserContext, ss),
     syscall_vector = const SYSCALL_VECTOR,
     user_data_address = const paging::USER_DATA,
+    guard_address = const paging::USER_STACK_GUARD,
+    fault_token = const TOKEN_FAULT,
     sys_ping = const syscall::SYSCALL_PING,
     sys_abi = const syscall::SYSCALL_ABI_VERSION,
     sys_exit = const syscall::SYSCALL_EXIT,
-    sys_yield = const syscall::SYSCALL_YIELD,
     sys_report = const syscall::SYSCALL_REPORT,
     ping_reply = const syscall::PING_REPLY,
     abi_version = const syscall::USER_ABI_VERSION,
@@ -304,20 +329,21 @@ pub fn syscall_handler() -> unsafe extern "C" fn() {
 }
 
 pub fn run_probe() -> UserProbeResult {
-    let first = require_process(build_process(1, TOKEN_A));
-    let second = require_process(build_process(2, TOKEN_B));
-    let mut processes = [first, second];
-    crate::serial::println("ADDRESS_SPACES_READY count=2");
+    let faulting = require_process(build_process(1, TOKEN_FAULT));
+    let first = require_process(build_process(2, TOKEN_A));
+    let second = require_process(build_process(3, TOKEN_B));
+    let mut processes = [faulting, first, second];
+    crate::serial::println("ADDRESS_SPACES_READY count=3");
 
     let mut live = PROCESS_COUNT;
     let mut cursor = 0usize;
     let mut switches = 0u8;
-    while live > 0 && switches < 8 {
+    while live > 0 && switches < 16 {
         if !processes[cursor].completed {
             run_slice(&mut processes[cursor]);
             switches = switches.saturating_add(1);
             match processes[cursor].event {
-                ProcessEvent::Yield => {}
+                ProcessEvent::Yield | ProcessEvent::Preempt => {}
                 ProcessEvent::Exit | ProcessEvent::Fault => live -= 1,
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
@@ -332,16 +358,30 @@ pub fn run_probe() -> UserProbeResult {
     COMPLETED_PROCESSES.store(PROCESS_COUNT as u8, Ordering::Release);
     ADDRESS_SPACES.store(PROCESS_COUNT as u8, Ordering::Release);
     TOTAL_YIELDS.store(
-        processes[0].yields.saturating_add(processes[1].yields),
+        processes
+            .iter()
+            .fold(0u8, |total, process| total.saturating_add(process.yields)),
+        Ordering::Release,
+    );
+    TOTAL_PREEMPTIONS.store(
+        processes.iter().fold(0u8, |total, process| {
+            total.saturating_add(process.preemptions)
+        }),
         Ordering::Release,
     );
     PROBE_PASSED.store(true, Ordering::Release);
     crate::serial::println("USER_CONTEXT_RESUME_OK");
+    crate::serial::println("USER_PREEMPT_OK");
+    crate::serial::println("USER_FAULT_ISOLATED");
     crate::serial::println("USER_ISOLATION_OK");
     crate::serial::println("USERMODE_READY");
 
     UserProbeResult {
-        exit_codes: [processes[0].exit_code, processes[1].exit_code],
+        exit_codes: [
+            processes[0].exit_code,
+            processes[1].exit_code,
+            processes[2].exit_code,
+        ],
     }
 }
 
@@ -359,6 +399,14 @@ pub fn address_space_count() -> u8 {
 
 pub fn yield_count() -> u8 {
     TOTAL_YIELDS.load(Ordering::Acquire)
+}
+
+pub fn preemption_count() -> u8 {
+    TOTAL_PREEMPTIONS.load(Ordering::Acquire)
+}
+
+pub fn local_fault_count() -> u8 {
+    LOCAL_FAULTS.load(Ordering::Acquire)
 }
 
 fn build_process(pid: u8, token: u64) -> Result<UserProcess, paging::PagingError> {
@@ -400,6 +448,12 @@ fn build_process(pid: u8, token: u64) -> Result<UserProcess, paging::PagingError
         report: 0,
         exit_code: u8::MAX,
         yields: 0,
+        preemptions: 0,
+        fault_vector: 0,
+        fault_error: 0,
+        fault_address: 0,
+        completion_order: 0,
+        preemption_armed: false,
         completed: false,
     })
 }
@@ -418,6 +472,64 @@ fn run_slice(process: &mut UserProcess) {
     }
 }
 
+pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
+    let Some(process) = current_process() else {
+        return false;
+    };
+    let frame = unsafe { &mut *frame };
+    if !process.preemption_armed {
+        return false;
+    }
+    if !valid_user_frame(frame, process) {
+        terminate_process_fault(process, 13, 0, frame.rip, 0);
+        return true;
+    }
+
+    process.context = *frame;
+    process.event = ProcessEvent::Preempt;
+    process.preemptions = process.preemptions.saturating_add(1);
+    unsafe {
+        core::ptr::write_volatile(
+            (process.data_frame + 8) as *mut u64,
+            process.preemptions as u64,
+        );
+    }
+    crate::serial::print("USER_PREEMPT pid=");
+    crate::serial::print_u64(process.pid as u64);
+    crate::serial::println("");
+    true
+}
+
+pub(crate) fn terminate_current_fault(vector: u8, error: u64, rip: u64, cr2: u64) -> bool {
+    let Some(process) = current_process() else {
+        return false;
+    };
+    terminate_process_fault(process, vector, error, rip, cr2);
+    true
+}
+
+fn terminate_process_fault(process: &mut UserProcess, vector: u8, error: u64, rip: u64, cr2: u64) {
+    process.event = ProcessEvent::Fault;
+    process.exit_code = 128u8.saturating_add(vector);
+    process.fault_vector = vector;
+    process.fault_error = error;
+    process.fault_address = cr2;
+    process.completed = true;
+    process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+    LOCAL_FAULTS.fetch_add(1, Ordering::AcqRel);
+    crate::serial::print("USER_FAULT_TERMINATED pid=");
+    crate::serial::print_u64(process.pid as u64);
+    crate::serial::print(" vector=");
+    crate::serial::print_u64(vector as u64);
+    crate::serial::print(" error=0x");
+    crate::serial::print_hex(error);
+    crate::serial::print(" rip=0x");
+    crate::serial::print_hex(rip);
+    crate::serial::print(" cr2=0x");
+    crate::serial::print_hex(cr2);
+    crate::serial::println("");
+}
+
 #[no_mangle]
 extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
     let frame = unsafe { &mut *frame };
@@ -426,9 +538,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
         return 1;
     };
     if !valid_user_frame(frame, process) {
-        process.event = ProcessEvent::Fault;
-        process.exit_code = 254;
-        process.completed = true;
+        terminate_process_fault(process, 13, 0, frame.rip, 0);
         crate::serial::println("USER_CONTEXT_INVALID");
         return 1;
     }
@@ -449,6 +559,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 }
             }
             if number == syscall::SYSCALL_ABI_VERSION && value == syscall::USER_ABI_VERSION {
+                process.preemption_armed = true;
                 let count = ABI_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
                 if count == PROCESS_COUNT as u8 {
                     crate::serial::println("USER_ABI_OK");
@@ -472,7 +583,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 process.report = value;
                 frame.rax = value;
                 let count = REPORT_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-                if count == PROCESS_COUNT as u8 {
+                if count == HEALTHY_PROCESS_COUNT {
                     crate::serial::println("USER_COPY_OK");
                 }
             } else {
@@ -484,6 +595,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.event = ProcessEvent::Exit;
             process.exit_code = code;
             process.completed = true;
+            process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
             crate::serial::print("USER_EXIT pid=");
             crate::serial::print_u64(process.pid as u64);
             crate::serial::print(" code=");
@@ -532,26 +644,57 @@ fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64
 }
 
 fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> bool {
-    let first_data = unsafe { core::ptr::read_volatile(processes[0].data_frame as *const u64) };
-    let second_data = unsafe { core::ptr::read_volatile(processes[1].data_frame as *const u64) };
-    switches == 4
-        && processes[0].space.root() != processes[1].space.root()
-        && processes[0].data_frame != processes[1].data_frame
-        && paging::translate(processes[0].space, paging::USER_DATA) == Some(processes[0].data_frame)
-        && paging::translate(processes[1].space, paging::USER_DATA) == Some(processes[1].data_frame)
-        && paging::translate(processes[0].space, paging::USER_STACK_GUARD).is_none()
-        && paging::translate(processes[1].space, paging::USER_STACK_GUARD).is_none()
-        && processes.iter().all(|process| {
+    let roots_are_distinct = processes.iter().enumerate().all(|(index, process)| {
+        processes
+            .iter()
+            .skip(index + 1)
+            .all(|other| process.space.root() != other.space.root())
+    });
+    let frames_are_distinct = processes.iter().enumerate().all(|(index, process)| {
+        processes
+            .iter()
+            .skip(index + 1)
+            .all(|other| process.data_frame != other.data_frame)
+    });
+    let mappings_are_private = processes.iter().all(|process| {
+        paging::translate(process.space, paging::USER_DATA) == Some(process.data_frame)
+            && paging::translate(process.space, paging::USER_STACK_GUARD).is_none()
+            && unsafe { core::ptr::read_volatile(process.data_frame as *const u64) }
+                == process.token
+            && unsafe { core::ptr::read_volatile((process.data_frame + 8) as *const u64) }
+                == process.preemptions as u64
+    });
+    let faulting = &processes[0];
+    let healthy = &processes[1..];
+
+    switches == 6
+        && roots_are_distinct
+        && frames_are_distinct
+        && mappings_are_private
+        && faulting.completed
+        && faulting.exit_code == FAULT_EXIT_CODE
+        && faulting.fault_vector == 14
+        && faulting.fault_error == 0x6
+        && faulting.fault_address == paging::USER_STACK_GUARD
+        && faulting.preemptions == 1
+        && faulting.preemption_armed
+        && faulting.yields == 0
+        && faulting.report == 0
+        && faulting.completion_order == 1
+        && healthy.iter().all(|process| {
             process.completed
                 && process.exit_code == 0
-                && process.yields == 1
+                && process.fault_vector == 0
+                && process.preemptions == 1
+                && process.preemption_armed
+                && process.yields == 0
                 && process.report == process.token
+                && process.completion_order > faulting.completion_order
         })
-        && first_data == TOKEN_A
-        && second_data == TOKEN_B
         && PING_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
         && ABI_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
-        && REPORT_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
+        && REPORT_COUNT.load(Ordering::Acquire) == HEALTHY_PROCESS_COUNT
+        && LOCAL_FAULTS.load(Ordering::Acquire) == 1
 }
 
 fn require_process(result: Result<UserProcess, paging::PagingError>) -> UserProcess {

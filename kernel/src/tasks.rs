@@ -28,6 +28,7 @@ pub enum TaskState {
     Sleeping,
     Waiting,
     Exited,
+    Faulted,
 }
 
 impl TaskState {
@@ -38,7 +39,12 @@ impl TaskState {
             Self::Sleeping => "sleeping",
             Self::Waiting => "waiting",
             Self::Exited => "exited",
+            Self::Faulted => "fault",
         }
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Exited | Self::Faulted)
     }
 }
 
@@ -87,7 +93,7 @@ impl TaskRecord {
     }
 
     pub fn is_live(&self) -> bool {
-        self.id != 0 && self.state != TaskState::Exited
+        self.id != 0 && !self.state.is_terminal()
     }
 }
 
@@ -158,6 +164,19 @@ impl TaskRegistry {
         Ok(pid)
     }
 
+    pub fn record_user_fault(
+        &mut self,
+        name: &str,
+        exit_code: u8,
+        tick: u64,
+    ) -> Result<u32, TaskError> {
+        let pid = self.insert(name, TaskClass::User, TaskState::Faulted, 20, tick, false)?;
+        if let Some(task) = self.get_mut(pid) {
+            task.exit_code = exit_code as i32;
+        }
+        Ok(pid)
+    }
+
     fn insert(
         &mut self,
         name: &str,
@@ -172,7 +191,7 @@ impl TaskRegistry {
                 self.tasks
                     .iter()
                     .take(self.len)
-                    .position(|task| task.state == TaskState::Exited)
+                    .position(|task| task.state.is_terminal())
             })
             .flatten();
         let slot = reusable
@@ -266,7 +285,7 @@ impl TaskRegistry {
         if self.tasks[index].class == TaskClass::System {
             return Err(TaskError::Protected);
         }
-        if self.tasks[index].state == TaskState::Exited {
+        if self.tasks[index].state.is_terminal() {
             return Err(TaskError::InvalidState);
         }
         self.tasks[index].state = TaskState::Exited;
@@ -285,7 +304,7 @@ impl TaskRegistry {
         if self.tasks[index].class == TaskClass::System {
             return Err(TaskError::Protected);
         }
-        if self.tasks[index].state == TaskState::Exited || duration == 0 {
+        if self.tasks[index].state.is_terminal() || duration == 0 {
             return Err(TaskError::InvalidState);
         }
         self.tasks[index].state = TaskState::Sleeping;
@@ -513,14 +532,17 @@ mod tests {
     fn completed_userspace_probe_keeps_exit_status() {
         let mut registry = TaskRegistry::new();
         registry.register("desktop", TaskState::Running, 32);
+        let fault = registry.record_user_fault("user-crash", 142, 11).unwrap();
         let first = registry.record_user_exit("user-a", 7, 12).unwrap();
         let second = registry.record_user_exit("user-b", 0, 13).unwrap();
         let task = registry.find(first).unwrap();
 
+        assert_eq!(registry.find(fault).unwrap().state, TaskState::Faulted);
+        assert_eq!(registry.find(fault).unwrap().exit_code, 142);
         assert_eq!(task.class, TaskClass::User);
         assert_eq!(task.state, TaskState::Exited);
         assert_eq!(task.exit_code, 7);
         assert_eq!(registry.find(second).unwrap().name.as_str(), "user-b");
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 4);
     }
 }

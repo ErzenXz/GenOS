@@ -55,8 +55,9 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         taskmgr: tasks.register("taskmgr", TaskState::Ready, 32),
         idle: tasks.register("idle", TaskState::Sleeping, 8),
     };
-    let _ = tasks.record_user_exit("user-a", user_probe.exit_codes[0], interrupts::ticks());
-    let _ = tasks.record_user_exit("user-b", user_probe.exit_codes[1], interrupts::ticks());
+    let _ = tasks.record_user_fault("user-crash", user_probe.exit_codes[0], interrupts::ticks());
+    let _ = tasks.record_user_exit("user-a", user_probe.exit_codes[1], interrupts::ticks());
+    let _ = tasks.record_user_exit("user-b", user_probe.exit_codes[2], interrupts::ticks());
     serial::println("TASKS_READY");
     serial::println("SCHED_READY");
 

@@ -74,7 +74,10 @@ global_asm!(
 genos_irq0_stub:
     cld
     genos_push_regs
+    mov rdi, rsp
     genos_call_aligned genos_irq0_rust
+    test rax, rax
+    jnz genos_leave_userspace
     genos_pop_regs
     iretq
 
@@ -102,7 +105,10 @@ genos_fault_df_stub:
     mov rsi, [rsp + 120]
     mov rdx, [rsp + 128]
     xor rcx, rcx
+    mov r8, [rsp + 136]
     genos_call_aligned genos_fault_rust
+    test rax, rax
+    jnz genos_leave_userspace
 1:
     hlt
     jmp 1b
@@ -115,7 +121,10 @@ genos_fault_gp_stub:
     mov rsi, [rsp + 120]
     mov rdx, [rsp + 128]
     xor rcx, rcx
+    mov r8, [rsp + 136]
     genos_call_aligned genos_fault_rust
+    test rax, rax
+    jnz genos_leave_userspace
 2:
     hlt
     jmp 2b
@@ -128,7 +137,10 @@ genos_fault_pf_stub:
     mov rsi, [rsp + 120]
     mov rdx, [rsp + 128]
     mov rcx, cr2
+    mov r8, [rsp + 136]
     genos_call_aligned genos_fault_rust
+    test rax, rax
+    jnz genos_leave_userspace
 3:
     hlt
     jmp 3b
@@ -197,9 +209,11 @@ pub fn stats() -> InterruptStats {
 }
 
 #[no_mangle]
-extern "C" fn genos_irq0_rust() {
+extern "C" fn genos_irq0_rust(frame: *mut userspace::UserContext) -> u64 {
     TICKS.fetch_add(1, Ordering::Relaxed);
+    let preempted = userspace::timer_preempt(frame);
     unsafe { pic_eoi(0) };
+    u64::from(preempted)
 }
 
 #[no_mangle]
@@ -217,7 +231,13 @@ extern "C" fn genos_irq12_rust() {
 }
 
 #[no_mangle]
-extern "C" fn genos_fault_rust(vector: u64, error: u64, rip: u64, cr2: u64) -> ! {
+extern "C" fn genos_fault_rust(vector: u64, error: u64, rip: u64, cr2: u64, cs: u64) -> u64 {
+    if matches!(vector, 13 | 14)
+        && cs & 3 == 3
+        && userspace::terminate_current_fault(vector as u8, error, rip, cr2)
+    {
+        return 1;
+    }
     match vector {
         8 => crate::serial::println("FAULT_DF"),
         13 => crate::serial::println("FAULT_GP"),

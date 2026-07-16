@@ -78,8 +78,9 @@ The current GenOS build already contains real operating-system infrastructure:
 - Rust `no_std` kernel with GDT, TSS, IDT, and interrupt setup;
 - gap-safe physical frame allocation that keeps reserved firmware ranges out of circulation;
 - cloned supervisor-only kernel page tables with explicitly exposed user code and stack pages;
-- two ring-3 processes with separate CR3 roots and private code, data, guard, and stack mappings;
-- saved CPU contexts that yield, switch address spaces, resume, and exit independently;
+- three ring-3 process instances with separate CR3 roots and private code, data, guard, and stack mappings;
+- timer-driven CPU preemption with saved contexts, address-space switching, and resume;
+- process-local user page-fault termination that leaves healthy processes and the kernel running;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
 - Shift, Caps Lock, symbols, and shell command history;
@@ -109,7 +110,7 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 
 The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `spawn NAME`, `kill PID`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports the live ring-3 and syscall probe. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.7 executes two processes at ring 3. Both use the same user virtual addresses backed by different physical frames and page-table roots; each writes private memory, yields, resumes from a saved register frame, reports through a validated copy-in syscall, and exits independently. Scheduled shell-created workloads still run inside the kernel, however. Timer-driven user preemption, fault recovery, userspace ELF loading, and general-purpose applications remain Stage 2 work. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.8 executes three process instances at ring 3. A 100 Hz timer preempts each process without a cooperative syscall, saves its complete register frame, switches address spaces, and resumes it later. One process deliberately writes to an unmapped guard page and is terminated locally; the other two continue, report their private data through validated copy-in, and exit normally before the desktop starts. Scheduled shell-created workloads still run inside the kernel, however. Userspace ELF loading, dynamic process control, and general-purpose applications remain Stage 2 work. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -123,7 +124,7 @@ GenOS bootloader
 GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe frames / protected page tables
-    |-- userspace               private CR3 / saved context / syscall copy-in
+    |-- userspace               private CR3 / preemption / local faults / copy-in
     |-- input                    PS/2 keyboard + mouse / event queue
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
@@ -209,7 +210,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, saved contexts, ring 3, and validated copy-in work; timer preemption, fault recovery, and ELF loading come next
+- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, validated copy-in, timer preemption, and local fault containment work; ELF loading and dynamic process control come next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design
