@@ -13,6 +13,7 @@ const SLEEP_TOKEN_MODE: u64 = 0x4000_0000_0000_0000;
 const CHILD_TOKEN_MODE: u64 = 0x5000_0000_0000_0000;
 const PARENT_TOKEN_MODE: u64 = 0x6000_0000_0000_0000;
 const FILE_TOKEN_MODE: u64 = 0x7000_0000_0000_0000;
+const INPUT_TOKEN_MODE: u64 = 0x9000_0000_0000_0000;
 const WRITE_TOKEN_MODE: u64 = 0xa000_0000_0000_0000;
 const COORDINATION_MESSAGE: u64 = 0x4745_4e4f_535f_4950;
 const GREETING: &[u8] = b"hello from INIT.ELF in ring 3";
@@ -27,12 +28,15 @@ const WRITE_FIRST: &[u8] = b"GenOS Ring 3 ";
 const WRITE_SECOND: &[u8] = b"writes safely.";
 const WRITE_CONTENT: &[u8] = b"GenOS Ring 3 writes safely.";
 const WRITE_COMPLETE: &[u8] = b"INIT.ELF wrote and verified /USER/APP.TXT";
+const INPUT_PROMPT: &[u8] = b"INIT.ELF waiting for one keyboard event";
+const INPUT_BUSY: &[u8] = b"INIT.ELF input channel is busy";
 
 #[repr(C)]
 struct ProcessData {
     header: runtime::UserProcessHeader,
     system_info: runtime::UserSystemInfo,
     file_stat: runtime::UserFileStat,
+    input_event: runtime::UserInputEvent,
     file_buffer: [u8; 128],
 }
 
@@ -42,6 +46,7 @@ static mut PROCESS_DATA: ProcessData = ProcessData {
     header: runtime::UserProcessHeader::empty(),
     system_info: runtime::UserSystemInfo::empty(),
     file_stat: runtime::UserFileStat::empty(),
+    input_event: runtime::UserInputEvent::empty(),
     file_buffer: [0; 128],
 };
 
@@ -104,6 +109,8 @@ pub extern "C" fn _start(token: u64) -> ! {
             || info.max_file_read != runtime::FILE_READ_MAX as u64
             || info.file_handle_capacity != runtime::FILE_HANDLE_CAPACITY
             || info.max_file_write != runtime::FILE_WRITE_MAX as u64
+            || info.input_event_size != core::mem::size_of::<runtime::UserInputEvent>() as u64
+            || info.input_mask != runtime::INPUT_MASK_ALL
         {
             runtime::exit(246);
         }
@@ -194,6 +201,33 @@ pub extern "C" fn _start(token: u64) -> ! {
         }
         if runtime::write(WRITE_COMPLETE) != WRITE_COMPLETE.len() as u64 {
             runtime::exit(233);
+        }
+    }
+
+    if token & TOKEN_MODE_MASK == INPUT_TOKEN_MODE {
+        if runtime::write(INPUT_PROMPT) != INPUT_PROMPT.len() as u64 {
+            runtime::exit(232);
+        }
+        let event = unsafe { &mut *addr_of_mut!(PROCESS_DATA.input_event) };
+        let result = runtime::wait_input(event, runtime::INPUT_MASK_KEYBOARD);
+        if result == runtime::ERROR_UNAVAILABLE {
+            if runtime::write(INPUT_BUSY) != INPUT_BUSY.len() as u64 {
+                runtime::exit(231);
+            }
+            runtime::exit(0);
+        }
+        if result != core::mem::size_of::<runtime::UserInputEvent>() as u64
+            || event.kind != runtime::INPUT_KIND_KEY
+            || event.code != runtime::KEY_CHAR
+            || !(0x20..=0x7e).contains(&event.value0)
+            || event.value1 != 0
+        {
+            runtime::exit(230);
+        }
+        let mut message = *b"INIT.ELF received key: ?";
+        message[23] = event.value0 as u8;
+        if runtime::write(&message) != message.len() as u64 {
+            runtime::exit(229);
         }
     }
 

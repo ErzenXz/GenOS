@@ -86,7 +86,7 @@ The current GenOS build already contains real operating-system infrastructure:
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 7 userspace coordination, structured copy-out, and capability-based VFS reads and writes;
+- ABI 8 userspace coordination, capability-based VFS I/O, and blocking input events;
 - application output copied from validated user mappings into the desktop shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
@@ -115,9 +115,9 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run init write`, `run pair`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, handle, read, and write state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run init write`, `run init input`, `run pair`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, handle, file-I/O, and input-wakeup state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.14 gives isolated applications a bounded write path without giving them authority over the whole filesystem. `run init write` first proves that `/README.TXT` cannot be opened for mutation, then creates `/USER/APP.TXT` through an explicit read/write capability. Two blocking writes advance the kernel-owned offset from 0 to 13 and then 27; stat reports the resulting size and offset. After close, the application reopens the file read-only, proves that this narrower handle cannot write, and reads back all 27 bytes exactly. Payloads are copied into fixed kernel memory before a process blocks, completion identity and content are revalidated, and writes outside the case-sensitive `/USER/` namespace are rejected. ABI 6 handle operations remain stable while ABI 7 adds `open_file_with_rights` and `write_handle`. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.15 lets isolated applications wait for real keyboard and pointer events without polling or consuming scheduler slices. `run init input` announces a one-shot keyboard wait, transitions to `waiting`, and receives the next matching event in a fixed 32-byte structure copied into its private data page. A keyboard-only waiter does not steal pointer movement from the desktop. Input ownership is explicit and deterministic: one process may wait at a time, a contender receives `USER_ERROR_UNAVAILABLE`, and the accepted event is consumed once before the saved context wakes. ABI 8 exposes keyboard and pointer masks, stable key/button codes, signed motion or position values, and the `wait_input` syscall. The boot proof covers filtering, competing waiters, exact key delivery, exit, and frame reclamation. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -132,8 +132,8 @@ GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
-    |-- userspace               async lifecycle / bounded file I/O / capability rights
-    |-- input                    PS/2 keyboard + mouse / event queue
+    |-- userspace               async lifecycle / file I/O / blocking input
+    |-- input                    PS/2 queue / filters / desktop-or-Ring-3 routing
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
     |-- display                  backbuffer / dirty regions / text

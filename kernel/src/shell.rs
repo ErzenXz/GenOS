@@ -78,6 +78,17 @@ pub fn run(
         while let Some(event) = input_hw::pop_event() {
             handled_event = true;
             tasks.mark_running(ids.input, tick);
+            match processes.deliver_input(event) {
+                Ok(Some(update)) => {
+                    apply_process_update(&mut display, &mut tasks, update, tick);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    push_launch_error(&mut display, error);
+                    continue;
+                }
+            }
             match event {
                 InputEvent::Key(KeyEvent::Enter) => {
                     if !display.shell_input_active() {
@@ -432,6 +443,7 @@ fn execute(
             let sleep = program == "init sleep" || program == "INIT.ELF sleep";
             let file = program == "init file" || program == "INIT.ELF file";
             let write = program == "init write" || program == "INIT.ELF write";
+            let input = program == "init input" || program == "INIT.ELF input";
             if program == "pair" {
                 launch_coordination_pair(display, tasks, processes, tick);
             } else if program != "init"
@@ -440,10 +452,11 @@ fn execute(
                 && !sleep
                 && !file
                 && !write
+                && !input
             {
                 display.push_line(
                     LineKind::Error,
-                    "usage: run init [hold|sleep|file|write] | run pair",
+                    "usage: run init [hold|sleep|file|write|input] | run pair",
                 );
                 display.set_status("ELF launch failed");
             } else {
@@ -454,6 +467,8 @@ fn execute(
                         processes.spawn_file_init(task_pid)
                     } else if write {
                         processes.spawn_write_init(task_pid)
+                    } else if input {
+                        processes.spawn_input_init(task_pid)
                     } else {
                         processes.spawn_init(task_pid, hold)
                     } {
@@ -475,6 +490,8 @@ fn execute(
                                     " mode=file"
                                 } else if write {
                                     " mode=write"
+                                } else if input {
+                                    " mode=input"
                                 } else {
                                     " mode=normal"
                                 });
@@ -655,6 +672,8 @@ fn execute(
             io.push_u64(crate::userspace::completed_file_read_count());
             io.push_str(" writes=");
             io.push_u64(crate::userspace::completed_file_write_count());
+            io.push_str(" inputs=");
+            io.push_u64(crate::userspace::completed_input_wait_count());
             display.push_fixed(LineKind::Output, io);
             let mut handles = FixedText::from_str("handles opened=");
             handles.push_u64(crate::userspace::opened_file_handle_count());
@@ -694,7 +713,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.14 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.15 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -704,7 +723,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.14 adds bounded file writes with explicit rights and /USER isolation.",
+                "GenOS 0.15 adds blocking keyboard and pointer events for Ring 3 applications.",
             );
             display.set_status("about");
         }

@@ -9,8 +9,8 @@ pub use genos_abi::{
     USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
     USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
-    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE,
-    USER_SYSCALL_YIELD as SYSCALL_YIELD,
+    USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT, USER_SYSCALL_WRITE as SYSCALL_WRITE,
+    USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +73,11 @@ pub enum SyscallAction {
         handle: u64,
         input_address: u64,
         input_length: u64,
+    },
+    WaitInput {
+        output_address: u64,
+        output_length: u64,
+        mask: u64,
     },
 }
 
@@ -198,6 +203,19 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 input_length: args[2],
             })
         }
+        SYSCALL_WAIT_INPUT
+            if args[0] != 0
+                && args[1] == core::mem::size_of::<genos_abi::UserInputEvent>() as u64
+                && args[2] != 0
+                && args[2] & !genos_abi::USER_INPUT_MASK_ALL == 0
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::WaitInput {
+                output_address: args[0],
+                output_length: args[1],
+                mask: args[2],
+            })
+        }
         SYSCALL_PING
         | SYSCALL_ABI_VERSION
         | SYSCALL_EXIT
@@ -215,7 +233,8 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_STAT_HANDLE
         | SYSCALL_CLOSE_HANDLE
         | SYSCALL_OPEN_FILE_WITH_RIGHTS
-        | SYSCALL_WRITE_HANDLE => Err(SyscallError::InvalidArgument),
+        | SYSCALL_WRITE_HANDLE
+        | SYSCALL_WAIT_INPUT => Err(SyscallError::InvalidArgument),
         _ => Err(SyscallError::UnknownNumber),
     }
 }
@@ -294,10 +313,10 @@ mod tests {
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 56, 0, 0, 0, 0]),
+            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 72, 0, 0, 0, 0]),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 56
+                length: 72
             })
         );
         assert_eq!(
@@ -350,6 +369,14 @@ mod tests {
                 handle: 0x101,
                 input_address: 0x6000,
                 input_length: 64,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WAIT_INPUT, [0x6000, 32, 1, 0, 0, 0]),
+            Ok(SyscallAction::WaitInput {
+                output_address: 0x6000,
+                output_length: 32,
+                mask: 1,
             })
         );
     }
@@ -418,6 +445,14 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_WRITE_HANDLE, [0x101, 0x6000, 129, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WAIT_INPUT, [0x6000, 31, 1, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WAIT_INPUT, [0x6000, 32, 4, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));

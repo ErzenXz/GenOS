@@ -2,14 +2,15 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
-    UserFileStat, UserProcessHeader, UserSystemInfo, USER_ABI_VERSION, USER_FILE_HANDLE_CAPACITY,
-    USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ,
-    USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_MESSAGE_CAPACITY, USER_TIMER_HZ,
-    USER_WRITABLE_PREFIX,
+    UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo, USER_ABI_VERSION,
+    USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK,
+    USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL,
+    USER_MESSAGE_CAPACITY, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
     display::FixedText,
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
+    input::{InputEvent, KeyEvent, MouseButtons},
     ipc::MessageQueue,
     syscall::{self, SyscallAction},
     vfs::{NodeKind, RamVfs},
@@ -30,6 +31,7 @@ const TOKEN_SLEEP_MODE: u64 = 0x4000_0000_0000_0000;
 const TOKEN_CHILD_MODE: u64 = 0x5000_0000_0000_0000;
 const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
 const TOKEN_FILE_MODE: u64 = 0x7000_0000_0000_0000;
+const TOKEN_INPUT_MODE: u64 = 0x9000_0000_0000_0000;
 const TOKEN_WRITE_MODE: u64 = 0xa000_0000_0000_0000;
 const MESSAGE_CAPACITY: usize = 4;
 const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
@@ -55,6 +57,7 @@ static RECLAIMED_SPACES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_FILE_READS: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_FILE_WRITES: AtomicU64 = AtomicU64::new(0);
+static COMPLETED_INPUT_WAITS: AtomicU64 = AtomicU64::new(0);
 static OPENED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
 static CLOSED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
@@ -149,6 +152,11 @@ enum ProcessEvent {
     WriteHandle {
         handle: u64,
         data: FileWriteBuffer,
+    },
+    WaitInput {
+        address: u64,
+        length: u64,
+        mask: u64,
     },
     Exit,
     Fault,
@@ -328,6 +336,7 @@ struct ManagedProcess {
     pending_file_open: Option<PendingFileOpen>,
     pending_file_read: Option<PendingFileRead>,
     pending_file_write: Option<PendingFileWrite>,
+    pending_input: Option<PendingInput>,
     process: UserProcess,
 }
 
@@ -354,6 +363,13 @@ struct PendingFileWrite {
     data: FileWriteBuffer,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PendingInput {
+    address: u64,
+    length: u64,
+    mask: u64,
+}
+
 #[derive(Clone, Copy)]
 struct FileCapability {
     handle: u64,
@@ -372,6 +388,7 @@ enum BlockReason {
     FileOpen,
     FileRead,
     FileWrite,
+    Input,
 }
 
 impl ManagedProcess {
@@ -388,6 +405,7 @@ impl ManagedProcess {
             pending_file_open: None,
             pending_file_read: None,
             pending_file_write: None,
+            pending_input: None,
             process,
         }
     }
@@ -450,11 +468,12 @@ impl ManagedProcess {
         true
     }
 
-    fn revoke_file_handles(&mut self) {
+    fn revoke_resources(&mut self) {
         self.file_handles = [None; FILE_HANDLE_CAPACITY];
         self.pending_file_open = None;
         self.pending_file_read = None;
         self.pending_file_write = None;
+        self.pending_input = None;
     }
 }
 
@@ -486,6 +505,10 @@ impl ProcessManager {
 
     pub fn spawn_write_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
         self.spawn_single(task_id, TOKEN_WRITE_MODE, "write")
+    }
+
+    pub fn spawn_input_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
+        self.spawn_single(task_id, TOKEN_INPUT_MODE, "input")
     }
 
     fn spawn_single(
@@ -622,6 +645,11 @@ impl ProcessManager {
                         .block_file_handle_write(index, handle, data)
                         .map(UserVfsRequest::Write);
                 }
+                ProcessEvent::WaitInput {
+                    address,
+                    length,
+                    mask,
+                } => self.block_input(index, address, length, mask),
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
@@ -717,6 +745,86 @@ impl ProcessManager {
             managed.state = ManagedState::Waiting;
             managed.blocked_on = BlockReason::Receive;
         }
+    }
+
+    fn block_input(&mut self, index: usize, address: u64, length: u64, mask: u64) {
+        let waiter_exists = self.slots.iter().enumerate().any(|(slot, managed)| {
+            slot != index
+                && managed.as_ref().is_some_and(|managed| {
+                    managed.state == ManagedState::Waiting
+                        && managed.blocked_on == BlockReason::Input
+                })
+        });
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        if waiter_exists || mask == 0 || mask & !USER_INPUT_MASK_ALL != 0 {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_INPUT_WAIT_DENIED pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::println("");
+            return;
+        }
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::Input;
+        managed.pending_input = Some(PendingInput {
+            address,
+            length,
+            mask,
+        });
+        crate::serial::print("USER_INPUT_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" mask=");
+        crate::serial::print_u64(mask);
+        crate::serial::println("");
+    }
+
+    pub fn deliver_input(
+        &mut self,
+        input: InputEvent,
+    ) -> Result<Option<ProcessUpdate>, LaunchError> {
+        let required_mask = input.user_mask();
+        let index = self.slots.iter().position(|managed| {
+            managed.as_ref().is_some_and(|managed| {
+                managed.state == ManagedState::Waiting
+                    && managed.blocked_on == BlockReason::Input
+                    && managed
+                        .pending_input
+                        .is_some_and(|pending| pending.mask & required_mask != 0)
+            })
+        });
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let managed = self.slots[index].as_mut().expect("input waiter exists");
+        let pending = managed.pending_input.ok_or(LaunchError::InvalidResult)?;
+        if pending.length as usize != core::mem::size_of::<UserInputEvent>() {
+            return Err(LaunchError::InvalidResult);
+        }
+        let event = input.to_user_event();
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                core::ptr::addr_of!(event).cast::<u8>(),
+                core::mem::size_of::<UserInputEvent>(),
+            )
+        };
+        if !copy_to_user_data(&managed.process, pending.address, bytes) {
+            return Err(LaunchError::InvalidResult);
+        }
+        managed.pending_input = None;
+        managed.process.context.rax = pending.length;
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        COMPLETED_INPUT_WAITS.fetch_add(1, Ordering::AcqRel);
+        crate::serial::print("USER_INPUT_WAKE pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" kind=");
+        crate::serial::print_u64(event.kind);
+        crate::serial::print(" code=");
+        crate::serial::print_u64(event.code);
+        crate::serial::print(" value0=");
+        crate::serial::print_u64(event.value0 as u64);
+        crate::serial::println("");
+        Ok(Some(process_update(managed)))
     }
 
     fn complete_child_wait(&mut self, parent_index: usize, child_pid: u8) {
@@ -1152,7 +1260,7 @@ impl ProcessManager {
         let (pid, exit_code) = {
             let managed = self.slots[index].as_mut().expect("selected process exists");
             managed.state = state;
-            managed.revoke_file_handles();
+            managed.revoke_resources();
             if reclaim_process(&mut managed.process).is_err() {
                 fail("USER_RECLAIM_FAILED");
             }
@@ -1194,7 +1302,7 @@ impl ProcessManager {
         managed.process.exit_code = 137;
         managed.process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
         managed.state = ManagedState::Killed;
-        managed.revoke_file_handles();
+        managed.revoke_resources();
         let pid = managed.process.pid;
         reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
         crate::serial::print("USER_KILLED pid=");
@@ -1452,7 +1560,8 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::ReadHandle { .. }
                 | ProcessEvent::StatHandle { .. }
                 | ProcessEvent::CloseHandle(_)
-                | ProcessEvent::WriteHandle { .. } => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::WriteHandle { .. }
+                | ProcessEvent::WaitInput { .. } => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -1553,6 +1662,10 @@ pub fn completed_file_write_count() -> u64 {
     COMPLETED_FILE_WRITES.load(Ordering::Acquire)
 }
 
+pub fn completed_input_wait_count() -> u64 {
+    COMPLETED_INPUT_WAITS.load(Ordering::Acquire)
+}
+
 pub fn is_user_writable_path(path: &str) -> bool {
     path.starts_with(USER_WRITABLE_PREFIX) && path.len() > USER_WRITABLE_PREFIX.len()
 }
@@ -1620,6 +1733,8 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     const CHILD_TASK: u32 = 0x1003;
     const FILE_TASK: u32 = 0x1004;
     const WRITE_TASK: u32 = 0x1005;
+    const INPUT_TASK: u32 = 0x1006;
+    const INPUT_CONTENDER_TASK: u32 = 0x1007;
 
     let reclaimed_before = reclaimed_frame_count();
     let mut manager = ProcessManager::new();
@@ -1891,6 +2006,78 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     crate::serial::println("USER_FILE_WRITE_OK");
     crate::serial::println("USER_FILE_WRITE_POLICY_OK");
     crate::serial::println("USER_FILE_WRITE_READBACK_OK");
+
+    if manager.spawn_input_init(INPUT_TASK).is_err() {
+        fail("USER_INPUT_SPAWN_FAILED");
+    }
+    let input_before = completed_input_wait_count();
+    let mut saw_input_wait = false;
+    let mut input_contender_spawned = false;
+    let mut saw_input_busy = false;
+    let mut saw_input_wake = false;
+    let mut saw_input_exit = false;
+    for tick in 151..=220 {
+        if saw_input_wait && !input_contender_spawned {
+            if manager.spawn_input_init(INPUT_CONTENDER_TASK).is_err() {
+                fail("USER_INPUT_CONTENDER_SPAWN_FAILED");
+            }
+            input_contender_spawned = true;
+        }
+        if !saw_input_wake && saw_input_busy {
+            if manager
+                .deliver_input(InputEvent::MouseMove {
+                    dx: 4,
+                    dy: -2,
+                    buttons: MouseButtons::empty(),
+                })
+                .unwrap_or_else(|_| fail("USER_INPUT_FILTER_FAILED"))
+                .is_some()
+            {
+                fail("USER_INPUT_FILTER_BYPASSED");
+            }
+            let update = manager
+                .deliver_input(InputEvent::Key(KeyEvent::Char(b'G')))
+                .unwrap_or_else(|_| fail("USER_INPUT_DELIVERY_FAILED"))
+                .unwrap_or_else(|| fail("USER_INPUT_WAITER_MISSING"));
+            if update.state != ManagedState::Ready {
+                fail("USER_INPUT_NOT_READY");
+            }
+            saw_input_wake = true;
+        }
+        let Some(update) = manager.poll(tick) else {
+            continue;
+        };
+        if update.state == ManagedState::Waiting {
+            saw_input_wait = true;
+            if !input_contender_spawned && manager.poll(tick).is_some() {
+                fail("USER_INPUT_NOT_BLOCKED");
+            }
+        }
+        saw_input_busy |= update.task_id == INPUT_CONTENDER_TASK
+            && update.state == ManagedState::Exited
+            && update.exit_code == 0
+            && update.output.as_str() == "INIT.ELF input channel is busy";
+        saw_input_exit |= update.state == ManagedState::Exited
+            && update.exit_code == 0
+            && update.output.as_str() == "INIT.ELF received key: G";
+    }
+    if !saw_input_wait
+        || !saw_input_wake
+        || !saw_input_busy
+        || !saw_input_exit
+        || completed_input_wait_count() != input_before + 1
+        || !matches!(manager.wait(INPUT_TASK), Ok(result) if result.exit_code == 0)
+        || !matches!(manager.wait(INPUT_CONTENDER_TASK), Ok(result) if result.exit_code == 0)
+        || manager.live_count() != 0
+        || active_process_count() != 0
+        || reclaimed_frame_count() < reclaimed_before + 80
+    {
+        fail("USER_INPUT_PROBE_FAILED");
+    }
+    crate::serial::println("USER_INPUT_BLOCK_OK");
+    crate::serial::println("USER_INPUT_FILTER_OK");
+    crate::serial::println("USER_INPUT_OWNERSHIP_OK");
+    crate::serial::println("USER_INPUT_WAKE_OK");
     crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
 }
 
@@ -2285,6 +2472,8 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 max_file_read: USER_FILE_READ_MAX as u64,
                 file_handle_capacity: USER_FILE_HANDLE_CAPACITY,
                 max_file_write: USER_FILE_WRITE_MAX as u64,
+                input_event_size: core::mem::size_of::<UserInputEvent>() as u64,
+                input_mask: USER_INPUT_MASK_ALL,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -2410,6 +2599,27 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 frame.rax = 0;
                 process.context = *frame;
                 process.event = ProcessEvent::WriteHandle { handle, data };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::WaitInput {
+            output_address,
+            output_length,
+            mask,
+        }) => {
+            if output_length as usize == core::mem::size_of::<UserInputEvent>()
+                && valid_user_data_buffer(process, output_address, output_length)
+            {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::WaitInput {
+                    address: output_address,
+                    length: output_length,
+                    mask,
+                };
                 1
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);

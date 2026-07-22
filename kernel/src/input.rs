@@ -1,4 +1,11 @@
 use crate::display::Point;
+use genos_abi::{
+    UserInputEvent, USER_INPUT_KIND_KEY, USER_INPUT_KIND_POINTER_BUTTON,
+    USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_KEYBOARD, USER_INPUT_MASK_POINTER,
+    USER_KEY_ARROW_DOWN, USER_KEY_ARROW_UP, USER_KEY_BACKSPACE, USER_KEY_CHAR, USER_KEY_ENTER,
+    USER_KEY_ESCAPE, USER_KEY_TAB, USER_POINTER_BUTTON_LEFT, USER_POINTER_BUTTON_MIDDLE,
+    USER_POINTER_BUTTON_RIGHT,
+};
 
 pub const EVENT_QUEUE_CAP: usize = 64;
 
@@ -42,6 +49,63 @@ pub enum InputEvent {
         position: Point,
         buttons: MouseButtons,
     },
+}
+
+impl InputEvent {
+    pub fn user_mask(self) -> u64 {
+        match self {
+            Self::Key(_) => USER_INPUT_MASK_KEYBOARD,
+            Self::MouseMove { .. } | Self::MouseButton { .. } => USER_INPUT_MASK_POINTER,
+        }
+    }
+
+    pub fn to_user_event(self) -> UserInputEvent {
+        match self {
+            Self::Key(key) => {
+                let (code, value0) = match key {
+                    KeyEvent::Char(byte) => (USER_KEY_CHAR, byte as i64),
+                    KeyEvent::Enter => (USER_KEY_ENTER, 0),
+                    KeyEvent::Backspace => (USER_KEY_BACKSPACE, 0),
+                    KeyEvent::Escape => (USER_KEY_ESCAPE, 0),
+                    KeyEvent::Tab => (USER_KEY_TAB, 0),
+                    KeyEvent::ArrowUp => (USER_KEY_ARROW_UP, 0),
+                    KeyEvent::ArrowDown => (USER_KEY_ARROW_DOWN, 0),
+                };
+                UserInputEvent {
+                    kind: USER_INPUT_KIND_KEY,
+                    code,
+                    value0,
+                    value1: 0,
+                }
+            }
+            Self::MouseMove { dx, dy, buttons } => UserInputEvent {
+                kind: USER_INPUT_KIND_POINTER_MOVE,
+                code: pointer_button_mask(buttons),
+                value0: dx as i64,
+                value1: dy as i64,
+            },
+            Self::MouseButton { position, buttons } => UserInputEvent {
+                kind: USER_INPUT_KIND_POINTER_BUTTON,
+                code: pointer_button_mask(buttons),
+                value0: position.x as i64,
+                value1: position.y as i64,
+            },
+        }
+    }
+}
+
+fn pointer_button_mask(buttons: MouseButtons) -> u64 {
+    let mut mask = 0;
+    if buttons.left {
+        mask |= USER_POINTER_BUTTON_LEFT;
+    }
+    if buttons.right {
+        mask |= USER_POINTER_BUTTON_RIGHT;
+    }
+    if buttons.middle {
+        mask |= USER_POINTER_BUTTON_MIDDLE;
+    }
+    mask
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -388,5 +452,58 @@ mod tests {
         let mut state = MouseState::new(Point::new(10, 10));
         state.apply_move(3, -3, 100, 100, MouseButtons::empty());
         assert_eq!(state.position, Point::new(22, 22));
+    }
+
+    #[test]
+    fn user_events_preserve_key_pointer_and_button_data() {
+        let key = InputEvent::Key(KeyEvent::Char(b'G'));
+        assert_eq!(key.user_mask(), USER_INPUT_MASK_KEYBOARD);
+        assert_eq!(
+            key.to_user_event(),
+            UserInputEvent {
+                kind: USER_INPUT_KIND_KEY,
+                code: USER_KEY_CHAR,
+                value0: b'G' as i64,
+                value1: 0,
+            }
+        );
+
+        let movement = InputEvent::MouseMove {
+            dx: -4,
+            dy: 7,
+            buttons: MouseButtons {
+                left: true,
+                right: false,
+                middle: true,
+            },
+        };
+        assert_eq!(movement.user_mask(), USER_INPUT_MASK_POINTER);
+        assert_eq!(
+            movement.to_user_event(),
+            UserInputEvent {
+                kind: USER_INPUT_KIND_POINTER_MOVE,
+                code: USER_POINTER_BUTTON_LEFT | USER_POINTER_BUTTON_MIDDLE,
+                value0: -4,
+                value1: 7,
+            }
+        );
+
+        assert_eq!(
+            InputEvent::MouseButton {
+                position: Point::new(320, 240),
+                buttons: MouseButtons {
+                    left: false,
+                    right: true,
+                    middle: false,
+                },
+            }
+            .to_user_event(),
+            UserInputEvent {
+                kind: USER_INPUT_KIND_POINTER_BUTTON,
+                code: USER_POINTER_BUTTON_RIGHT,
+                value0: 320,
+                value1: 240,
+            }
+        );
     }
 }

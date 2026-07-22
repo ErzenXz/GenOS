@@ -62,7 +62,6 @@ pub struct DisplayManager {
     focus: WindowKind,
     boot_abi: u32,
     memory_bytes: u64,
-    initrd_files: usize,
     vfs_files: usize,
     event_depth: usize,
     uptime_ticks: u64,
@@ -108,7 +107,6 @@ impl DisplayManager {
             focus: WindowKind::Terminal,
             boot_abi: boot_info.version,
             memory_bytes,
-            initrd_files,
             vfs_files: initrd_files,
             event_depth: 0,
             uptime_ticks: 0,
@@ -918,10 +916,8 @@ impl DisplayManager {
             mem.as_str(),
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
-        let mut boot = FixedText::from_str("ABI ");
+        let mut boot = FixedText::from_str("BOOT ");
         boot.push_u64(self.boot_abi as u64);
-        boot.push_str(" /");
-        boot.push_u64(self.initrd_files as u64);
         TextRenderer::draw_text(
             &mut self.fb,
             rect,
@@ -1356,7 +1352,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.14",
+            "GenOS 0.15",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1370,7 +1366,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "RING 3  /  BOUNDED FILE WRITES  /  RIGHTS  /  ABI 7",
+            "RING 3  /  BLOCKING INPUT  /  EVENT FILTERS  /  ABI 8",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

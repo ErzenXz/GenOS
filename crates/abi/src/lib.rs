@@ -5,7 +5,7 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 7;
+pub const USER_ABI_VERSION: u64 = 8;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
@@ -24,6 +24,7 @@ pub const USER_SYSCALL_STAT_HANDLE: u64 = 14;
 pub const USER_SYSCALL_CLOSE_HANDLE: u64 = 15;
 pub const USER_SYSCALL_OPEN_FILE_WITH_RIGHTS: u64 = 16;
 pub const USER_SYSCALL_WRITE_HANDLE: u64 = 17;
+pub const USER_SYSCALL_WAIT_INPUT: u64 = 18;
 pub const USER_MESSAGE_CAPACITY: u64 = 4;
 pub const USER_FILE_READ_MAX: usize = 128;
 pub const USER_FILE_WRITE_MAX: usize = 128;
@@ -34,6 +35,22 @@ pub const USER_FILE_RIGHT_READ: u64 = 1;
 pub const USER_FILE_RIGHT_WRITE: u64 = 2;
 pub const USER_FILE_RIGHTS_MASK: u64 = USER_FILE_RIGHT_READ | USER_FILE_RIGHT_WRITE;
 pub const USER_WRITABLE_PREFIX: &str = "/USER/";
+pub const USER_INPUT_MASK_KEYBOARD: u64 = 1;
+pub const USER_INPUT_MASK_POINTER: u64 = 2;
+pub const USER_INPUT_MASK_ALL: u64 = USER_INPUT_MASK_KEYBOARD | USER_INPUT_MASK_POINTER;
+pub const USER_INPUT_KIND_KEY: u64 = 1;
+pub const USER_INPUT_KIND_POINTER_MOVE: u64 = 2;
+pub const USER_INPUT_KIND_POINTER_BUTTON: u64 = 3;
+pub const USER_KEY_CHAR: u64 = 1;
+pub const USER_KEY_ENTER: u64 = 2;
+pub const USER_KEY_BACKSPACE: u64 = 3;
+pub const USER_KEY_ESCAPE: u64 = 4;
+pub const USER_KEY_TAB: u64 = 5;
+pub const USER_KEY_ARROW_UP: u64 = 6;
+pub const USER_KEY_ARROW_DOWN: u64 = 7;
+pub const USER_POINTER_BUTTON_LEFT: u64 = 1;
+pub const USER_POINTER_BUTTON_RIGHT: u64 = 2;
+pub const USER_POINTER_BUTTON_MIDDLE: u64 = 4;
 pub const USER_ERROR_UNKNOWN_SYSCALL: u64 = u64::MAX;
 pub const USER_ERROR_INVALID_ARGUMENT: u64 = u64::MAX - 1;
 pub const USER_ERROR_UNAVAILABLE: u64 = u64::MAX - 2;
@@ -67,6 +84,8 @@ pub struct UserSystemInfo {
     pub max_file_read: u64,
     pub file_handle_capacity: u64,
     pub max_file_write: u64,
+    pub input_event_size: u64,
+    pub input_mask: u64,
 }
 
 impl UserSystemInfo {
@@ -79,6 +98,28 @@ impl UserSystemInfo {
             max_file_read: 0,
             file_handle_capacity: 0,
             max_file_write: 0,
+            input_event_size: 0,
+            input_mask: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserInputEvent {
+    pub kind: u64,
+    pub code: u64,
+    pub value0: i64,
+    pub value1: i64,
+}
+
+impl UserInputEvent {
+    pub const fn empty() -> Self {
+        Self {
+            kind: 0,
+            code: 0,
+            value0: 0,
+            value1: 0,
         }
     }
 }

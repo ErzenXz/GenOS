@@ -108,10 +108,14 @@ Delivered so far:
 - protected `/USER/` mutation policy that keeps boot and system files read-only to applications;
 - kernel-owned write payloads, blocking offset-aware VFS mutation, and stat size/offset updates;
 - `run init write` proof covering two writes, protected-path denial, read-only denial, close/reopen, and exact read-back.
+- ABI 8 fixed-layout keyboard and pointer events with stable masks, key codes, button bits, and signed values;
+- one-shot `wait_input` copy-out that removes a blocked process from runnable selection;
+- matching-event routing that leaves non-matching input available to the desktop;
+- deterministic single-waiter ownership with explicit `USER_ERROR_UNAVAILABLE` contention behavior;
+- `run init input` and boot proofs for wait, filter, contention, exact key wakeup, exit, and reclamation.
 
 Remaining work:
 
-- blocking keyboard or event input;
 - multi-producer channel policy and endpoint handles;
 - move the shell into userspace.
 
@@ -144,6 +148,8 @@ Acceptance criteria:
 - [x] Forged completions and stale handles are rejected without copying bytes or reviving authority.
 - [x] A write-capable process can mutate only `/USER/`, with bounded kernel-owned payloads and offset accounting.
 - [x] Protected paths and read-only handles reject writes, while successful data survives close/reopen inside the session VFS.
+- [x] A userspace application can block on filtered keyboard or pointer input without polling or consuming slices.
+- [x] Non-matching events remain available to the desktop, competing waiters fail explicitly, and one accepted event wakes exactly one process.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage
