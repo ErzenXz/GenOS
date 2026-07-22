@@ -5,7 +5,7 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 4;
+pub const USER_ABI_VERSION: u64 = 5;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
@@ -16,7 +16,51 @@ pub const USER_SYSCALL_SLEEP: u64 = 6;
 pub const USER_SYSCALL_SEND: u64 = 7;
 pub const USER_SYSCALL_RECEIVE: u64 = 8;
 pub const USER_SYSCALL_WAIT_CHILD: u64 = 9;
+pub const USER_SYSCALL_SYSTEM_INFO: u64 = 10;
+pub const USER_SYSCALL_READ_FILE: u64 = 11;
+pub const USER_MESSAGE_CAPACITY: u64 = 4;
+pub const USER_FILE_READ_MAX: usize = 128;
+pub const USER_PAGE_SIZE: u64 = 4096;
+pub const USER_TIMER_HZ: u64 = 100;
 pub const USER_PING_REPLY: u64 = 0x4745_4e4f_535f_4f4b;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserProcessHeader {
+    pub token: u64,
+    pub preemptions: u64,
+}
+
+impl UserProcessHeader {
+    pub const fn empty() -> Self {
+        Self {
+            token: 0,
+            preemptions: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserSystemInfo {
+    pub abi_version: u64,
+    pub page_size: u64,
+    pub timer_hz: u64,
+    pub message_capacity: u64,
+    pub max_file_read: u64,
+}
+
+impl UserSystemInfo {
+    pub const fn empty() -> Self {
+        Self {
+            abi_version: 0,
+            page_size: 0,
+            timer_hz: 0,
+            message_capacity: 0,
+            max_file_read: 0,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

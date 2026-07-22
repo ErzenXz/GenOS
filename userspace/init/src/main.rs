@@ -12,35 +12,41 @@ const TOKEN_MODE_MASK: u64 = 0xf000_0000_0000_0000;
 const SLEEP_TOKEN_MODE: u64 = 0x4000_0000_0000_0000;
 const CHILD_TOKEN_MODE: u64 = 0x5000_0000_0000_0000;
 const PARENT_TOKEN_MODE: u64 = 0x6000_0000_0000_0000;
+const FILE_TOKEN_MODE: u64 = 0x7000_0000_0000_0000;
 const COORDINATION_MESSAGE: u64 = 0x4745_4e4f_535f_4950;
 const GREETING: &[u8] = b"hello from INIT.ELF in ring 3";
 const AWAKENED: &[u8] = b"INIT.ELF woke after deadline";
 const COORDINATED: &[u8] = b"parent received child exit + message";
+const README_PATH: &[u8] = b"/README.TXT";
+const README_CONTENT: &[u8] = b"Welcome to GenOS.\nThis file lives in the V1 RAM disk.\n";
+const FILE_COMPLETE: &[u8] = b"INIT.ELF read README.TXT through VFS";
 
 #[repr(C)]
 struct ProcessData {
-    token: u64,
-    preemptions: u64,
+    header: runtime::UserProcessHeader,
+    system_info: runtime::UserSystemInfo,
+    file_buffer: [u8; 128],
 }
 
 #[used]
 #[link_section = ".data.process"]
 static mut PROCESS_DATA: ProcessData = ProcessData {
-    token: 0,
-    preemptions: 0,
+    header: runtime::UserProcessHeader::empty(),
+    system_info: runtime::UserSystemInfo::empty(),
+    file_buffer: [0; 128],
 };
 
 #[no_mangle]
 pub extern "C" fn _start(token: u64) -> ! {
     unsafe {
-        write_volatile(addr_of_mut!(PROCESS_DATA.token), token);
+        write_volatile(addr_of_mut!(PROCESS_DATA.header.token), token);
     }
 
     if runtime::ping() != runtime::PING_REPLY || runtime::abi_version() != runtime::ABI_VERSION {
         runtime::exit(255);
     }
 
-    while unsafe { read_volatile(addr_of!(PROCESS_DATA.preemptions)) } == 0 {
+    while unsafe { read_volatile(addr_of!(PROCESS_DATA.header.preemptions)) } == 0 {
         core::hint::spin_loop();
     }
 
@@ -79,13 +85,36 @@ pub extern "C" fn _start(token: u64) -> ! {
         }
     }
 
+    if token & TOKEN_MODE_MASK == FILE_TOKEN_MODE {
+        let info = unsafe { &mut *addr_of_mut!(PROCESS_DATA.system_info) };
+        if runtime::system_info(info) != core::mem::size_of::<runtime::UserSystemInfo>() as u64
+            || info.abi_version != runtime::ABI_VERSION
+            || info.page_size != runtime::PAGE_SIZE
+            || info.timer_hz != runtime::TIMER_HZ
+            || info.message_capacity != runtime::MESSAGE_CAPACITY
+            || info.max_file_read != runtime::FILE_READ_MAX as u64
+        {
+            runtime::exit(246);
+        }
+        let buffer = unsafe { &mut *addr_of_mut!(PROCESS_DATA.file_buffer) };
+        let length = runtime::read_file(README_PATH, buffer);
+        if length != README_CONTENT.len() as u64
+            || &buffer[..README_CONTENT.len()] != README_CONTENT
+        {
+            runtime::exit(245);
+        }
+        if runtime::write(FILE_COMPLETE) != FILE_COMPLETE.len() as u64 {
+            runtime::exit(244);
+        }
+    }
+
     if token & HOLD_TOKEN_BIT != 0 {
         loop {
             core::hint::spin_loop();
         }
     }
 
-    let reported = runtime::report_u64(unsafe { addr_of!(PROCESS_DATA.token) });
+    let reported = runtime::report_u64(unsafe { addr_of!(PROCESS_DATA.header.token) });
     runtime::exit(if reported == token { 0 } else { 253 });
 }
 

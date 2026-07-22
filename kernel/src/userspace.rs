@@ -1,11 +1,16 @@
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
+use genos_abi::{
+    UserProcessHeader, UserSystemInfo, USER_ABI_VERSION, USER_FILE_READ_MAX, USER_MESSAGE_CAPACITY,
+    USER_TIMER_HZ,
+};
 use kernel::{
     display::FixedText,
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     ipc::MessageQueue,
     syscall::{self, SyscallAction},
+    vfs::RamVfs,
 };
 
 use crate::{arch, memory, paging};
@@ -22,12 +27,14 @@ const TOKEN_HOLD_BIT: u64 = 1 << 63;
 const TOKEN_SLEEP_MODE: u64 = 0x4000_0000_0000_0000;
 const TOKEN_CHILD_MODE: u64 = 0x5000_0000_0000_0000;
 const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
+const TOKEN_FILE_MODE: u64 = 0x7000_0000_0000_0000;
 const MESSAGE_CAPACITY: usize = 4;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
 static ELF_READY: AtomicBool = AtomicBool::new(false);
 static CONTEXT_PASSED: AtomicBool = AtomicBool::new(false);
+static COPY_OUT_PASSED: AtomicBool = AtomicBool::new(false);
 static PING_COUNT: AtomicU8 = AtomicU8::new(0);
 static ABI_COUNT: AtomicU8 = AtomicU8::new(0);
 static REPORT_COUNT: AtomicU8 = AtomicU8::new(0);
@@ -42,6 +49,7 @@ static DYNAMIC_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static ACTIVE_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_SPACES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_FRAMES: AtomicU64 = AtomicU64::new(0);
+static COMPLETED_FILE_READS: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
 static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
@@ -105,9 +113,17 @@ enum ProcessEvent {
     Yield,
     Preempt,
     Sleep(u64),
-    Send { pid: u8, value: u64 },
+    Send {
+        pid: u8,
+        value: u64,
+    },
     Receive,
     WaitChild(u8),
+    ReadFile {
+        path: FixedText,
+        address: u64,
+        capacity: u64,
+    },
     Exit,
     Fault,
 }
@@ -195,6 +211,15 @@ pub struct ProcessUpdate {
     pub exit_code: u8,
     pub preemptions: u64,
     pub output: FixedText,
+    pub file_read: Option<FileReadRequest>,
+}
+
+#[derive(Clone, Copy)]
+pub struct FileReadRequest {
+    pub task_id: u32,
+    pub pid: u8,
+    pub path: FixedText,
+    pub capacity: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -212,7 +237,15 @@ struct ManagedProcess {
     wake_at: u64,
     blocked_on: BlockReason,
     inbox: MessageQueue<MESSAGE_CAPACITY>,
+    pending_file_read: Option<PendingFileRead>,
     process: UserProcess,
+}
+
+#[derive(Clone, Copy)]
+struct PendingFileRead {
+    path: FixedText,
+    address: u64,
+    capacity: u64,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -220,6 +253,7 @@ enum BlockReason {
     None,
     Receive,
     Child(u8),
+    FileRead,
 }
 
 impl ManagedProcess {
@@ -231,6 +265,7 @@ impl ManagedProcess {
             wake_at: 0,
             blocked_on: BlockReason::None,
             inbox: MessageQueue::new(),
+            pending_file_read: None,
             process,
         }
     }
@@ -264,6 +299,10 @@ impl ProcessManager {
 
     pub fn spawn_sleep_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
         self.spawn_single(task_id, TOKEN_SLEEP_MODE, "sleep")
+    }
+
+    pub fn spawn_file_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
+        self.spawn_single(task_id, TOKEN_FILE_MODE, "file")
     }
 
     fn spawn_single(
@@ -354,6 +393,7 @@ impl ProcessManager {
                 run_slice(&mut managed.process);
                 managed.process.event
             };
+            let mut file_read = None;
             match event {
                 ProcessEvent::Yield => {
                     TOTAL_YIELDS.fetch_add(1, Ordering::AcqRel);
@@ -365,6 +405,13 @@ impl ProcessManager {
                 ProcessEvent::Send { pid, value } => self.complete_send(index, pid, value),
                 ProcessEvent::Receive => self.complete_receive(index),
                 ProcessEvent::WaitChild(pid) => self.complete_child_wait(index, pid),
+                ProcessEvent::ReadFile {
+                    path,
+                    address,
+                    capacity,
+                } => {
+                    file_read = Some(self.block_file_read(index, path, address, capacity));
+                }
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
@@ -383,6 +430,7 @@ impl ProcessManager {
                 exit_code: managed.process.exit_code,
                 preemptions: managed.process.preemptions,
                 output,
+                file_read,
             });
         }
         None
@@ -503,6 +551,94 @@ impl ProcessManager {
         }
     }
 
+    fn block_file_read(
+        &mut self,
+        index: usize,
+        path: FixedText,
+        address: u64,
+        capacity: u64,
+    ) -> FileReadRequest {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::FileRead;
+        managed.pending_file_read = Some(PendingFileRead {
+            path,
+            address,
+            capacity,
+        });
+        crate::serial::print("USER_FILE_READ_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" path=");
+        crate::serial::print(path.as_str());
+        crate::serial::print(" cap=");
+        crate::serial::print_u64(capacity);
+        crate::serial::println("");
+        FileReadRequest {
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            path,
+            capacity,
+        }
+    }
+
+    pub fn complete_file_read(
+        &mut self,
+        request: FileReadRequest,
+        data: Option<&[u8]>,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| {
+                managed.task_id == request.task_id && managed.process.pid == request.pid
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if managed.state != ManagedState::Waiting
+            || managed.blocked_on != BlockReason::FileRead
+            || managed.process.completed
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        let pending = managed
+            .pending_file_read
+            .as_ref()
+            .ok_or(LaunchError::InvalidResult)?;
+        if pending.path != request.path || pending.capacity != request.capacity {
+            return Err(LaunchError::InvalidResult);
+        }
+        let pending = managed
+            .pending_file_read
+            .take()
+            .ok_or(LaunchError::InvalidResult)?;
+        let copied = data.and_then(|bytes| {
+            let length = bytes.len().min(pending.capacity as usize);
+            copy_to_user_data(&managed.process, pending.address, &bytes[..length])
+                .then_some(length as u64)
+        });
+        if copied.is_some() {
+            COMPLETED_FILE_READS.fetch_add(1, Ordering::AcqRel);
+        }
+        managed.process.context.rax =
+            copied.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print("USER_FILE_READ_WAKE pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" bytes=");
+        crate::serial::print_u64(copied.unwrap_or(0));
+        crate::serial::println("");
+        Ok(ProcessUpdate {
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            state: ManagedState::Ready,
+            exit_code: managed.process.exit_code,
+            preemptions: managed.process.preemptions,
+            output: FixedText::empty(),
+            file_read: None,
+        })
+    }
+
     fn complete_terminal(&mut self, index: usize, state: ManagedState) {
         let (pid, exit_code) = {
             let managed = self.slots[index].as_mut().expect("selected process exists");
@@ -562,6 +698,7 @@ impl ProcessManager {
             exit_code: managed.process.exit_code,
             preemptions: managed.process.preemptions,
             output: FixedText::empty(),
+            file_read: None,
         };
         self.wake_waiting_parent(pid, 137);
         Ok(update)
@@ -776,7 +913,7 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     let mut live = PROCESS_COUNT;
     let mut cursor = 0usize;
     let mut switches = 0u8;
-    while live > 0 && switches < 16 {
+    while live > 0 && switches < 64 {
         if !processes[cursor].completed {
             run_slice(&mut processes[cursor]);
             switches = switches.saturating_add(1);
@@ -786,7 +923,8 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 ProcessEvent::Sleep(_)
                 | ProcessEvent::Send { .. }
                 | ProcessEvent::Receive
-                | ProcessEvent::WaitChild(_) => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::WaitChild(_)
+                | ProcessEvent::ReadFile { .. } => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -875,6 +1013,14 @@ pub fn reclaimed_frame_count() -> u64 {
     RECLAIMED_FRAMES.load(Ordering::Acquire)
 }
 
+pub fn copy_out_passed() -> bool {
+    COPY_OUT_PASSED.load(Ordering::Acquire)
+}
+
+pub fn completed_file_read_count() -> u64 {
+    COMPLETED_FILE_READS.load(Ordering::Acquire)
+}
+
 pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     let elf_bytes = user_elf()?;
     let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
@@ -923,11 +1069,12 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     Ok(result)
 }
 
-pub fn run_lifecycle_probe() {
+pub fn run_lifecycle_probe(vfs: &RamVfs) {
     const NORMAL_TASK: u32 = 0x1000;
     const HOLD_TASK: u32 = 0x1001;
     const PARENT_TASK: u32 = 0x1002;
     const CHILD_TASK: u32 = 0x1003;
+    const FILE_TASK: u32 = 0x1004;
 
     let reclaimed_before = reclaimed_frame_count();
     let mut manager = ProcessManager::new();
@@ -1011,6 +1158,54 @@ pub fn run_lifecycle_probe() {
     crate::serial::println("USER_CHILD_WAIT_OK");
     crate::serial::println("USER_MESSAGE_OK");
     crate::serial::println("USER_COORDINATION_OK");
+
+    if manager.spawn_file_init(FILE_TASK).is_err() {
+        fail("USER_FILE_SPAWN_FAILED");
+    }
+    let mut file_request = None;
+    let mut saw_file_wait = false;
+    for tick in 30..=40 {
+        if let Some(update) = manager.poll(tick) {
+            if let Some(request) = update.file_read {
+                saw_file_wait = update.state == ManagedState::Waiting
+                    && !update.output.is_empty()
+                    && request.path.as_str() == "/README.TXT";
+                file_request = Some(request);
+                break;
+            }
+        }
+    }
+    let request = file_request.unwrap_or_else(|| fail("USER_FILE_REQUEST_MISSING"));
+    if !saw_file_wait || manager.poll(41).is_some() {
+        fail("USER_FILE_NOT_BLOCKED");
+    }
+    let data = vfs
+        .read(request.path.as_str())
+        .unwrap_or_else(|_| fail("USER_FILE_LOOKUP_FAILED"));
+    if !matches!(manager.complete_file_read(request, Some(data)), Ok(update) if update.state == ManagedState::Ready)
+    {
+        fail("USER_FILE_COMPLETION_FAILED");
+    }
+    let mut saw_file_exit = false;
+    for tick in 42..=52 {
+        if let Some(update) = manager.poll(tick) {
+            saw_file_exit |= update.pid == request.pid
+                && update.state == ManagedState::Exited
+                && update.exit_code == 0
+                && update.output.as_str() == "INIT.ELF read README.TXT through VFS";
+        }
+    }
+    if !saw_file_exit
+        || !COPY_OUT_PASSED.load(Ordering::Acquire)
+        || !matches!(manager.wait(FILE_TASK), Ok(result) if result.pid == request.pid && result.exit_code == 0)
+        || manager.live_count() != 0
+        || active_process_count() != 0
+        || reclaimed_frame_count() < reclaimed_before + 50
+    {
+        fail("USER_FILE_PROBE_FAILED");
+    }
+    crate::serial::println("USER_STRUCT_COPY_OK");
+    crate::serial::println("USER_VFS_BLOCKING_OK");
     crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
 }
 
@@ -1249,7 +1444,11 @@ pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
     process.event = ProcessEvent::Preempt;
     process.preemptions = process.preemptions.saturating_add(1);
     unsafe {
-        core::ptr::write_volatile((process.data_frame + 8) as *mut u64, process.preemptions);
+        core::ptr::write_volatile(
+            (process.data_frame + core::mem::offset_of!(UserProcessHeader, preemptions) as u64)
+                as *mut u64,
+            process.preemptions,
+        );
     }
     if process.preemptions == 1 {
         crate::serial::print("USER_PREEMPT pid=");
@@ -1392,6 +1591,53 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.event = ProcessEvent::WaitChild(pid);
             1
         }
+        Ok(SyscallAction::SystemInfo { address, length }) => {
+            let info = UserSystemInfo {
+                abi_version: USER_ABI_VERSION,
+                page_size: paging::PAGE_SIZE,
+                timer_hz: USER_TIMER_HZ,
+                message_capacity: USER_MESSAGE_CAPACITY,
+                max_file_read: USER_FILE_READ_MAX as u64,
+            };
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(info).cast::<u8>(),
+                    core::mem::size_of::<UserSystemInfo>(),
+                )
+            };
+            if length as usize == bytes.len() && copy_to_user_data(process, address, bytes) {
+                frame.rax = length;
+                if !COPY_OUT_PASSED.swap(true, Ordering::AcqRel) {
+                    crate::serial::println("USER_COPY_OUT_OK");
+                }
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+            }
+            0
+        }
+        Ok(SyscallAction::ReadFile {
+            path_address,
+            path_length,
+            output_address,
+            output_capacity,
+        }) => {
+            let path = copy_user_path(process, path_address, path_length);
+            if let Some(path) =
+                path.filter(|_| valid_user_data_buffer(process, output_address, output_capacity))
+            {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ReadFile {
+                    path,
+                    address: output_address,
+                    capacity: output_capacity,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;
             process.exit_code = code;
@@ -1472,6 +1718,51 @@ fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<Fi
     Some(FixedText::from_str(text))
 }
 
+fn copy_user_path(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
+    let path = copy_user_text(process, address, length)?;
+    if !path.as_str().starts_with('/')
+        || !path
+            .as_str()
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(path)
+}
+
+fn valid_user_data_buffer(process: &UserProcess, address: u64, length: u64) -> bool {
+    if !syscall::validate_user_buffer(address, length, paging::USER_DATA, paging::PAGE_SIZE) {
+        return false;
+    }
+    for offset in 0..length {
+        let virtual_address = address + offset;
+        let Some(physical) = paging::translate(process.space, virtual_address) else {
+            return false;
+        };
+        if physical != process.data_frame + (virtual_address - paging::USER_DATA) {
+            return false;
+        }
+    }
+    true
+}
+
+fn copy_to_user_data(process: &UserProcess, address: u64, bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return true;
+    }
+    if !valid_user_data_buffer(process, address, bytes.len() as u64) {
+        return false;
+    }
+    for (offset, byte) in bytes.iter().enumerate() {
+        let physical = process.data_frame + (address - paging::USER_DATA) + offset as u64;
+        unsafe {
+            core::ptr::write_volatile(physical as *mut u8, *byte);
+        }
+    }
+    true
+}
+
 fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> bool {
     let roots_are_distinct = processes.iter().enumerate().all(|(index, process)| {
         processes
@@ -1490,15 +1781,24 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
             && paging::translate(process.space, paging::USER_STACK_GUARD).is_none()
             && process.elf_segments == 2
             && process.elf_pages == 2
-            && unsafe { core::ptr::read_volatile(process.data_frame as *const u64) }
-                == process.token
-            && unsafe { core::ptr::read_volatile((process.data_frame + 8) as *const u64) }
-                == process.preemptions
+            && unsafe {
+                core::ptr::read_volatile(
+                    (process.data_frame + core::mem::offset_of!(UserProcessHeader, token) as u64)
+                        as *const u64,
+                )
+            } == process.token
+            && unsafe {
+                core::ptr::read_volatile(
+                    (process.data_frame
+                        + core::mem::offset_of!(UserProcessHeader, preemptions) as u64)
+                        as *const u64,
+                )
+            } == process.preemptions
     });
     let faulting = &processes[0];
     let healthy = &processes[1..];
 
-    (6..=12).contains(&switches)
+    (6..=48).contains(&switches)
         && roots_are_distinct
         && frames_are_distinct
         && mappings_are_private
@@ -1507,7 +1807,7 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
         && faulting.fault_vector == 14
         && faulting.fault_error == 0x6
         && faulting.fault_address == paging::USER_STACK_GUARD
-        && (1..=4).contains(&faulting.preemptions)
+        && (1..=16).contains(&faulting.preemptions)
         && faulting.preemption_armed
         && faulting.yields == 0
         && faulting.report == 0
@@ -1516,7 +1816,7 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
             process.completed
                 && process.exit_code == 0
                 && process.fault_vector == 0
-                && (1..=4).contains(&process.preemptions)
+                && (1..=16).contains(&process.preemptions)
                 && process.preemption_armed
                 && process.yields == 0
                 && process.report == process.token

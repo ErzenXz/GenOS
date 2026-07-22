@@ -52,8 +52,6 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::print("USER_BOOT_INIT pid=");
     serial::print_u64(dynamic_probe.pid as u64);
     serial::println("");
-    userspace::run_lifecycle_probe();
-
     let mut vfs = RamVfs::new();
     vfs.init_root();
     for file in initrd.iter() {
@@ -62,6 +60,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         }
     }
     serial::println("VFS_READY");
+    userspace::run_lifecycle_probe(&vfs);
 
     let mut tasks = TaskRegistry::new();
     let task_ids = shell::TaskIds {

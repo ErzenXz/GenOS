@@ -3,14 +3,19 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::asm;
 
-pub use genos_abi::{USER_ABI_VERSION as ABI_VERSION, USER_PING_REPLY as PING_REPLY};
+pub use genos_abi::{
+    UserProcessHeader, UserSystemInfo, USER_ABI_VERSION as ABI_VERSION,
+    USER_FILE_READ_MAX as FILE_READ_MAX, USER_MESSAGE_CAPACITY as MESSAGE_CAPACITY,
+    USER_PAGE_SIZE as PAGE_SIZE, USER_PING_REPLY as PING_REPLY, USER_TIMER_HZ as TIMER_HZ,
+};
 pub const STACK_GUARD: u64 = 0x0000_4000_0000_7000;
 
 use genos_abi::{
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
-    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
-    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE,
+    USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE, USER_SYSCALL_REPORT as SYSCALL_REPORT,
+    USER_SYSCALL_SEND as SYSCALL_SEND, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
+    USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
     USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
@@ -53,6 +58,38 @@ pub fn receive() -> u64 {
 
 pub fn wait_child(pid: u8) -> u64 {
     unsafe { syscall(SYSCALL_WAIT_CHILD, [pid as u64, 0, 0, 0, 0, 0]) }
+}
+
+pub fn system_info(info: &mut UserSystemInfo) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_SYSTEM_INFO,
+            [
+                info as *mut UserSystemInfo as u64,
+                core::mem::size_of::<UserSystemInfo>() as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn read_file(path: &[u8], output: &mut [u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_READ_FILE,
+            [
+                path.as_ptr() as u64,
+                path.len() as u64,
+                output.as_mut_ptr() as u64,
+                output.len() as u64,
+                0,
+                0,
+            ],
+        )
+    }
 }
 
 pub fn exit(status: u8) -> ! {

@@ -41,6 +41,7 @@ pub fn run(
     let mut last_clock_second = 255u8;
     let mut irq_tick_marker_sent = false;
     let mut display_idle_marker_sent = false;
+    let mut pending_file_read: Option<userspace::FileReadRequest> = None;
 
     loop {
         input_hw::poll();
@@ -173,7 +174,21 @@ pub fn run(
         }
 
         if tick != last_tick {
+            if let Some(request) = pending_file_read.take() {
+                tasks.mark_running(ids.vfs, tick);
+                let completion = match vfs.read(request.path.as_str()) {
+                    Ok(bytes) => processes.complete_file_read(request, Some(bytes)),
+                    Err(_) => processes.complete_file_read(request, None),
+                };
+                match completion {
+                    Ok(update) => apply_process_update(&mut display, &mut tasks, update, tick),
+                    Err(error) => push_launch_error(&mut display, error),
+                }
+            }
             if let Some(update) = processes.poll(tick) {
+                if let Some(request) = update.file_read {
+                    pending_file_read = Some(request);
+                }
                 apply_process_update(&mut display, &mut tasks, update, tick);
             }
             tasks.scheduler_tick(tick);
@@ -380,15 +395,21 @@ fn execute(
             let program = trim(args);
             let hold = program == "init hold" || program == "INIT.ELF hold";
             let sleep = program == "init sleep" || program == "INIT.ELF sleep";
+            let file = program == "init file" || program == "INIT.ELF file";
             if program == "pair" {
                 launch_coordination_pair(display, tasks, processes, tick);
-            } else if program != "init" && program != "INIT.ELF" && !hold && !sleep {
-                display.push_line(LineKind::Error, "usage: run init [hold|sleep] | run pair");
+            } else if program != "init" && program != "INIT.ELF" && !hold && !sleep && !file {
+                display.push_line(
+                    LineKind::Error,
+                    "usage: run init [hold|sleep|file] | run pair",
+                );
                 display.set_status("ELF launch failed");
             } else {
                 match tasks.reserve_user("init-elf", tick) {
                     Ok(task_pid) => match if sleep {
                         processes.spawn_sleep_init(task_pid)
+                    } else if file {
+                        processes.spawn_file_init(task_pid)
                     } else {
                         processes.spawn_init(task_pid, hold)
                     } {
@@ -406,6 +427,8 @@ fn execute(
                                     " mode=hold"
                                 } else if sleep {
                                     " mode=sleep"
+                                } else if file {
+                                    " mode=file"
                                 } else {
                                     " mode=normal"
                                 });
@@ -576,6 +599,15 @@ fn execute(
             frames.push_str(" allocator-recycled=");
             frames.push_u64(memory::recycled_frames() as u64);
             display.push_fixed(LineKind::Output, frames);
+            let mut io = FixedText::from_str("copyout=");
+            io.push_str(if crate::userspace::copy_out_passed() {
+                "passed"
+            } else {
+                "pending"
+            });
+            io.push_str(" vfs-reads=");
+            io.push_u64(crate::userspace::completed_file_read_count());
+            display.push_fixed(LineKind::Output, io);
             display.set_status("userspace ABI sampled");
         }
         "taskmgr" => {
@@ -607,7 +639,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.11 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.12 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -617,7 +649,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.11 runs isolated ELF processes with deadline sleep, owned child wait, bounded messaging, and frame reclamation.",
+                "GenOS 0.12 adds typed copy-out and blocking VFS reads for isolated ELF processes.",
             );
             display.set_status("about");
         }

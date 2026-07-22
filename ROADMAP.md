@@ -95,13 +95,17 @@ Delivered so far:
 - ABI 4 blocking sleep with scheduler tick deadlines and saved-context wakeup;
 - explicit parent ownership and blocking wait on a specific child PID;
 - bounded four-message per-process inboxes with blocking receive and direct wakeup;
-- `run init sleep` and `run pair` desktop proofs for coordination across isolated ELF instances.
+- `run init sleep` and `run pair` desktop proofs for coordination across isolated ELF instances;
+- ABI 5 stable `UserProcessHeader` and typed `UserSystemInfo` copy-out contracts;
+- mapped-range and physical-ownership validation before kernel-to-user copies;
+- asynchronous `read_file` requests that leave Ring 3 blocked until the desktop VFS completes them;
+- `run init file` proof of an exact 54-byte `/README.TXT` read and userspace verification.
 
 Remaining work:
 
-- broader syscall entry/exit surface and copy-out;
-- copy-out and structured userspace buffers;
-- blocking device and filesystem I/O;
+- capability-bearing file handles with read offsets, stat, and close;
+- bounded userspace file writes and explicit access policy;
+- blocking keyboard or event input;
 - multi-producer channel policy and endpoint handles;
 - move the shell into userspace.
 
@@ -127,6 +131,9 @@ Acceptance criteria:
 - [x] A sleeping userspace process leaves the runnable set and resumes at its deadline with preserved context.
 - [x] A parent can block only on its own child and receive the child's exit status on wake.
 - [x] Isolated processes can exchange fixed-width values through bounded per-process inboxes.
+- [x] The kernel can copy a versioned structure into a validated process-owned writable mapping.
+- [x] A userspace file read blocks without consuming slices and resumes with copied VFS bytes.
+- [x] Cross-layer request identity and the kernel-owned process-header offsets are covered by checks.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

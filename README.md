@@ -86,7 +86,7 @@ The current GenOS build already contains real operating-system infrastructure:
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 4 userspace sleep deadlines, owned child waits, and four-message bounded inboxes;
+- ABI 5 userspace sleep, owned child waits, bounded messaging, structured copy-out, and blocking VFS reads;
 - application output copied from validated user mappings into the desktop shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
@@ -115,9 +115,9 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run pair`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, and reclaimed-frame state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run pair`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, and completed VFS-read state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.11 makes that asynchronous lifecycle coordinate. `run init sleep` enters Ring 3, blocks in the kernel without consuming runnable slices, and resumes only after its tick deadline. `run pair` creates an owned parent and child in separate address spaces: the parent blocks on the exact child PID, the child sleeps, sends a fixed-width message through the parent's four-entry inbox, and exits with status 7; the kernel then wakes the parent with that status, and the parent receives the message before exiting cleanly. Invalid child ownership, full inboxes, and unavailable targets return bounded ABI errors. Exit, fault, and kill still reclaim every user-owned frame while terminal results remain available to the shell's observational `wait PID`. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.12 gives isolated applications their first real data path from kernel services. `run init file` enters Ring 3, requests a typed `SystemInfo` structure, then asks for `/README.TXT`. The syscall validates the path and destination, saves the full CPU context, and moves the process to `Waiting`. On the next desktop tick the VFS resolves the file, the kernel copies at most 128 bytes into the process-owned writable page, and the saved syscall resumes with the byte count. The application verifies the exact 54-byte file contents before reporting success. Request identity, path, capacity, mapped range, physical ownership, ABI structure size, and the fixed token/preemption header layout are all checked. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -132,7 +132,7 @@ GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
-    |-- userspace               async lifecycle / sleep / child wait / bounded IPC
+    |-- userspace               async lifecycle / copy-out / blocking VFS / bounded IPC
     |-- input                    PS/2 keyboard + mouse / event queue
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
@@ -219,7 +219,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, local faults, asynchronous lifecycle, deadline sleep, child wait, bounded IPC, and reclamation work; copy-out and richer I/O come next
+- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, local faults, asynchronous lifecycle, deadline sleep, child wait, bounded IPC, structured copy-out, blocking VFS read, and reclamation; file handles and input I/O come next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design
