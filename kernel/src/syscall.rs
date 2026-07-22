@@ -2,13 +2,15 @@ pub use genos_abi::{
     USER_ABI_VERSION, USER_PING_REPLY as PING_REPLY,
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION,
     USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE, USER_SYSCALL_EXIT as SYSCALL_EXIT,
-    USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE, USER_SYSCALL_PING as SYSCALL_PING,
-    USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE, USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE,
-    USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE, USER_SYSCALL_REPORT as SYSCALL_REPORT,
-    USER_SYSCALL_SEND as SYSCALL_SEND, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
-    USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
+    USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
+    USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE,
+    USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
+    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
+    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
-    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
+    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE,
+    USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +63,16 @@ pub enum SyscallAction {
     },
     CloseHandle {
         handle: u64,
+    },
+    OpenFileWithRights {
+        path_address: u64,
+        path_length: u64,
+        rights: u64,
+    },
+    WriteHandle {
+        handle: u64,
+        input_address: u64,
+        input_length: u64,
     },
 }
 
@@ -161,10 +173,49 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         SYSCALL_CLOSE_HANDLE if args[0] != 0 && args[1..] == [0; 5] => {
             Ok(SyscallAction::CloseHandle { handle: args[0] })
         }
-        SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT | SYSCALL_YIELD | SYSCALL_REPORT
-        | SYSCALL_WRITE | SYSCALL_SLEEP | SYSCALL_SEND | SYSCALL_RECEIVE | SYSCALL_WAIT_CHILD
-        | SYSCALL_SYSTEM_INFO | SYSCALL_READ_FILE | SYSCALL_OPEN_FILE | SYSCALL_READ_HANDLE
-        | SYSCALL_STAT_HANDLE | SYSCALL_CLOSE_HANDLE => Err(SyscallError::InvalidArgument),
+        SYSCALL_OPEN_FILE_WITH_RIGHTS
+            if args[0] != 0
+                && (1..=64).contains(&args[1])
+                && args[2] != 0
+                && args[2] & !genos_abi::USER_FILE_RIGHTS_MASK == 0
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::OpenFileWithRights {
+                path_address: args[0],
+                path_length: args[1],
+                rights: args[2],
+            })
+        }
+        SYSCALL_WRITE_HANDLE
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_FILE_WRITE_MAX as u64).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::WriteHandle {
+                handle: args[0],
+                input_address: args[1],
+                input_length: args[2],
+            })
+        }
+        SYSCALL_PING
+        | SYSCALL_ABI_VERSION
+        | SYSCALL_EXIT
+        | SYSCALL_YIELD
+        | SYSCALL_REPORT
+        | SYSCALL_WRITE
+        | SYSCALL_SLEEP
+        | SYSCALL_SEND
+        | SYSCALL_RECEIVE
+        | SYSCALL_WAIT_CHILD
+        | SYSCALL_SYSTEM_INFO
+        | SYSCALL_READ_FILE
+        | SYSCALL_OPEN_FILE
+        | SYSCALL_READ_HANDLE
+        | SYSCALL_STAT_HANDLE
+        | SYSCALL_CLOSE_HANDLE
+        | SYSCALL_OPEN_FILE_WITH_RIGHTS
+        | SYSCALL_WRITE_HANDLE => Err(SyscallError::InvalidArgument),
         _ => Err(SyscallError::UnknownNumber),
     }
 }
@@ -243,10 +294,10 @@ mod tests {
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 48, 0, 0, 0, 0]),
+            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 56, 0, 0, 0, 0]),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 48
+                length: 56
             })
         );
         assert_eq!(
@@ -284,6 +335,22 @@ mod tests {
         assert_eq!(
             dispatch(SYSCALL_CLOSE_HANDLE, [0x101, 0, 0, 0, 0, 0]),
             Ok(SyscallAction::CloseHandle { handle: 0x101 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_OPEN_FILE_WITH_RIGHTS, [0x5000, 14, 3, 0, 0, 0]),
+            Ok(SyscallAction::OpenFileWithRights {
+                path_address: 0x5000,
+                path_length: 14,
+                rights: 3,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WRITE_HANDLE, [0x101, 0x6000, 64, 0, 0, 0]),
+            Ok(SyscallAction::WriteHandle {
+                handle: 0x101,
+                input_address: 0x6000,
+                input_length: 64,
+            })
         );
     }
 
@@ -343,6 +410,14 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_CLOSE_HANDLE, [0, 0, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_OPEN_FILE_WITH_RIGHTS, [0x5000, 14, 4, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_WRITE_HANDLE, [0x101, 0x6000, 129, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));

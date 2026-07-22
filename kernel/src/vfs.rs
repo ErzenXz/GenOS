@@ -18,6 +18,7 @@ pub enum VfsError {
     IsDirectory,
     NotDirectory,
     InvalidPath,
+    InvalidOffset,
 }
 
 #[derive(Clone, Copy)]
@@ -124,6 +125,23 @@ impl RamVfs {
         }
         self.nodes[index].len += data.len();
         Ok(())
+    }
+
+    pub fn write_at(&mut self, path: &str, offset: usize, data: &[u8]) -> Result<usize, VfsError> {
+        let index = self.find_index(path).ok_or(VfsError::NotFound)?;
+        if self.nodes[index].kind == NodeKind::Directory {
+            return Err(VfsError::IsDirectory);
+        }
+        if offset > self.nodes[index].len {
+            return Err(VfsError::InvalidOffset);
+        }
+        let end = offset.checked_add(data.len()).ok_or(VfsError::NoSpace)?;
+        if end > MAX_FILE_BYTES {
+            return Err(VfsError::NoSpace);
+        }
+        self.nodes[index].data[offset..end].copy_from_slice(data);
+        self.nodes[index].len = self.nodes[index].len.max(end);
+        Ok(data.len())
     }
 
     pub fn read(&self, path: &str) -> Result<&[u8], VfsError> {
@@ -283,5 +301,19 @@ mod tests {
         vfs.init_root();
         vfs.seed_file("README.TXT", b"ok");
         assert_eq!(vfs.list_root().count(), 1);
+    }
+
+    #[test]
+    fn offset_writes_overwrite_extend_and_reject_holes() {
+        let mut vfs = RamVfs::new();
+        vfs.init_root();
+        vfs.write("/note.txt", b"hello").unwrap();
+        assert_eq!(vfs.write_at("/note.txt", 2, b"YY"), Ok(2));
+        assert_eq!(vfs.write_at("/note.txt", 5, b"!"), Ok(1));
+        assert_eq!(vfs.read("/note.txt"), Ok(&b"heYYo!"[..]));
+        assert_eq!(
+            vfs.write_at("/note.txt", 7, b"gap"),
+            Err(VfsError::InvalidOffset)
+        );
     }
 }

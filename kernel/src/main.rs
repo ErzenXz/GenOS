@@ -54,13 +54,14 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::println("");
     let mut vfs = RamVfs::new();
     vfs.init_root();
+    let _ = vfs.mkdir("/USER");
     for file in initrd.iter() {
         if file.name != "INIT.ELF" {
             vfs.seed_file(file.name, file.data);
         }
     }
     serial::println("VFS_READY");
-    userspace::run_lifecycle_probe(&vfs);
+    userspace::run_lifecycle_probe(&mut vfs);
 
     let mut tasks = TaskRegistry::new();
     let task_ids = shell::TaskIds {

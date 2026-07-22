@@ -7,12 +7,13 @@ use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use genos_user_runtime as runtime;
 
 const FAULT_TOKEN: u64 = 0xffff_ffff_ffff_fff0;
-const HOLD_TOKEN_BIT: u64 = 1 << 63;
 const TOKEN_MODE_MASK: u64 = 0xf000_0000_0000_0000;
+const HOLD_TOKEN_MODE: u64 = 0xb000_0000_0000_0000;
 const SLEEP_TOKEN_MODE: u64 = 0x4000_0000_0000_0000;
 const CHILD_TOKEN_MODE: u64 = 0x5000_0000_0000_0000;
 const PARENT_TOKEN_MODE: u64 = 0x6000_0000_0000_0000;
 const FILE_TOKEN_MODE: u64 = 0x7000_0000_0000_0000;
+const WRITE_TOKEN_MODE: u64 = 0xa000_0000_0000_0000;
 const COORDINATION_MESSAGE: u64 = 0x4745_4e4f_535f_4950;
 const GREETING: &[u8] = b"hello from INIT.ELF in ring 3";
 const AWAKENED: &[u8] = b"INIT.ELF woke after deadline";
@@ -21,6 +22,11 @@ const README_PATH: &[u8] = b"/README.TXT";
 const README_CONTENT: &[u8] = b"Welcome to GenOS.\nThis file lives in the V1 RAM disk.\n";
 const FILE_COMPLETE: &[u8] = b"INIT.ELF used open/read/stat/close";
 const FIRST_READ_BYTES: usize = 17;
+const USER_NOTE_PATH: &[u8] = b"/USER/APP.TXT";
+const WRITE_FIRST: &[u8] = b"GenOS Ring 3 ";
+const WRITE_SECOND: &[u8] = b"writes safely.";
+const WRITE_CONTENT: &[u8] = b"GenOS Ring 3 writes safely.";
+const WRITE_COMPLETE: &[u8] = b"INIT.ELF wrote and verified /USER/APP.TXT";
 
 #[repr(C)]
 struct ProcessData {
@@ -97,6 +103,7 @@ pub extern "C" fn _start(token: u64) -> ! {
             || info.message_capacity != runtime::MESSAGE_CAPACITY
             || info.max_file_read != runtime::FILE_READ_MAX as u64
             || info.file_handle_capacity != runtime::FILE_HANDLE_CAPACITY
+            || info.max_file_write != runtime::FILE_WRITE_MAX as u64
         {
             runtime::exit(246);
         }
@@ -138,7 +145,59 @@ pub extern "C" fn _start(token: u64) -> ! {
         }
     }
 
-    if token & HOLD_TOKEN_BIT != 0 {
+    if token & TOKEN_MODE_MASK == WRITE_TOKEN_MODE {
+        let denied = runtime::open_file_with_rights(
+            README_PATH,
+            runtime::FILE_RIGHT_READ | runtime::FILE_RIGHT_WRITE,
+        );
+        if denied != runtime::ERROR_INVALID_ARGUMENT {
+            runtime::exit(239);
+        }
+        let handle = runtime::open_file_with_rights(
+            USER_NOTE_PATH,
+            runtime::FILE_RIGHT_READ | runtime::FILE_RIGHT_WRITE,
+        );
+        if handle == 0 || handle >= runtime::ERROR_UNAVAILABLE {
+            runtime::exit(238);
+        }
+        let stat = unsafe { &mut *addr_of_mut!(PROCESS_DATA.file_stat) };
+        if runtime::stat_handle(handle, stat)
+            != core::mem::size_of::<runtime::UserFileStat>() as u64
+            || (stat.size != 0 && stat.size != WRITE_CONTENT.len() as u64)
+            || stat.offset != 0
+            || stat.rights != (runtime::FILE_RIGHT_READ | runtime::FILE_RIGHT_WRITE)
+        {
+            runtime::exit(237);
+        }
+        if runtime::write_handle(handle, WRITE_FIRST) != WRITE_FIRST.len() as u64
+            || runtime::write_handle(handle, WRITE_SECOND) != WRITE_SECOND.len() as u64
+            || runtime::stat_handle(handle, stat)
+                != core::mem::size_of::<runtime::UserFileStat>() as u64
+            || stat.size != WRITE_CONTENT.len() as u64
+            || stat.offset != WRITE_CONTENT.len() as u64
+        {
+            runtime::exit(236);
+        }
+        if runtime::close_handle(handle) != 0 {
+            runtime::exit(235);
+        }
+        let read_handle = runtime::open_file(USER_NOTE_PATH);
+        let buffer = unsafe { &mut *addr_of_mut!(PROCESS_DATA.file_buffer) };
+        if read_handle == 0
+            || read_handle >= runtime::ERROR_UNAVAILABLE
+            || runtime::write_handle(read_handle, b"!") != runtime::ERROR_INVALID_ARGUMENT
+            || runtime::read_handle(read_handle, buffer) != WRITE_CONTENT.len() as u64
+            || &buffer[..WRITE_CONTENT.len()] != WRITE_CONTENT
+            || runtime::close_handle(read_handle) != 0
+        {
+            runtime::exit(234);
+        }
+        if runtime::write(WRITE_COMPLETE) != WRITE_COMPLETE.len() as u64 {
+            runtime::exit(233);
+        }
+    }
+
+    if token & TOKEN_MODE_MASK == HOLD_TOKEN_MODE {
         loop {
             core::hint::spin_loop();
         }

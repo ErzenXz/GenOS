@@ -178,12 +178,21 @@ pub fn run(
                 tasks.mark_running(ids.vfs, tick);
                 let completion = match request {
                     userspace::UserVfsRequest::Open(request) => {
-                        let info = vfs.find(request.path.as_str()).and_then(|node| {
-                            (node.kind() == NodeKind::File).then_some(userspace::FileOpenInfo {
-                                size: node.len() as u64,
-                                kind: genos_abi::USER_FILE_KIND_REGULAR,
-                            })
-                        });
+                        let writable = request.rights & genos_abi::USER_FILE_RIGHT_WRITE != 0;
+                        let allowed =
+                            !writable || userspace::is_user_writable_path(request.path.as_str());
+                        if allowed && writable && vfs.find(request.path.as_str()).is_none() {
+                            let _ = vfs.touch(request.path.as_str());
+                        }
+                        let info = allowed
+                            .then(|| vfs.find(request.path.as_str()))
+                            .flatten()
+                            .and_then(|node| {
+                                (node.kind() == NodeKind::File).then_some(userspace::FileOpenInfo {
+                                    size: node.len() as u64,
+                                    kind: genos_abi::USER_FILE_KIND_REGULAR,
+                                })
+                            });
                         processes.complete_file_open(request, info)
                     }
                     userspace::UserVfsRequest::Read(request) => {
@@ -193,7 +202,19 @@ pub fn run(
                         });
                         processes.complete_file_read(request, bytes)
                     }
+                    userspace::UserVfsRequest::Write(request) => {
+                        let written = vfs
+                            .write_at(
+                                request.path.as_str(),
+                                request.offset as usize,
+                                request.data.as_slice(),
+                            )
+                            .ok()
+                            .map(|count| count as u64);
+                        processes.complete_file_write(request, written)
+                    }
                 };
+                display.sync_vfs(&vfs);
                 match completion {
                     Ok(update) => apply_process_update(&mut display, &mut tasks, update, tick),
                     Err(error) => push_launch_error(&mut display, error),
@@ -410,12 +431,19 @@ fn execute(
             let hold = program == "init hold" || program == "INIT.ELF hold";
             let sleep = program == "init sleep" || program == "INIT.ELF sleep";
             let file = program == "init file" || program == "INIT.ELF file";
+            let write = program == "init write" || program == "INIT.ELF write";
             if program == "pair" {
                 launch_coordination_pair(display, tasks, processes, tick);
-            } else if program != "init" && program != "INIT.ELF" && !hold && !sleep && !file {
+            } else if program != "init"
+                && program != "INIT.ELF"
+                && !hold
+                && !sleep
+                && !file
+                && !write
+            {
                 display.push_line(
                     LineKind::Error,
-                    "usage: run init [hold|sleep|file] | run pair",
+                    "usage: run init [hold|sleep|file|write] | run pair",
                 );
                 display.set_status("ELF launch failed");
             } else {
@@ -424,6 +452,8 @@ fn execute(
                         processes.spawn_sleep_init(task_pid)
                     } else if file {
                         processes.spawn_file_init(task_pid)
+                    } else if write {
+                        processes.spawn_write_init(task_pid)
                     } else {
                         processes.spawn_init(task_pid, hold)
                     } {
@@ -443,6 +473,8 @@ fn execute(
                                     " mode=sleep"
                                 } else if file {
                                     " mode=file"
+                                } else if write {
+                                    " mode=write"
                                 } else {
                                     " mode=normal"
                                 });
@@ -621,6 +653,8 @@ fn execute(
             });
             io.push_str(" vfs-reads=");
             io.push_u64(crate::userspace::completed_file_read_count());
+            io.push_str(" writes=");
+            io.push_u64(crate::userspace::completed_file_write_count());
             display.push_fixed(LineKind::Output, io);
             let mut handles = FixedText::from_str("handles opened=");
             handles.push_u64(crate::userspace::opened_file_handle_count());
@@ -660,7 +694,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.13 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.14 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -670,7 +704,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.13 adds process-owned file capabilities with offsets, stat, and close.",
+                "GenOS 0.14 adds bounded file writes with explicit rights and /USER isolation.",
             );
             display.set_status("about");
         }
@@ -842,6 +876,7 @@ fn push_vfs_error(display: &mut DisplayManager, error: VfsError) {
         VfsError::IsDirectory => "path is a directory",
         VfsError::NotDirectory => "path is not a directory",
         VfsError::InvalidPath => "invalid path",
+        VfsError::InvalidOffset => "invalid file offset",
     };
     display.push_line(LineKind::Error, text);
 }

@@ -104,10 +104,13 @@ Delivered so far:
 - blocking `open_file` and offset-aware `read_handle`, plus structured `stat_handle` copy-out;
 - explicit `close_handle`, stale-handle rejection, and automatic handle revocation on termination;
 - two-chunk `run init file` proof with offsets 0 and 17, exact content verification, and close misuse testing.
+- ABI 7 explicit read/write capability rights and a shared 128-byte maximum write contract;
+- protected `/USER/` mutation policy that keeps boot and system files read-only to applications;
+- kernel-owned write payloads, blocking offset-aware VFS mutation, and stat size/offset updates;
+- `run init write` proof covering two writes, protected-path denial, read-only denial, close/reopen, and exact read-back.
 
 Remaining work:
 
-- bounded userspace file writes and explicit access policy;
 - blocking keyboard or event input;
 - multi-producer channel policy and endpoint handles;
 - move the shell into userspace.
@@ -139,6 +142,8 @@ Acceptance criteria:
 - [x] Cross-layer request identity and the kernel-owned process-header offsets are covered by checks.
 - [x] A process can open a read-only file capability, advance a kernel-owned offset, inspect metadata, and close it.
 - [x] Forged completions and stale handles are rejected without copying bytes or reviving authority.
+- [x] A write-capable process can mutate only `/USER/`, with bounded kernel-owned payloads and offset accounting.
+- [x] Protected paths and read-only handles reject writes, while successful data survives close/reopen inside the session VFS.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

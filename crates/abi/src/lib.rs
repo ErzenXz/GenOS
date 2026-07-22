@@ -5,7 +5,7 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 6;
+pub const USER_ABI_VERSION: u64 = 7;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
@@ -22,12 +22,18 @@ pub const USER_SYSCALL_OPEN_FILE: u64 = 12;
 pub const USER_SYSCALL_READ_HANDLE: u64 = 13;
 pub const USER_SYSCALL_STAT_HANDLE: u64 = 14;
 pub const USER_SYSCALL_CLOSE_HANDLE: u64 = 15;
+pub const USER_SYSCALL_OPEN_FILE_WITH_RIGHTS: u64 = 16;
+pub const USER_SYSCALL_WRITE_HANDLE: u64 = 17;
 pub const USER_MESSAGE_CAPACITY: u64 = 4;
 pub const USER_FILE_READ_MAX: usize = 128;
+pub const USER_FILE_WRITE_MAX: usize = 128;
 pub const USER_FILE_HANDLE_CAPACITY: u64 = 4;
 pub const USER_FILE_KIND_REGULAR: u64 = 1;
 pub const USER_FILE_KIND_DIRECTORY: u64 = 2;
 pub const USER_FILE_RIGHT_READ: u64 = 1;
+pub const USER_FILE_RIGHT_WRITE: u64 = 2;
+pub const USER_FILE_RIGHTS_MASK: u64 = USER_FILE_RIGHT_READ | USER_FILE_RIGHT_WRITE;
+pub const USER_WRITABLE_PREFIX: &str = "/USER/";
 pub const USER_ERROR_UNKNOWN_SYSCALL: u64 = u64::MAX;
 pub const USER_ERROR_INVALID_ARGUMENT: u64 = u64::MAX - 1;
 pub const USER_ERROR_UNAVAILABLE: u64 = u64::MAX - 2;
@@ -60,6 +66,7 @@ pub struct UserSystemInfo {
     pub message_capacity: u64,
     pub max_file_read: u64,
     pub file_handle_capacity: u64,
+    pub max_file_write: u64,
 }
 
 impl UserSystemInfo {
@@ -71,6 +78,7 @@ impl UserSystemInfo {
             message_capacity: 0,
             max_file_read: 0,
             file_handle_capacity: 0,
+            max_file_write: 0,
         }
     }
 }

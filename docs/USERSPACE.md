@@ -1,6 +1,6 @@
 # GenOS userspace boundary
 
-GenOS 0.13 adds process-owned file capabilities, kernel-maintained offsets, metadata copy-out, and explicit close semantics to the independently built ELF runtime. This document states exactly what the milestone proves and what it does not.
+GenOS 0.14 adds bounded file writes, explicit capability rights, and a protected userspace mutation namespace to the independently built ELF runtime. This document states exactly what the milestone proves and what it does not.
 
 ## Build and packaging pipeline
 
@@ -32,7 +32,7 @@ Every accepted page receives a newly allocated zeroed physical frame. File bytes
 
 At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
 
-1. all instances query ABI version 6 and become eligible for timer scheduling;
+1. all instances query ABI version 7 and become eligible for timer scheduling;
 2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
 3. the first instance writes to its guard page and is terminated with page-fault status 142 before performing output work;
 4. the two healthy instances resume afterward, write greetings through the validated output syscall, report private values through validated copy-in, and exit with status 0.
@@ -45,6 +45,10 @@ Finally, a file-mode process requests `UserSystemInfo` through structured copy-o
 
 The application compares all 54 bytes with the expected file, closes the handle, and proves that a subsequent read returns `USER_ERROR_INVALID_ARGUMENT`. The lifecycle probe also submits forged open and read completions before the valid completions and requires both to be rejected. Normal exit, fault, and kill revoke every handle still owned by the process.
 
+A second file-mode process then requests read/write authority for `/README.TXT`; the kernel rejects it before issuing a VFS request because application mutation is limited to the case-sensitive `/USER/` prefix. The process opens `/USER/APP.TXT` with read/write rights, causing the VFS service to create an empty file. It writes 13 and then 14 bytes through two blocking requests. Each payload is copied completely from mapped userspace into a fixed 128-byte kernel buffer before the process becomes non-runnable. Successful completion advances the capability offset and size to 13 and then 27.
+
+After close, the application reopens the file read-only. A write through that narrower capability returns `USER_ERROR_INVALID_ARGUMENT` without reaching the VFS. The application reads back and verifies all 27 bytes, closes the handle, exits with status 0, and releases its ten address-space frames. The lifecycle probe submits a forged write offset before the real completion and requires rejection without changing authority or offset.
+
 The QEMU smoke test requires markers for structured copy-out, file block/wake, exact content verification, sleep/block/wake, owned child wait/wake, message send/receive, frame reclamation, fault containment, and the long-lived desktop. Recycled roots are visibly reused by later processes in the serial proof.
 
 ## Desktop lifecycle
@@ -53,6 +57,7 @@ The QEMU smoke test requires markers for structured copy-out, file block/wake, e
 - `run init hold` launches the same ELF with a persistent token. After its greeting, it remains runnable until killed.
 - `run init sleep` blocks the process for three scheduler ticks and prints a second line only after its deadline wakeup.
 - `run init file` copies out system metadata, opens `/README.TXT`, verifies stat and offset changes across two blocking reads, closes the handle, and proves stale reuse fails.
+- `run init write` proves protected-path denial, creates `/USER/APP.TXT`, performs two bounded writes, checks stat, closes and reopens read-only, proves write denial, and verifies exact read-back.
 - `run pair` reserves two task records and launches the parent-child coordination proof. Task Manager exposes their `waiting`, `sleeping`, `ready`, and terminal transitions.
 - `ps` shows the user task alongside system and kernel-worker records.
 - `kill PID` terminates a live userspace task with status 137 and immediately releases its address space.
@@ -62,14 +67,14 @@ Completed task history remains in the task registry even after the heavier proce
 
 The shell's `wait PID` remains an observational reap command for operators. ABI `wait_child` is the blocking primitive used by a Ring 3 parent; the two operations intentionally serve different callers.
 
-## ABI version 6
+## ABI version 7
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
 | Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
-| 1 | `abi_version` | all zero | ABI version `6` |
+| 1 | `abi_version` | all zero | ABI version `7` |
 | 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
 | 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
 | 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
@@ -78,12 +83,14 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 7 | `send` | target PID `1..255`, fixed-width value | `0`, or a bounded error if the target is unavailable or its inbox is full |
 | 8 | `receive` | all zero | next fixed-width inbox value; blocks if the inbox is empty |
 | 9 | `wait_child` | child PID `1..255` | child exit status; blocks while an owned child remains live |
-| 10 | `system_info` | writable address and exact structure size `48` | copies `UserSystemInfo` and returns `48` |
+| 10 | `system_info` | writable address and exact structure size `56` | copies `UserSystemInfo` and returns `56` |
 | 11 | `read_file` | path address/length and writable output address/capacity | ABI 5 compatibility read; blocks and returns a byte count |
 | 12 | `open_file` | path address/length | blocks, then returns an opaque read-only handle or a bounded error |
 | 13 | `read_handle` | handle and writable output address/capacity | blocks, copies from the kernel-owned offset, advances it, and returns a byte count |
 | 14 | `stat_handle` | handle, writable address, and exact structure size `32` | copies `UserFileStat` and returns `32` |
 | 15 | `close_handle` | handle | revokes the capability and returns `0`; stale or foreign values are rejected |
+| 16 | `open_file_with_rights` | path address/length and rights mask | blocks, then returns an opaque handle with the granted read/write rights |
+| 17 | `write_handle` | handle and mapped input address/length | copies at most 128 bytes into the kernel, blocks, writes at the owned offset, and returns a byte count |
 
 The output path validates the whole range against the userspace window, translates every byte through the owning address space, rejects unmapped holes, and replaces control or non-ASCII bytes before the shell sees them. The application uses runtime functions instead of handwritten assembly. Cooperative yield remains available for ABI compatibility, but the execution proof relies on timer preemption.
 
@@ -91,11 +98,13 @@ Blocking syscalls copy the normalized interrupt frame into the process context a
 
 Each managed process owns a four-value FIFO inbox. `send` either wakes a receiver directly or appends at the tail; it never allocates and never silently overwrites an older value. `wait_child` accepts only a live or retained process whose recorded parent PID matches the caller. These policies keep the first IPC contract small and deterministic.
 
-`UserSystemInfo` is a `repr(C)` structure of six `u64` fields: ABI version, page size, timer frequency, message capacity, maximum file-read size, and file-handle capacity. `UserFileStat` has four `u64` fields: size, current offset, node kind, and rights. Their sizes, alignments, field offsets, and constants are tested. `UserProcessHeader` fixes the kernel-owned token and preemption words at offsets 0 and 8; those offsets are also tested so adding application data cannot silently break preemption again.
+`UserSystemInfo` is a `repr(C)` structure of seven `u64` fields: ABI version, page size, timer frequency, message capacity, maximum file-read size, file-handle capacity, and maximum file-write size. `UserFileStat` has four `u64` fields: size, current offset, node kind, and rights. Their sizes, alignments, field offsets, rights, limits, errors, and namespace constants are tested. `UserProcessHeader` fixes the kernel-owned token and preemption words at offsets 0 and 8; those offsets are also tested so adding application data cannot silently break preemption again.
 
 Paths are 1–64 ASCII bytes, must be absolute, and may use only letters, numbers, `/`, `.`, `_`, or `-`. Read buffers are capped at 128 bytes and must remain inside the process's writable data page, with every byte translating to the physical frame owned by that process. A handle contains a process prefix, monotonically advancing per-process generation, and slot identity, but userspace must treat the value as opaque. Authority comes from an exact entry in the calling process's table; guessing another PID's value never grants access.
 
-Open stores a snapshot of file size and kind plus read-only rights. `stat_handle` exposes that snapshot and the live per-open offset. Reads resolve current VFS bytes using the kernel-owned path and offset; a successful short read advances the offset by exactly the number of copied bytes, and end-of-file returns zero. Completion must match the original task ID, Ring 3 PID, handle, path, offset, and capacity. The older path-based `read_file` remains syscall 11 for ABI compatibility but new applications should use handles.
+Legacy `open_file` grants read-only authority. `open_file_with_rights` accepts a nonzero mask containing `READ`, `WRITE`, or both; any unknown bit is rejected. A request containing `WRITE` is accepted only when the validated path starts with `/USER/` and contains a filename after that prefix. There are no traversal semantics, symlinks, or mount aliases in the RAM VFS, and the check is repeated at the kernel/VFS service boundary.
+
+`stat_handle` exposes the open-time size and kind plus the live per-open offset and rights. Reads and writes resolve the kernel-owned path and offset rather than accepting either from userspace. A successful operation advances the offset by exactly the completed byte count; writes also extend the capability's observed size. Write payload bytes may come from any mapped readable user page but are copied into the pending kernel request before blocking. Completion must match the original task ID, Ring 3 PID, handle, path, offset, payload, and requested length. The older path-based `read_file` remains syscall 11 for compatibility, while new applications should use handles.
 
 ## Interrupt safety
 
@@ -128,10 +137,14 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - The process token and preemption counter have tested, shared ABI offsets.
 - File reads leave the process non-runnable until the VFS completion path injects a result into saved `rax`.
 - A pending file completion must match the original task ID, Ring 3 PID, path, and capacity.
-- File authority is represented by an exact process-owned handle entry with read-only rights and a per-open generation.
+- File authority is represented by an exact process-owned handle entry with explicit rights and a per-open generation.
 - Userspace cannot choose the path or offset of a handle read; both come from the kernel capability table.
 - Successful reads advance the per-open offset by the exact copied byte count, while stat observes the same offset.
 - Close and process termination revoke handles; stale reuse returns a stable invalid-argument error.
+- Write-capable opens and writes are restricted to `/USER/`; protected paths never reach the mutation service.
+- Write payloads are bounded to 128 bytes and copied into kernel-owned memory before blocking.
+- Read-only handles reject writes, and successful writes advance both capability offset and observed size.
+- Open, read, and write completions bind task ID, Ring 3 PID, handle generation, path, offset, limits, and payload identity.
 
 ## Current limitations
 
@@ -141,10 +154,11 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - The process manager has four slots. A terminal process occupies one until `wait` reaps it.
 - The recycled-frame pool is intentionally bounded to 256 frames; this milestone does not provide a general coalescing physical-memory allocator.
 - Messages carry one `u64`; there are no byte streams, endpoint handles, permissions beyond process availability, or multi-producer fairness guarantees yet.
-- The userspace file API is read-only, capped at four handles and 128 bytes per read, and backed only by the session RAM VFS. Directory capabilities, seek, writes, shared handles, live metadata refresh, and persistent storage are not implemented yet.
+- The userspace file API is capped at four handles and 128 bytes per read or write, and it is backed only by the session RAM VFS. Directory capabilities, seek, truncation controls, shared handles, live metadata refresh, and persistent storage are not implemented yet.
+- `/USER/` writes last only for the current boot; there is no durable block device or crash-consistency guarantee yet.
 - The desktop holds one pending VFS request because it schedules at most one userspace slice and services one completion per tick.
 - There is no blocking input, heap allocator, or userspace window API.
 - Output is a bounded text syscall, not file-descriptor-based standard I/O.
 - The transition state is single-core and supports one active user process at a time.
 
-The next slice is bounded userspace file writes with explicit access rights and mutation policy, followed by blocking input events built on the same saved-context wakeup model.
+The next slice is blocking keyboard and input events built on the same saved-context wakeup model, followed by multi-producer channel policy and endpoint handles.

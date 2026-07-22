@@ -1356,7 +1356,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.13",
+            "GenOS 0.14",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1370,7 +1370,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "RING 3  /  FILE CAPABILITIES  /  OFFSETS  /  ABI 6",
+            "RING 3  /  BOUNDED FILE WRITES  /  RIGHTS  /  ABI 7",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

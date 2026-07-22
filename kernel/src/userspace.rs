@@ -3,8 +3,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
     UserFileStat, UserProcessHeader, UserSystemInfo, USER_ABI_VERSION, USER_FILE_HANDLE_CAPACITY,
-    USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHT_READ, USER_MESSAGE_CAPACITY,
-    USER_TIMER_HZ,
+    USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ,
+    USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_MESSAGE_CAPACITY, USER_TIMER_HZ,
+    USER_WRITABLE_PREFIX,
 };
 use kernel::{
     display::FixedText,
@@ -29,6 +30,7 @@ const TOKEN_SLEEP_MODE: u64 = 0x4000_0000_0000_0000;
 const TOKEN_CHILD_MODE: u64 = 0x5000_0000_0000_0000;
 const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
 const TOKEN_FILE_MODE: u64 = 0x7000_0000_0000_0000;
+const TOKEN_WRITE_MODE: u64 = 0xa000_0000_0000_0000;
 const MESSAGE_CAPACITY: usize = 4;
 const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
@@ -52,6 +54,7 @@ static ACTIVE_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_SPACES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_FILE_READS: AtomicU64 = AtomicU64::new(0);
+static COMPLETED_FILE_WRITES: AtomicU64 = AtomicU64::new(0);
 static OPENED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
 static CLOSED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
@@ -130,6 +133,7 @@ enum ProcessEvent {
     },
     OpenFile {
         path: FixedText,
+        rights: u64,
     },
     ReadHandle {
         handle: u64,
@@ -142,6 +146,10 @@ enum ProcessEvent {
         length: u64,
     },
     CloseHandle(u64),
+    WriteHandle {
+        handle: u64,
+        data: FileWriteBuffer,
+    },
     Exit,
     Fault,
 }
@@ -236,6 +244,7 @@ pub struct ProcessUpdate {
 pub enum UserVfsRequest {
     Open(FileOpenRequest),
     Read(FileReadRequest),
+    Write(FileWriteRequest),
 }
 
 #[derive(Clone, Copy)]
@@ -243,6 +252,7 @@ pub struct FileOpenRequest {
     pub task_id: u32,
     pub pid: u8,
     pub path: FixedText,
+    pub rights: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -262,6 +272,43 @@ pub struct FileReadRequest {
 }
 
 #[derive(Clone, Copy)]
+pub struct FileWriteRequest {
+    pub task_id: u32,
+    pub pid: u8,
+    pub path: FixedText,
+    pub handle: u64,
+    pub offset: u64,
+    pub data: FileWriteBuffer,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct FileWriteBuffer {
+    bytes: [u8; USER_FILE_WRITE_MAX],
+    len: usize,
+}
+
+impl FileWriteBuffer {
+    const fn empty() -> Self {
+        Self {
+            bytes: [0; USER_FILE_WRITE_MAX],
+            len: 0,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct WaitResult {
     pub pid: u8,
     pub state: ManagedState,
@@ -278,8 +325,9 @@ struct ManagedProcess {
     inbox: MessageQueue<MESSAGE_CAPACITY>,
     file_handles: [Option<FileCapability>; FILE_HANDLE_CAPACITY],
     next_file_generation: u64,
-    pending_file_open: Option<FixedText>,
+    pending_file_open: Option<PendingFileOpen>,
     pending_file_read: Option<PendingFileRead>,
+    pending_file_write: Option<PendingFileWrite>,
     process: UserProcess,
 }
 
@@ -290,6 +338,20 @@ struct PendingFileRead {
     offset: u64,
     address: u64,
     capacity: u64,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PendingFileOpen {
+    path: FixedText,
+    rights: u64,
+}
+
+#[derive(Clone, Copy)]
+struct PendingFileWrite {
+    handle: u64,
+    path: FixedText,
+    offset: u64,
+    data: FileWriteBuffer,
 }
 
 #[derive(Clone, Copy)]
@@ -309,6 +371,7 @@ enum BlockReason {
     Child(u8),
     FileOpen,
     FileRead,
+    FileWrite,
 }
 
 impl ManagedProcess {
@@ -324,6 +387,7 @@ impl ManagedProcess {
             next_file_generation: 1,
             pending_file_open: None,
             pending_file_read: None,
+            pending_file_write: None,
             process,
         }
     }
@@ -336,7 +400,15 @@ impl ManagedProcess {
         self.inbox.pop()
     }
 
-    fn allocate_file_handle(&mut self, path: FixedText, info: FileOpenInfo) -> Option<u64> {
+    fn allocate_file_handle(
+        &mut self,
+        path: FixedText,
+        info: FileOpenInfo,
+        rights: u64,
+    ) -> Option<u64> {
+        if rights == 0 || rights & !USER_FILE_RIGHTS_MASK != 0 {
+            return None;
+        }
         let slot = self.file_handles.iter().position(Option::is_none)?;
         let generation = self.next_file_generation;
         self.next_file_generation = self.next_file_generation.saturating_add(1);
@@ -347,7 +419,7 @@ impl ManagedProcess {
             offset: 0,
             size: info.size,
             kind: info.kind,
-            rights: USER_FILE_RIGHT_READ,
+            rights,
         });
         Some(handle)
     }
@@ -382,6 +454,7 @@ impl ManagedProcess {
         self.file_handles = [None; FILE_HANDLE_CAPACITY];
         self.pending_file_open = None;
         self.pending_file_read = None;
+        self.pending_file_write = None;
     }
 }
 
@@ -409,6 +482,10 @@ impl ProcessManager {
 
     pub fn spawn_file_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
         self.spawn_single(task_id, TOKEN_FILE_MODE, "file")
+    }
+
+    pub fn spawn_write_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
+        self.spawn_single(task_id, TOKEN_WRITE_MODE, "write")
     }
 
     fn spawn_single(
@@ -520,8 +597,10 @@ impl ProcessManager {
                         self.block_file_read(index, path, address, capacity),
                     ));
                 }
-                ProcessEvent::OpenFile { path } => {
-                    vfs_request = Some(UserVfsRequest::Open(self.block_file_open(index, path)));
+                ProcessEvent::OpenFile { path, rights } => {
+                    vfs_request = self
+                        .block_file_open(index, path, rights)
+                        .map(UserVfsRequest::Open);
                 }
                 ProcessEvent::ReadHandle {
                     handle,
@@ -538,6 +617,11 @@ impl ProcessManager {
                     length,
                 } => self.complete_file_stat(index, handle, address, length),
                 ProcessEvent::CloseHandle(handle) => self.complete_file_close(index, handle),
+                ProcessEvent::WriteHandle { handle, data } => {
+                    vfs_request = self
+                        .block_file_handle_write(index, handle, data)
+                        .map(UserVfsRequest::Write);
+                }
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
@@ -677,20 +761,42 @@ impl ProcessManager {
         }
     }
 
-    fn block_file_open(&mut self, index: usize, path: FixedText) -> FileOpenRequest {
+    fn block_file_open(
+        &mut self,
+        index: usize,
+        path: FixedText,
+        rights: u64,
+    ) -> Option<FileOpenRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
+        if rights == 0
+            || rights & !USER_FILE_RIGHTS_MASK != 0
+            || (rights & USER_FILE_RIGHT_WRITE != 0 && !is_user_writable_path(path.as_str()))
+        {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_FILE_OPEN_DENIED pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::print(" path=");
+            crate::serial::println(path.as_str());
+            return None;
+        }
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::FileOpen;
-        managed.pending_file_open = Some(path);
+        managed.pending_file_open = Some(PendingFileOpen { path, rights });
         crate::serial::print("USER_FILE_OPEN_BLOCK pid=");
         crate::serial::print_u64(managed.process.pid as u64);
         crate::serial::print(" path=");
-        crate::serial::println(path.as_str());
-        FileOpenRequest {
+        crate::serial::print(path.as_str());
+        crate::serial::print(" rights=");
+        crate::serial::print_u64(rights);
+        crate::serial::println("");
+        Some(FileOpenRequest {
             task_id: managed.task_id,
             pid: managed.process.pid,
             path,
-        }
+            rights,
+        })
     }
 
     pub fn complete_file_open(
@@ -709,14 +815,20 @@ impl ProcessManager {
         if managed.state != ManagedState::Waiting
             || managed.blocked_on != BlockReason::FileOpen
             || managed.process.completed
-            || managed.pending_file_open != Some(request.path)
+            || managed.pending_file_open
+                != Some(PendingFileOpen {
+                    path: request.path,
+                    rights: request.rights,
+                })
         {
             return Err(LaunchError::InvalidResult);
         }
         managed.pending_file_open = None;
         let handle = info
             .filter(|metadata| metadata.kind == USER_FILE_KIND_REGULAR)
-            .and_then(|metadata| managed.allocate_file_handle(request.path, metadata));
+            .and_then(|metadata| {
+                managed.allocate_file_handle(request.path, metadata, request.rights)
+            });
         if handle.is_some() {
             OPENED_FILE_HANDLES.fetch_add(1, Ordering::AcqRel);
         }
@@ -819,6 +931,121 @@ impl ProcessManager {
         crate::serial::print_hex(handle);
         crate::serial::print(" result=");
         crate::serial::println(if closed { "closed" } else { "rejected" });
+    }
+
+    fn block_file_handle_write(
+        &mut self,
+        index: usize,
+        handle: u64,
+        data: FileWriteBuffer,
+    ) -> Option<FileWriteRequest> {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
+            capability.rights & USER_FILE_RIGHT_WRITE != 0
+                && is_user_writable_path(capability.path.as_str())
+                && !data.is_empty()
+        }) else {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_HANDLE_WRITE_DENIED pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::println("");
+            return None;
+        };
+        let pending = PendingFileWrite {
+            handle,
+            path: capability.path,
+            offset: capability.offset,
+            data,
+        };
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::FileWrite;
+        managed.pending_file_write = Some(pending);
+        crate::serial::print("USER_HANDLE_WRITE_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" handle=0x");
+        crate::serial::print_hex(handle);
+        crate::serial::print(" offset=");
+        crate::serial::print_u64(capability.offset);
+        crate::serial::print(" bytes=");
+        crate::serial::print_u64(data.len() as u64);
+        crate::serial::println("");
+        Some(FileWriteRequest {
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            path: capability.path,
+            handle,
+            offset: capability.offset,
+            data,
+        })
+    }
+
+    pub fn complete_file_write(
+        &mut self,
+        request: FileWriteRequest,
+        written: Option<u64>,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| {
+                managed.task_id == request.task_id && managed.process.pid == request.pid
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if managed.state != ManagedState::Waiting
+            || managed.blocked_on != BlockReason::FileWrite
+            || managed.process.completed
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        let pending = managed
+            .pending_file_write
+            .as_ref()
+            .ok_or(LaunchError::InvalidResult)?;
+        if pending.handle != request.handle
+            || pending.path != request.path
+            || pending.offset != request.offset
+            || pending.data != request.data
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        let capability = managed
+            .file_handle(request.handle)
+            .copied()
+            .filter(|capability| {
+                capability.path == request.path
+                    && capability.offset == request.offset
+                    && capability.rights & USER_FILE_RIGHT_WRITE != 0
+            })
+            .ok_or(LaunchError::InvalidResult)?;
+        let written = written.filter(|count| *count <= request.data.len() as u64);
+        managed.pending_file_write = None;
+        if let Some(count) = written {
+            let capability = managed
+                .file_handle_mut(request.handle)
+                .ok_or(LaunchError::InvalidResult)?;
+            capability.offset = capability.offset.saturating_add(count);
+            capability.size = capability.size.max(capability.offset);
+            COMPLETED_FILE_WRITES.fetch_add(1, Ordering::AcqRel);
+        }
+        managed.process.context.rax =
+            written.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print("USER_HANDLE_WRITE_WAKE pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" bytes=");
+        crate::serial::print_u64(written.unwrap_or(0));
+        crate::serial::print(" size=");
+        crate::serial::print_u64(
+            capability
+                .size
+                .max(request.offset.saturating_add(written.unwrap_or(0))),
+        );
+        crate::serial::println("");
+        Ok(process_update(managed))
     }
 
     fn block_file_read(
@@ -1224,7 +1451,8 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::OpenFile { .. }
                 | ProcessEvent::ReadHandle { .. }
                 | ProcessEvent::StatHandle { .. }
-                | ProcessEvent::CloseHandle(_) => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::CloseHandle(_)
+                | ProcessEvent::WriteHandle { .. } => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -1321,6 +1549,14 @@ pub fn completed_file_read_count() -> u64 {
     COMPLETED_FILE_READS.load(Ordering::Acquire)
 }
 
+pub fn completed_file_write_count() -> u64 {
+    COMPLETED_FILE_WRITES.load(Ordering::Acquire)
+}
+
+pub fn is_user_writable_path(path: &str) -> bool {
+    path.starts_with(USER_WRITABLE_PREFIX) && path.len() > USER_WRITABLE_PREFIX.len()
+}
+
 pub fn opened_file_handle_count() -> u64 {
     OPENED_FILE_HANDLES.load(Ordering::Acquire)
 }
@@ -1377,12 +1613,13 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     Ok(result)
 }
 
-pub fn run_lifecycle_probe(vfs: &RamVfs) {
+pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     const NORMAL_TASK: u32 = 0x1000;
     const HOLD_TASK: u32 = 0x1001;
     const PARENT_TASK: u32 = 0x1002;
     const CHILD_TASK: u32 = 0x1003;
     const FILE_TASK: u32 = 0x1004;
+    const WRITE_TASK: u32 = 0x1005;
 
     let reclaimed_before = reclaimed_frame_count();
     let mut manager = ProcessManager::new();
@@ -1527,6 +1764,7 @@ pub fn run_lifecycle_probe(vfs: &RamVfs) {
                         fail("USER_FILE_COMPLETION_FAILED");
                     }
                 }
+                UserVfsRequest::Write(_) => fail("USER_UNEXPECTED_FILE_WRITE"),
             }
         }
         saw_file_exit |= update.state == ManagedState::Exited
@@ -1553,6 +1791,106 @@ pub fn run_lifecycle_probe(vfs: &RamVfs) {
     crate::serial::println("USER_FILE_CAPABILITY_OK");
     crate::serial::println("USER_FILE_OFFSET_OK");
     crate::serial::println("USER_FILE_CLOSE_OK");
+
+    if manager.spawn_write_init(WRITE_TASK).is_err() {
+        fail("USER_FILE_WRITE_SPAWN_FAILED");
+    }
+    let opened_before = opened_file_handle_count();
+    let closed_before = closed_file_handle_count();
+    let reads_before = completed_file_read_count();
+    let writes_before = completed_file_write_count();
+    let mut write_offsets = [u64::MAX; 2];
+    let mut write_count = 0usize;
+    let mut saw_write_wait = false;
+    let mut saw_write_exit = false;
+    for tick in 80..=150 {
+        let Some(update) = manager.poll(tick) else {
+            continue;
+        };
+        if let Some(request) = update.vfs_request {
+            saw_write_wait |= update.state == ManagedState::Waiting;
+            if manager.poll(tick).is_some() {
+                fail("USER_FILE_WRITE_NOT_BLOCKED");
+            }
+            match request {
+                UserVfsRequest::Open(request) => {
+                    let writable = request.rights & USER_FILE_RIGHT_WRITE != 0;
+                    if writable && !is_user_writable_path(request.path.as_str()) {
+                        fail("USER_FILE_WRITE_POLICY_BYPASSED");
+                    }
+                    if writable && vfs.find(request.path.as_str()).is_none() {
+                        vfs.touch(request.path.as_str())
+                            .unwrap_or_else(|_| fail("USER_FILE_CREATE_FAILED"));
+                    }
+                    let info = vfs.find(request.path.as_str()).and_then(|node| {
+                        (node.kind() == NodeKind::File).then_some(FileOpenInfo {
+                            size: node.len() as u64,
+                            kind: USER_FILE_KIND_REGULAR,
+                        })
+                    });
+                    if !matches!(manager.complete_file_open(request, info), Ok(update) if update.state == ManagedState::Ready)
+                    {
+                        fail("USER_FILE_WRITE_OPEN_FAILED");
+                    }
+                }
+                UserVfsRequest::Write(request) => {
+                    if write_count >= write_offsets.len() || request.data.is_empty() {
+                        fail("USER_FILE_WRITE_REQUEST_INVALID");
+                    }
+                    write_offsets[write_count] = request.offset;
+                    write_count += 1;
+                    let mut invalid = request;
+                    invalid.offset = invalid.offset.saturating_add(1);
+                    if manager.complete_file_write(invalid, Some(0)).is_ok() {
+                        fail("USER_FILE_WRITE_IDENTITY_FAILED");
+                    }
+                    let written = vfs
+                        .write_at(
+                            request.path.as_str(),
+                            request.offset as usize,
+                            request.data.as_slice(),
+                        )
+                        .unwrap_or_else(|_| fail("USER_FILE_WRITE_VFS_FAILED"));
+                    if !matches!(manager.complete_file_write(request, Some(written as u64)), Ok(update) if update.state == ManagedState::Ready)
+                    {
+                        fail("USER_FILE_WRITE_COMPLETION_FAILED");
+                    }
+                }
+                UserVfsRequest::Read(request) => {
+                    let data = vfs
+                        .read(request.path.as_str())
+                        .unwrap_or_else(|_| fail("USER_FILE_WRITE_READBACK_MISSING"));
+                    let start = (request.offset as usize).min(data.len());
+                    if !matches!(manager.complete_file_read(request, Some(&data[start..])), Ok(update) if update.state == ManagedState::Ready)
+                    {
+                        fail("USER_FILE_WRITE_READBACK_FAILED");
+                    }
+                }
+            }
+        }
+        saw_write_exit |= update.state == ManagedState::Exited
+            && update.exit_code == 0
+            && update.output.as_str() == "INIT.ELF wrote and verified /USER/APP.TXT";
+    }
+    if !saw_write_exit
+        || !saw_write_wait
+        || write_count != 2
+        || write_offsets != [0, 13]
+        || opened_file_handle_count() != opened_before + 2
+        || closed_file_handle_count() != closed_before + 2
+        || completed_file_write_count() != writes_before + 2
+        || completed_file_read_count() != reads_before + 1
+        || vfs.read("/USER/APP.TXT") != Ok(&b"GenOS Ring 3 writes safely."[..])
+        || !matches!(manager.wait(WRITE_TASK), Ok(result) if result.exit_code == 0)
+        || manager.live_count() != 0
+        || active_process_count() != 0
+        || reclaimed_frame_count() < reclaimed_before + 60
+    {
+        fail("USER_FILE_WRITE_PROBE_FAILED");
+    }
+    crate::serial::println("USER_FILE_WRITE_OK");
+    crate::serial::println("USER_FILE_WRITE_POLICY_OK");
+    crate::serial::println("USER_FILE_WRITE_READBACK_OK");
     crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
 }
 
@@ -1946,6 +2284,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 message_capacity: USER_MESSAGE_CAPACITY,
                 max_file_read: USER_FILE_READ_MAX as u64,
                 file_handle_capacity: USER_FILE_HANDLE_CAPACITY,
+                max_file_write: USER_FILE_WRITE_MAX as u64,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -1993,7 +2332,10 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             if let Some(path) = copy_user_path(process, path_address, path_length) {
                 frame.rax = 0;
                 process.context = *frame;
-                process.event = ProcessEvent::OpenFile { path };
+                process.event = ProcessEvent::OpenFile {
+                    path,
+                    rights: USER_FILE_RIGHT_READ,
+                };
                 1
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -2043,6 +2385,36 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.context = *frame;
             process.event = ProcessEvent::CloseHandle(handle);
             1
+        }
+        Ok(SyscallAction::OpenFileWithRights {
+            path_address,
+            path_length,
+            rights,
+        }) => {
+            if let Some(path) = copy_user_path(process, path_address, path_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::OpenFile { path, rights };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::WriteHandle {
+            handle,
+            input_address,
+            input_length,
+        }) => {
+            if let Some(data) = copy_user_bytes(process, input_address, input_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::WriteHandle { handle, data };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
         }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;
@@ -2122,6 +2494,28 @@ fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<Fi
     }
     let text = core::str::from_utf8(&bytes[..length]).ok()?;
     Some(FixedText::from_str(text))
+}
+
+fn copy_user_bytes(process: &UserProcess, address: u64, length: u64) -> Option<FileWriteBuffer> {
+    if length == 0
+        || length > USER_FILE_WRITE_MAX as u64
+        || !syscall::validate_user_buffer(
+            address,
+            length,
+            paging::USER_CODE,
+            paging::USER_STACK_TOP - paging::USER_CODE,
+        )
+    {
+        return None;
+    }
+    let mut data = FileWriteBuffer::empty();
+    data.len = length as usize;
+    for (index, slot) in data.bytes.iter_mut().take(data.len).enumerate() {
+        let virtual_address = address.checked_add(index as u64)?;
+        paging::translate(process.space, virtual_address)?;
+        *slot = unsafe { core::ptr::read_volatile(virtual_address as *const u8) };
+    }
+    Some(data)
 }
 
 fn copy_user_path(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
