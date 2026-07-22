@@ -86,7 +86,7 @@ The current GenOS build already contains real operating-system infrastructure:
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 5 userspace sleep, owned child waits, bounded messaging, structured copy-out, and blocking VFS reads;
+- ABI 6 userspace sleep, owned child waits, bounded messaging, structured copy-out, and capability-based VFS access;
 - application output copied from validated user mappings into the desktop shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
@@ -117,7 +117,7 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 
 The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run pair`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, and completed VFS-read state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.12 gives isolated applications their first real data path from kernel services. `run init file` enters Ring 3, requests a typed `SystemInfo` structure, then asks for `/README.TXT`. The syscall validates the path and destination, saves the full CPU context, and moves the process to `Waiting`. On the next desktop tick the VFS resolves the file, the kernel copies at most 128 bytes into the process-owned writable page, and the saved syscall resumes with the byte count. The application verifies the exact 54-byte file contents before reporting success. Request identity, path, capacity, mapped range, physical ownership, ABI structure size, and the fixed token/preemption header layout are all checked. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.13 replaces path-based application reads with process-owned file capabilities. `run init file` enters Ring 3, opens `/README.TXT`, inspects a typed `UserFileStat`, and reads the file in two chunks. The kernel—not the application—owns the offset, so the QEMU proof observes reads at offsets 0 and 17 before reconstructing and verifying all 54 bytes. The application closes the opaque handle and confirms that reuse is rejected. Open/read requests block without consuming scheduler slices; completion identity, rights, generation, path, offset, mapped range, and physical ownership are checked before bytes move. The ABI 5 `read_file` syscall remains available as a compatibility path while ABI 6 applications use `open_file`, `read_handle`, `stat_handle`, and `close_handle`. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
 
 ## Architecture
 
@@ -132,7 +132,7 @@ GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
-    |-- userspace               async lifecycle / copy-out / blocking VFS / bounded IPC
+    |-- userspace               async lifecycle / file capabilities / bounded IPC
     |-- input                    PS/2 keyboard + mouse / event queue
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting

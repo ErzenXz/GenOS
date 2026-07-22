@@ -41,7 +41,7 @@ pub fn run(
     let mut last_clock_second = 255u8;
     let mut irq_tick_marker_sent = false;
     let mut display_idle_marker_sent = false;
-    let mut pending_file_read: Option<userspace::FileReadRequest> = None;
+    let mut pending_vfs_request: Option<userspace::UserVfsRequest> = None;
 
     loop {
         input_hw::poll();
@@ -174,11 +174,25 @@ pub fn run(
         }
 
         if tick != last_tick {
-            if let Some(request) = pending_file_read.take() {
+            if let Some(request) = pending_vfs_request.take() {
                 tasks.mark_running(ids.vfs, tick);
-                let completion = match vfs.read(request.path.as_str()) {
-                    Ok(bytes) => processes.complete_file_read(request, Some(bytes)),
-                    Err(_) => processes.complete_file_read(request, None),
+                let completion = match request {
+                    userspace::UserVfsRequest::Open(request) => {
+                        let info = vfs.find(request.path.as_str()).and_then(|node| {
+                            (node.kind() == NodeKind::File).then_some(userspace::FileOpenInfo {
+                                size: node.len() as u64,
+                                kind: genos_abi::USER_FILE_KIND_REGULAR,
+                            })
+                        });
+                        processes.complete_file_open(request, info)
+                    }
+                    userspace::UserVfsRequest::Read(request) => {
+                        let bytes = vfs.read(request.path.as_str()).ok().map(|data| {
+                            let start = (request.offset as usize).min(data.len());
+                            &data[start..]
+                        });
+                        processes.complete_file_read(request, bytes)
+                    }
                 };
                 match completion {
                     Ok(update) => apply_process_update(&mut display, &mut tasks, update, tick),
@@ -186,8 +200,8 @@ pub fn run(
                 }
             }
             if let Some(update) = processes.poll(tick) {
-                if let Some(request) = update.file_read {
-                    pending_file_read = Some(request);
+                if let Some(request) = update.vfs_request {
+                    pending_vfs_request = Some(request);
                 }
                 apply_process_update(&mut display, &mut tasks, update, tick);
             }
@@ -608,6 +622,13 @@ fn execute(
             io.push_str(" vfs-reads=");
             io.push_u64(crate::userspace::completed_file_read_count());
             display.push_fixed(LineKind::Output, io);
+            let mut handles = FixedText::from_str("handles opened=");
+            handles.push_u64(crate::userspace::opened_file_handle_count());
+            handles.push_str(" closed=");
+            handles.push_u64(crate::userspace::closed_file_handle_count());
+            handles.push_str(" capacity=");
+            handles.push_u64(genos_abi::USER_FILE_HANDLE_CAPACITY);
+            display.push_fixed(LineKind::Output, handles);
             display.set_status("userspace ABI sampled");
         }
         "taskmgr" => {
@@ -639,7 +660,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.12 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.13 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -649,7 +670,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.12 adds typed copy-out and blocking VFS reads for isolated ELF processes.",
+                "GenOS 0.13 adds process-owned file capabilities with offsets, stat, and close.",
             );
             display.set_status("about");
         }

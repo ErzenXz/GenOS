@@ -19,12 +19,14 @@ const AWAKENED: &[u8] = b"INIT.ELF woke after deadline";
 const COORDINATED: &[u8] = b"parent received child exit + message";
 const README_PATH: &[u8] = b"/README.TXT";
 const README_CONTENT: &[u8] = b"Welcome to GenOS.\nThis file lives in the V1 RAM disk.\n";
-const FILE_COMPLETE: &[u8] = b"INIT.ELF read README.TXT through VFS";
+const FILE_COMPLETE: &[u8] = b"INIT.ELF used open/read/stat/close";
+const FIRST_READ_BYTES: usize = 17;
 
 #[repr(C)]
 struct ProcessData {
     header: runtime::UserProcessHeader,
     system_info: runtime::UserSystemInfo,
+    file_stat: runtime::UserFileStat,
     file_buffer: [u8; 128],
 }
 
@@ -33,6 +35,7 @@ struct ProcessData {
 static mut PROCESS_DATA: ProcessData = ProcessData {
     header: runtime::UserProcessHeader::empty(),
     system_info: runtime::UserSystemInfo::empty(),
+    file_stat: runtime::UserFileStat::empty(),
     file_buffer: [0; 128],
 };
 
@@ -93,18 +96,45 @@ pub extern "C" fn _start(token: u64) -> ! {
             || info.timer_hz != runtime::TIMER_HZ
             || info.message_capacity != runtime::MESSAGE_CAPACITY
             || info.max_file_read != runtime::FILE_READ_MAX as u64
+            || info.file_handle_capacity != runtime::FILE_HANDLE_CAPACITY
         {
             runtime::exit(246);
         }
-        let buffer = unsafe { &mut *addr_of_mut!(PROCESS_DATA.file_buffer) };
-        let length = runtime::read_file(README_PATH, buffer);
-        if length != README_CONTENT.len() as u64
-            || &buffer[..README_CONTENT.len()] != README_CONTENT
-        {
+        let handle = runtime::open_file(README_PATH);
+        if handle == 0 || handle >= runtime::ERROR_UNAVAILABLE {
             runtime::exit(245);
         }
-        if runtime::write(FILE_COMPLETE) != FILE_COMPLETE.len() as u64 {
+        let stat = unsafe { &mut *addr_of_mut!(PROCESS_DATA.file_stat) };
+        if runtime::stat_handle(handle, stat)
+            != core::mem::size_of::<runtime::UserFileStat>() as u64
+            || stat.size != README_CONTENT.len() as u64
+            || stat.offset != 0
+            || stat.kind != runtime::FILE_KIND_REGULAR
+            || stat.rights != runtime::FILE_RIGHT_READ
+        {
             runtime::exit(244);
+        }
+        let buffer = unsafe { &mut *addr_of_mut!(PROCESS_DATA.file_buffer) };
+        if runtime::read_handle(handle, &mut buffer[..FIRST_READ_BYTES]) != FIRST_READ_BYTES as u64
+            || runtime::stat_handle(handle, stat)
+                != core::mem::size_of::<runtime::UserFileStat>() as u64
+            || stat.offset != FIRST_READ_BYTES as u64
+        {
+            runtime::exit(243);
+        }
+        let remaining = runtime::read_handle(handle, &mut buffer[FIRST_READ_BYTES..]);
+        if remaining != (README_CONTENT.len() - FIRST_READ_BYTES) as u64
+            || &buffer[..README_CONTENT.len()] != README_CONTENT
+        {
+            runtime::exit(242);
+        }
+        if runtime::close_handle(handle) != 0
+            || runtime::read_handle(handle, &mut buffer[..1]) != runtime::ERROR_INVALID_ARGUMENT
+        {
+            runtime::exit(241);
+        }
+        if runtime::write(FILE_COMPLETE) != FILE_COMPLETE.len() as u64 {
+            runtime::exit(240);
         }
     }
 

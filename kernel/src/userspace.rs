@@ -2,7 +2,8 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
-    UserProcessHeader, UserSystemInfo, USER_ABI_VERSION, USER_FILE_READ_MAX, USER_MESSAGE_CAPACITY,
+    UserFileStat, UserProcessHeader, UserSystemInfo, USER_ABI_VERSION, USER_FILE_HANDLE_CAPACITY,
+    USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHT_READ, USER_MESSAGE_CAPACITY,
     USER_TIMER_HZ,
 };
 use kernel::{
@@ -10,7 +11,7 @@ use kernel::{
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     ipc::MessageQueue,
     syscall::{self, SyscallAction},
-    vfs::RamVfs,
+    vfs::{NodeKind, RamVfs},
 };
 
 use crate::{arch, memory, paging};
@@ -29,6 +30,7 @@ const TOKEN_CHILD_MODE: u64 = 0x5000_0000_0000_0000;
 const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
 const TOKEN_FILE_MODE: u64 = 0x7000_0000_0000_0000;
 const MESSAGE_CAPACITY: usize = 4;
+const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
@@ -50,6 +52,8 @@ static ACTIVE_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_SPACES: AtomicU8 = AtomicU8::new(0);
 static RECLAIMED_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_FILE_READS: AtomicU64 = AtomicU64::new(0);
+static OPENED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
+static CLOSED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
 static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
@@ -124,6 +128,20 @@ enum ProcessEvent {
         address: u64,
         capacity: u64,
     },
+    OpenFile {
+        path: FixedText,
+    },
+    ReadHandle {
+        handle: u64,
+        address: u64,
+        capacity: u64,
+    },
+    StatHandle {
+        handle: u64,
+        address: u64,
+        length: u64,
+    },
+    CloseHandle(u64),
     Exit,
     Fault,
 }
@@ -211,7 +229,26 @@ pub struct ProcessUpdate {
     pub exit_code: u8,
     pub preemptions: u64,
     pub output: FixedText,
-    pub file_read: Option<FileReadRequest>,
+    pub vfs_request: Option<UserVfsRequest>,
+}
+
+#[derive(Clone, Copy)]
+pub enum UserVfsRequest {
+    Open(FileOpenRequest),
+    Read(FileReadRequest),
+}
+
+#[derive(Clone, Copy)]
+pub struct FileOpenRequest {
+    pub task_id: u32,
+    pub pid: u8,
+    pub path: FixedText,
+}
+
+#[derive(Clone, Copy)]
+pub struct FileOpenInfo {
+    pub size: u64,
+    pub kind: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +256,8 @@ pub struct FileReadRequest {
     pub task_id: u32,
     pub pid: u8,
     pub path: FixedText,
+    pub handle: u64,
+    pub offset: u64,
     pub capacity: u64,
 }
 
@@ -237,15 +276,30 @@ struct ManagedProcess {
     wake_at: u64,
     blocked_on: BlockReason,
     inbox: MessageQueue<MESSAGE_CAPACITY>,
+    file_handles: [Option<FileCapability>; FILE_HANDLE_CAPACITY],
+    next_file_generation: u64,
+    pending_file_open: Option<FixedText>,
     pending_file_read: Option<PendingFileRead>,
     process: UserProcess,
 }
 
 #[derive(Clone, Copy)]
 struct PendingFileRead {
+    handle: u64,
     path: FixedText,
+    offset: u64,
     address: u64,
     capacity: u64,
+}
+
+#[derive(Clone, Copy)]
+struct FileCapability {
+    handle: u64,
+    path: FixedText,
+    offset: u64,
+    size: u64,
+    kind: u64,
+    rights: u64,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -253,6 +307,7 @@ enum BlockReason {
     None,
     Receive,
     Child(u8),
+    FileOpen,
     FileRead,
 }
 
@@ -265,6 +320,9 @@ impl ManagedProcess {
             wake_at: 0,
             blocked_on: BlockReason::None,
             inbox: MessageQueue::new(),
+            file_handles: [None; FILE_HANDLE_CAPACITY],
+            next_file_generation: 1,
+            pending_file_open: None,
             pending_file_read: None,
             process,
         }
@@ -276,6 +334,54 @@ impl ManagedProcess {
 
     fn pop_message(&mut self) -> Option<u64> {
         self.inbox.pop()
+    }
+
+    fn allocate_file_handle(&mut self, path: FixedText, info: FileOpenInfo) -> Option<u64> {
+        let slot = self.file_handles.iter().position(Option::is_none)?;
+        let generation = self.next_file_generation;
+        self.next_file_generation = self.next_file_generation.saturating_add(1);
+        let handle = ((self.process.pid as u64) << 56) | (generation << 8) | (slot as u64 + 1);
+        self.file_handles[slot] = Some(FileCapability {
+            handle,
+            path,
+            offset: 0,
+            size: info.size,
+            kind: info.kind,
+            rights: USER_FILE_RIGHT_READ,
+        });
+        Some(handle)
+    }
+
+    fn file_handle(&self, handle: u64) -> Option<&FileCapability> {
+        self.file_handles
+            .iter()
+            .flatten()
+            .find(|capability| capability.handle == handle)
+    }
+
+    fn file_handle_mut(&mut self, handle: u64) -> Option<&mut FileCapability> {
+        self.file_handles
+            .iter_mut()
+            .flatten()
+            .find(|capability| capability.handle == handle)
+    }
+
+    fn close_file_handle(&mut self, handle: u64) -> bool {
+        let Some(slot) = self
+            .file_handles
+            .iter()
+            .position(|entry| entry.is_some_and(|capability| capability.handle == handle))
+        else {
+            return false;
+        };
+        self.file_handles[slot] = None;
+        true
+    }
+
+    fn revoke_file_handles(&mut self) {
+        self.file_handles = [None; FILE_HANDLE_CAPACITY];
+        self.pending_file_open = None;
+        self.pending_file_read = None;
     }
 }
 
@@ -393,7 +499,7 @@ impl ProcessManager {
                 run_slice(&mut managed.process);
                 managed.process.event
             };
-            let mut file_read = None;
+            let mut vfs_request = None;
             match event {
                 ProcessEvent::Yield => {
                     TOTAL_YIELDS.fetch_add(1, Ordering::AcqRel);
@@ -410,8 +516,28 @@ impl ProcessManager {
                     address,
                     capacity,
                 } => {
-                    file_read = Some(self.block_file_read(index, path, address, capacity));
+                    vfs_request = Some(UserVfsRequest::Read(
+                        self.block_file_read(index, path, address, capacity),
+                    ));
                 }
+                ProcessEvent::OpenFile { path } => {
+                    vfs_request = Some(UserVfsRequest::Open(self.block_file_open(index, path)));
+                }
+                ProcessEvent::ReadHandle {
+                    handle,
+                    address,
+                    capacity,
+                } => {
+                    vfs_request = self
+                        .block_file_handle_read(index, handle, address, capacity)
+                        .map(UserVfsRequest::Read);
+                }
+                ProcessEvent::StatHandle {
+                    handle,
+                    address,
+                    length,
+                } => self.complete_file_stat(index, handle, address, length),
+                ProcessEvent::CloseHandle(handle) => self.complete_file_close(index, handle),
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
@@ -430,7 +556,7 @@ impl ProcessManager {
                 exit_code: managed.process.exit_code,
                 preemptions: managed.process.preemptions,
                 output,
-                file_read,
+                vfs_request,
             });
         }
         None
@@ -551,6 +677,150 @@ impl ProcessManager {
         }
     }
 
+    fn block_file_open(&mut self, index: usize, path: FixedText) -> FileOpenRequest {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::FileOpen;
+        managed.pending_file_open = Some(path);
+        crate::serial::print("USER_FILE_OPEN_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" path=");
+        crate::serial::println(path.as_str());
+        FileOpenRequest {
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            path,
+        }
+    }
+
+    pub fn complete_file_open(
+        &mut self,
+        request: FileOpenRequest,
+        info: Option<FileOpenInfo>,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| {
+                managed.task_id == request.task_id && managed.process.pid == request.pid
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if managed.state != ManagedState::Waiting
+            || managed.blocked_on != BlockReason::FileOpen
+            || managed.process.completed
+            || managed.pending_file_open != Some(request.path)
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        managed.pending_file_open = None;
+        let handle = info
+            .filter(|metadata| metadata.kind == USER_FILE_KIND_REGULAR)
+            .and_then(|metadata| managed.allocate_file_handle(request.path, metadata));
+        if handle.is_some() {
+            OPENED_FILE_HANDLES.fetch_add(1, Ordering::AcqRel);
+        }
+        managed.process.context.rax =
+            handle.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print("USER_FILE_OPEN_WAKE pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" handle=0x");
+        crate::serial::print_hex(handle.unwrap_or(0));
+        crate::serial::println("");
+        Ok(process_update(managed))
+    }
+
+    fn block_file_handle_read(
+        &mut self,
+        index: usize,
+        handle: u64,
+        address: u64,
+        capacity: u64,
+    ) -> Option<FileReadRequest> {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let Some(capability) = managed
+            .file_handle(handle)
+            .copied()
+            .filter(|capability| capability.rights & USER_FILE_RIGHT_READ != 0)
+        else {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::FileRead;
+        managed.pending_file_read = Some(PendingFileRead {
+            handle,
+            path: capability.path,
+            offset: capability.offset,
+            address,
+            capacity,
+        });
+        crate::serial::print("USER_HANDLE_READ_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" handle=0x");
+        crate::serial::print_hex(handle);
+        crate::serial::print(" offset=");
+        crate::serial::print_u64(capability.offset);
+        crate::serial::println("");
+        Some(FileReadRequest {
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            path: capability.path,
+            handle,
+            offset: capability.offset,
+            capacity,
+        })
+    }
+
+    fn complete_file_stat(&mut self, index: usize, handle: u64, address: u64, length: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let stat = managed.file_handle(handle).map(|capability| UserFileStat {
+            size: capability.size,
+            offset: capability.offset,
+            kind: capability.kind,
+            rights: capability.rights,
+        });
+        let copied = stat.is_some_and(|stat| {
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::addr_of!(stat).cast::<u8>(),
+                    core::mem::size_of::<UserFileStat>(),
+                )
+            };
+            length as usize == bytes.len() && copy_to_user_data(&managed.process, address, bytes)
+        });
+        managed.process.context.rax = if copied {
+            length
+        } else {
+            syscall::error_code(syscall::SyscallError::InvalidArgument)
+        };
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_file_close(&mut self, index: usize, handle: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let closed = managed.close_file_handle(handle);
+        if closed {
+            CLOSED_FILE_HANDLES.fetch_add(1, Ordering::AcqRel);
+        }
+        managed.process.context.rax = if closed {
+            0
+        } else {
+            syscall::error_code(syscall::SyscallError::InvalidArgument)
+        };
+        managed.state = ManagedState::Ready;
+        crate::serial::print("USER_FILE_CLOSE pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" handle=0x");
+        crate::serial::print_hex(handle);
+        crate::serial::print(" result=");
+        crate::serial::println(if closed { "closed" } else { "rejected" });
+    }
+
     fn block_file_read(
         &mut self,
         index: usize,
@@ -562,7 +832,9 @@ impl ProcessManager {
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::FileRead;
         managed.pending_file_read = Some(PendingFileRead {
+            handle: 0,
             path,
+            offset: 0,
             address,
             capacity,
         });
@@ -577,6 +849,8 @@ impl ProcessManager {
             task_id: managed.task_id,
             pid: managed.process.pid,
             path,
+            handle: 0,
+            offset: 0,
             capacity,
         }
     }
@@ -604,7 +878,11 @@ impl ProcessManager {
             .pending_file_read
             .as_ref()
             .ok_or(LaunchError::InvalidResult)?;
-        if pending.path != request.path || pending.capacity != request.capacity {
+        if pending.path != request.path
+            || pending.handle != request.handle
+            || pending.offset != request.offset
+            || pending.capacity != request.capacity
+        {
             return Err(LaunchError::InvalidResult);
         }
         let pending = managed
@@ -613,11 +891,23 @@ impl ProcessManager {
             .ok_or(LaunchError::InvalidResult)?;
         let copied = data.and_then(|bytes| {
             let length = bytes.len().min(pending.capacity as usize);
-            copy_to_user_data(&managed.process, pending.address, &bytes[..length])
+            (length == 0 || copy_to_user_data(&managed.process, pending.address, &bytes[..length]))
                 .then_some(length as u64)
         });
         if copied.is_some() {
             COMPLETED_FILE_READS.fetch_add(1, Ordering::AcqRel);
+        }
+        if pending.handle != 0 {
+            let Some(capability) = managed.file_handle_mut(pending.handle) else {
+                return Err(LaunchError::InvalidResult);
+            };
+            if capability.path != pending.path || capability.offset != pending.offset {
+                return Err(LaunchError::InvalidResult);
+            }
+            capability.offset = capability
+                .offset
+                .saturating_add(copied.unwrap_or(0))
+                .min(capability.size);
         }
         managed.process.context.rax =
             copied.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
@@ -628,21 +918,14 @@ impl ProcessManager {
         crate::serial::print(" bytes=");
         crate::serial::print_u64(copied.unwrap_or(0));
         crate::serial::println("");
-        Ok(ProcessUpdate {
-            task_id: managed.task_id,
-            pid: managed.process.pid,
-            state: ManagedState::Ready,
-            exit_code: managed.process.exit_code,
-            preemptions: managed.process.preemptions,
-            output: FixedText::empty(),
-            file_read: None,
-        })
+        Ok(process_update(managed))
     }
 
     fn complete_terminal(&mut self, index: usize, state: ManagedState) {
         let (pid, exit_code) = {
             let managed = self.slots[index].as_mut().expect("selected process exists");
             managed.state = state;
+            managed.revoke_file_handles();
             if reclaim_process(&mut managed.process).is_err() {
                 fail("USER_RECLAIM_FAILED");
             }
@@ -684,6 +967,7 @@ impl ProcessManager {
         managed.process.exit_code = 137;
         managed.process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
         managed.state = ManagedState::Killed;
+        managed.revoke_file_handles();
         let pid = managed.process.pid;
         reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
         crate::serial::print("USER_KILLED pid=");
@@ -698,7 +982,7 @@ impl ProcessManager {
             exit_code: managed.process.exit_code,
             preemptions: managed.process.preemptions,
             output: FixedText::empty(),
-            file_read: None,
+            vfs_request: None,
         };
         self.wake_waiting_parent(pid, 137);
         Ok(update)
@@ -750,6 +1034,18 @@ impl ProcessManager {
 impl Default for ProcessManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn process_update(managed: &ManagedProcess) -> ProcessUpdate {
+    ProcessUpdate {
+        task_id: managed.task_id,
+        pid: managed.process.pid,
+        state: managed.state,
+        exit_code: managed.process.exit_code,
+        preemptions: managed.process.preemptions,
+        output: FixedText::empty(),
+        vfs_request: None,
     }
 }
 
@@ -924,7 +1220,11 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::Send { .. }
                 | ProcessEvent::Receive
                 | ProcessEvent::WaitChild(_)
-                | ProcessEvent::ReadFile { .. } => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::ReadFile { .. }
+                | ProcessEvent::OpenFile { .. }
+                | ProcessEvent::ReadHandle { .. }
+                | ProcessEvent::StatHandle { .. }
+                | ProcessEvent::CloseHandle(_) => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -1019,6 +1319,14 @@ pub fn copy_out_passed() -> bool {
 
 pub fn completed_file_read_count() -> u64 {
     COMPLETED_FILE_READS.load(Ordering::Acquire)
+}
+
+pub fn opened_file_handle_count() -> u64 {
+    OPENED_FILE_HANDLES.load(Ordering::Acquire)
+}
+
+pub fn closed_file_handle_count() -> u64 {
+    CLOSED_FILE_HANDLES.load(Ordering::Acquire)
 }
 
 pub fn launch_init() -> Result<LaunchResult, LaunchError> {
@@ -1162,42 +1470,78 @@ pub fn run_lifecycle_probe(vfs: &RamVfs) {
     if manager.spawn_file_init(FILE_TASK).is_err() {
         fail("USER_FILE_SPAWN_FAILED");
     }
-    let mut file_request = None;
+    let opened_before = opened_file_handle_count();
+    let closed_before = closed_file_handle_count();
+    let reads_before = completed_file_read_count();
     let mut saw_file_wait = false;
-    for tick in 30..=40 {
-        if let Some(update) = manager.poll(tick) {
-            if let Some(request) = update.file_read {
-                saw_file_wait = update.state == ManagedState::Waiting
-                    && !update.output.is_empty()
-                    && request.path.as_str() == "/README.TXT";
-                file_request = Some(request);
-                break;
+    let mut saw_file_exit = false;
+    let mut read_offsets = [u64::MAX; 2];
+    let mut read_count = 0usize;
+    for tick in 30..=72 {
+        let Some(update) = manager.poll(tick) else {
+            continue;
+        };
+        if let Some(request) = update.vfs_request {
+            saw_file_wait |= update.state == ManagedState::Waiting;
+            if manager.poll(tick).is_some() {
+                fail("USER_FILE_NOT_BLOCKED");
+            }
+            match request {
+                UserVfsRequest::Open(request) => {
+                    let info = vfs.find(request.path.as_str()).and_then(|node| {
+                        (node.kind() == NodeKind::File).then_some(FileOpenInfo {
+                            size: node.len() as u64,
+                            kind: USER_FILE_KIND_REGULAR,
+                        })
+                    });
+                    let mut invalid = request;
+                    invalid.pid = invalid.pid.wrapping_add(1);
+                    if manager.complete_file_open(invalid, info).is_ok() {
+                        fail("USER_FILE_OPEN_IDENTITY_FAILED");
+                    }
+                    if !matches!(manager.complete_file_open(request, info), Ok(update) if update.state == ManagedState::Ready)
+                    {
+                        fail("USER_FILE_OPEN_COMPLETION_FAILED");
+                    }
+                }
+                UserVfsRequest::Read(request) => {
+                    if request.handle == 0 || read_count >= read_offsets.len() {
+                        fail("USER_HANDLE_READ_INVALID");
+                    }
+                    read_offsets[read_count] = request.offset;
+                    read_count += 1;
+                    let data = vfs
+                        .read(request.path.as_str())
+                        .unwrap_or_else(|_| fail("USER_FILE_LOOKUP_FAILED"));
+                    let start = (request.offset as usize).min(data.len());
+                    let mut invalid = request;
+                    invalid.offset = invalid.offset.saturating_add(1);
+                    if manager
+                        .complete_file_read(invalid, Some(&data[start..]))
+                        .is_ok()
+                    {
+                        fail("USER_HANDLE_READ_IDENTITY_FAILED");
+                    }
+                    if !matches!(manager.complete_file_read(request, Some(&data[start..])), Ok(update) if update.state == ManagedState::Ready)
+                    {
+                        fail("USER_FILE_COMPLETION_FAILED");
+                    }
+                }
             }
         }
-    }
-    let request = file_request.unwrap_or_else(|| fail("USER_FILE_REQUEST_MISSING"));
-    if !saw_file_wait || manager.poll(41).is_some() {
-        fail("USER_FILE_NOT_BLOCKED");
-    }
-    let data = vfs
-        .read(request.path.as_str())
-        .unwrap_or_else(|_| fail("USER_FILE_LOOKUP_FAILED"));
-    if !matches!(manager.complete_file_read(request, Some(data)), Ok(update) if update.state == ManagedState::Ready)
-    {
-        fail("USER_FILE_COMPLETION_FAILED");
-    }
-    let mut saw_file_exit = false;
-    for tick in 42..=52 {
-        if let Some(update) = manager.poll(tick) {
-            saw_file_exit |= update.pid == request.pid
-                && update.state == ManagedState::Exited
-                && update.exit_code == 0
-                && update.output.as_str() == "INIT.ELF read README.TXT through VFS";
-        }
+        saw_file_exit |= update.state == ManagedState::Exited
+            && update.exit_code == 0
+            && update.output.as_str() == "INIT.ELF used open/read/stat/close";
     }
     if !saw_file_exit
+        || !saw_file_wait
+        || read_count != 2
+        || read_offsets != [0, 17]
+        || opened_file_handle_count() != opened_before + 1
+        || closed_file_handle_count() != closed_before + 1
+        || completed_file_read_count() != reads_before + 2
         || !COPY_OUT_PASSED.load(Ordering::Acquire)
-        || !matches!(manager.wait(FILE_TASK), Ok(result) if result.pid == request.pid && result.exit_code == 0)
+        || !matches!(manager.wait(FILE_TASK), Ok(result) if result.exit_code == 0)
         || manager.live_count() != 0
         || active_process_count() != 0
         || reclaimed_frame_count() < reclaimed_before + 50
@@ -1206,6 +1550,9 @@ pub fn run_lifecycle_probe(vfs: &RamVfs) {
     }
     crate::serial::println("USER_STRUCT_COPY_OK");
     crate::serial::println("USER_VFS_BLOCKING_OK");
+    crate::serial::println("USER_FILE_CAPABILITY_OK");
+    crate::serial::println("USER_FILE_OFFSET_OK");
+    crate::serial::println("USER_FILE_CLOSE_OK");
     crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
 }
 
@@ -1598,6 +1945,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 timer_hz: USER_TIMER_HZ,
                 message_capacity: USER_MESSAGE_CAPACITY,
                 max_file_read: USER_FILE_READ_MAX as u64,
+                file_handle_capacity: USER_FILE_HANDLE_CAPACITY,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -1637,6 +1985,64 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
                 0
             }
+        }
+        Ok(SyscallAction::OpenFile {
+            path_address,
+            path_length,
+        }) => {
+            if let Some(path) = copy_user_path(process, path_address, path_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::OpenFile { path };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::ReadHandle {
+            handle,
+            output_address,
+            output_capacity,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_capacity) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ReadHandle {
+                    handle,
+                    address: output_address,
+                    capacity: output_capacity,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::StatHandle {
+            handle,
+            output_address,
+            output_length,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::StatHandle {
+                    handle,
+                    address: output_address,
+                    length: output_length,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::CloseHandle { handle }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::CloseHandle(handle);
+            1
         }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;

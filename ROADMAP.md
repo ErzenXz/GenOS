@@ -100,10 +100,13 @@ Delivered so far:
 - mapped-range and physical-ownership validation before kernel-to-user copies;
 - asynchronous `read_file` requests that leave Ring 3 blocked until the desktop VFS completes them;
 - `run init file` proof of an exact 54-byte `/README.TXT` read and userspace verification.
+- ABI 6 process-owned file handles with per-open generation values and read-only rights;
+- blocking `open_file` and offset-aware `read_handle`, plus structured `stat_handle` copy-out;
+- explicit `close_handle`, stale-handle rejection, and automatic handle revocation on termination;
+- two-chunk `run init file` proof with offsets 0 and 17, exact content verification, and close misuse testing.
 
 Remaining work:
 
-- capability-bearing file handles with read offsets, stat, and close;
 - bounded userspace file writes and explicit access policy;
 - blocking keyboard or event input;
 - multi-producer channel policy and endpoint handles;
@@ -134,6 +137,8 @@ Acceptance criteria:
 - [x] The kernel can copy a versioned structure into a validated process-owned writable mapping.
 - [x] A userspace file read blocks without consuming slices and resumes with copied VFS bytes.
 - [x] Cross-layer request identity and the kernel-owned process-header offsets are covered by checks.
+- [x] A process can open a read-only file capability, advance a kernel-owned offset, inspect metadata, and close it.
+- [x] Forged completions and stale handles are rejected without copying bytes or reviving authority.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

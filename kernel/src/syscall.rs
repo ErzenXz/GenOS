@@ -1,9 +1,12 @@
 pub use genos_abi::{
     USER_ABI_VERSION, USER_PING_REPLY as PING_REPLY,
-    USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION, USER_SYSCALL_EXIT as SYSCALL_EXIT,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE,
+    USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION,
+    USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE, USER_SYSCALL_EXIT as SYSCALL_EXIT,
+    USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE, USER_SYSCALL_PING as SYSCALL_PING,
+    USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE, USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE,
     USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE, USER_SYSCALL_REPORT as SYSCALL_REPORT,
     USER_SYSCALL_SEND as SYSCALL_SEND, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
+    USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
     USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
@@ -41,6 +44,23 @@ pub enum SyscallAction {
         path_length: u64,
         output_address: u64,
         output_capacity: u64,
+    },
+    OpenFile {
+        path_address: u64,
+        path_length: u64,
+    },
+    ReadHandle {
+        handle: u64,
+        output_address: u64,
+        output_capacity: u64,
+    },
+    StatHandle {
+        handle: u64,
+        output_address: u64,
+        output_length: u64,
+    },
+    CloseHandle {
+        handle: u64,
     },
 }
 
@@ -108,18 +128,52 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 output_capacity: args[3],
             })
         }
+        SYSCALL_OPEN_FILE if args[0] != 0 && (1..=64).contains(&args[1]) && args[2..] == [0; 4] => {
+            Ok(SyscallAction::OpenFile {
+                path_address: args[0],
+                path_length: args[1],
+            })
+        }
+        SYSCALL_READ_HANDLE
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_FILE_READ_MAX as u64).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::ReadHandle {
+                handle: args[0],
+                output_address: args[1],
+                output_capacity: args[2],
+            })
+        }
+        SYSCALL_STAT_HANDLE
+            if args[0] != 0
+                && args[1] != 0
+                && args[2] == core::mem::size_of::<genos_abi::UserFileStat>() as u64
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::StatHandle {
+                handle: args[0],
+                output_address: args[1],
+                output_length: args[2],
+            })
+        }
+        SYSCALL_CLOSE_HANDLE if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::CloseHandle { handle: args[0] })
+        }
         SYSCALL_PING | SYSCALL_ABI_VERSION | SYSCALL_EXIT | SYSCALL_YIELD | SYSCALL_REPORT
         | SYSCALL_WRITE | SYSCALL_SLEEP | SYSCALL_SEND | SYSCALL_RECEIVE | SYSCALL_WAIT_CHILD
-        | SYSCALL_SYSTEM_INFO | SYSCALL_READ_FILE => Err(SyscallError::InvalidArgument),
+        | SYSCALL_SYSTEM_INFO | SYSCALL_READ_FILE | SYSCALL_OPEN_FILE | SYSCALL_READ_HANDLE
+        | SYSCALL_STAT_HANDLE | SYSCALL_CLOSE_HANDLE => Err(SyscallError::InvalidArgument),
         _ => Err(SyscallError::UnknownNumber),
     }
 }
 
 pub const fn error_code(error: SyscallError) -> u64 {
     match error {
-        SyscallError::UnknownNumber => u64::MAX,
-        SyscallError::InvalidArgument => u64::MAX - 1,
-        SyscallError::Unavailable => u64::MAX - 2,
+        SyscallError::UnknownNumber => genos_abi::USER_ERROR_UNKNOWN_SYSCALL,
+        SyscallError::InvalidArgument => genos_abi::USER_ERROR_INVALID_ARGUMENT,
+        SyscallError::Unavailable => genos_abi::USER_ERROR_UNAVAILABLE,
     }
 }
 
@@ -189,10 +243,10 @@ mod tests {
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 40, 0, 0, 0, 0]),
+            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 48, 0, 0, 0, 0]),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 40
+                length: 48
             })
         );
         assert_eq!(
@@ -203,6 +257,33 @@ mod tests {
                 output_address: 0x6000,
                 output_capacity: 128
             })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_OPEN_FILE, [0x5000, 11, 0, 0, 0, 0]),
+            Ok(SyscallAction::OpenFile {
+                path_address: 0x5000,
+                path_length: 11,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_READ_HANDLE, [0x101, 0x6000, 64, 0, 0, 0]),
+            Ok(SyscallAction::ReadHandle {
+                handle: 0x101,
+                output_address: 0x6000,
+                output_capacity: 64,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_STAT_HANDLE, [0x101, 0x6000, 32, 0, 0, 0]),
+            Ok(SyscallAction::StatHandle {
+                handle: 0x101,
+                output_address: 0x6000,
+                output_length: 32,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CLOSE_HANDLE, [0x101, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::CloseHandle { handle: 0x101 })
         );
     }
 
@@ -246,6 +327,22 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_READ_FILE, [0x5000, 11, 0x6000, 129, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_OPEN_FILE, [0x5000, 0, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_READ_HANDLE, [0, 0x6000, 64, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_STAT_HANDLE, [0x101, 0x6000, 31, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CLOSE_HANDLE, [0, 0, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));
