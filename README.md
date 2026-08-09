@@ -82,15 +82,15 @@ The current GenOS build already contains real operating-system infrastructure:
 - timer-driven CPU preemption with saved contexts, address-space switching, and resume;
 - process-local user page-fault termination that leaves healthy processes and the kernel running;
 - a bounded ELF64 parser and W^X userspace segment loader;
-- a separately built `no_std` userspace runtime and `INIT.ELF` application packaged in the initrd;
+- a separately built `no_std` userspace runtime plus packaged `INIT.ELF` and `SHELL.ELF` applications;
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 9 userspace coordination, capability-based VFS I/O, blocking input events, and endpoint-capability messaging;
+- ABI 10 userspace coordination, capability-based VFS I/O and messaging, blocking input, and console capabilities;
 - application output copied from validated user mappings into the desktop shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
-- Shift, Caps Lock, symbols, and shell command history;
+- Shift, Caps Lock, symbols, and userspace-owned terminal editing;
 - backbuffered framebuffer rendering and dirty-region presentation;
 - native desktop, taskbar, start panel, cursor, and draggable windows;
 - bounded kernel-worker lifecycle with PIDs, protected system tasks, and slot reuse;
@@ -112,10 +112,11 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Move a window | Drag its title bar |
 | Close the active window | Click the close control or press `Escape` |
 | Switch between open applications | Press `Tab` |
-| Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run init write`, `run init input`, `run pair`, `run fanin`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, handle, file-I/O, and input-wakeup state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+GenOS 0.17 boots `SHELL.ELF` as a long-lived Ring 3 process with its own CR3, guarded stack, task record, and opaque console capability. Keyboard events for the focused terminal wake that process, while `Escape`, `Tab`, the compositor, and the framebuffer remain kernel-owned. The shell maintains the editable command line in private userspace memory and can currently execute `help`, `echo`, `uname`, and `clear`. Its `console_write`, `console_set_input`, and `console_clear` requests yield through the desktop coordinator, so consecutive output cannot overwrite a pending line. Guessed or foreign console handles are rejected.
+
+This is the first shell-handoff slice, not full command parity. Filesystem browsing and mutation, process launch/control, history, and system power commands still need capability-backed userspace APIs before their parsers can leave the kernel safely. The old kernel parser remains only as a recovery fallback if the Ring 3 shell is not live.
 
 GenOS 0.16 makes messaging a capability instead of a PID. A process publishes exactly one receive endpoint with `create_endpoint`; every other process must obtain its own send handle with `connect_endpoint` before it can send anything, and holding a raw PID grants nothing. Handles are opaque values that encode a dedicated endpoint tag, the owner PID, a per-process generation, and a slot in a four-entry table, so a guessed, foreign, or stale handle is rejected rather than resolved. The kernel fills in the sender PID of every delivered message, so Ring 3 cannot forge an identity. Each endpoint queue holds four messages and admits at most one per producer, which is what keeps a single noisy producer from starving its peers. A receive on an empty queue leaves the runnable set entirely and is woken by a later send that copies straight into its already-validated buffer. Closing the receive handle unpublishes the endpoint and revokes every remote send handle naming that generation; normal exit, a Ring 3 fault, `kill`, and reap run the same release path.
 
@@ -134,12 +135,12 @@ GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
-    |-- userspace               async lifecycle / file I/O / blocking input / endpoints
+    |-- userspace               async lifecycle / file I/O / endpoints / Ring 3 shell
     |-- input                    PS/2 queue / filters / desktop-or-Ring-3 routing
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
     |-- display                  backbuffer / dirty regions / text
-    `-- desktop                  windows / apps / taskbar / shell
+    `-- desktop                  windows / apps / taskbar / console broker
 ```
 
 The system remains intentionally monolithic while its contracts are established, but the hardware-enforced user/kernel boundary now supports a small interactive application lifecycle. It is still an experimental runtime, not a compatibility layer for existing Linux or Windows applications.
@@ -221,7 +222,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, local faults, asynchronous lifecycle, deadline sleep, child wait, structured copy-out, capability-based file I/O, blocking input events, and endpoint-capability messaging with multi-producer fairness; moving the shell into userspace comes next
+- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, lifecycle, capability-based file and endpoint I/O, blocking input, and a persistent Ring 3 shell; filesystem and process-control commands move next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design

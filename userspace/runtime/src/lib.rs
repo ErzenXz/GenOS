@@ -6,6 +6,9 @@ use core::arch::asm;
 pub use genos_abi::{
     UserChannelMessage, UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo,
     USER_ABI_VERSION as ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE as CHANNEL_MESSAGE_SIZE,
+    USER_CONSOLE_LINE_ERROR as CONSOLE_LINE_ERROR, USER_CONSOLE_LINE_OUTPUT as CONSOLE_LINE_OUTPUT,
+    USER_CONSOLE_LINE_PROMPT as CONSOLE_LINE_PROMPT,
+    USER_CONSOLE_LINE_STATUS as CONSOLE_LINE_STATUS, USER_CONSOLE_TEXT_MAX as CONSOLE_TEXT_MAX,
     USER_ENDPOINT_HANDLE_CAPACITY as ENDPOINT_HANDLE_CAPACITY,
     USER_ENDPOINT_QUEUE_CAPACITY as ENDPOINT_QUEUE_CAPACITY,
     USER_ERROR_INVALID_ARGUMENT as ERROR_INVALID_ARGUMENT,
@@ -31,6 +34,9 @@ use genos_abi::{
     USER_SYSCALL_CLOSE_ENDPOINT as SYSCALL_CLOSE_ENDPOINT,
     USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE,
     USER_SYSCALL_CONNECT_ENDPOINT as SYSCALL_CONNECT_ENDPOINT,
+    USER_SYSCALL_CONSOLE_CLEAR as SYSCALL_CONSOLE_CLEAR,
+    USER_SYSCALL_CONSOLE_SET_INPUT as SYSCALL_CONSOLE_SET_INPUT,
+    USER_SYSCALL_CONSOLE_WRITE as SYSCALL_CONSOLE_WRITE,
     USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
@@ -103,6 +109,46 @@ pub fn receive_endpoint(handle: u64, message: &mut UserChannelMessage) -> u64 {
 
 pub fn close_endpoint(handle: u64) -> u64 {
     unsafe { syscall(SYSCALL_CLOSE_ENDPOINT, [handle, 0, 0, 0, 0, 0]) }
+}
+
+pub fn console_write(handle: u64, bytes: &[u8], kind: u64) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_CONSOLE_WRITE,
+            [
+                handle,
+                bytes.as_ptr() as u64,
+                bytes.len() as u64,
+                kind,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn console_set_input(handle: u64, bytes: &[u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_CONSOLE_SET_INPUT,
+            [
+                handle,
+                if bytes.is_empty() {
+                    0
+                } else {
+                    bytes.as_ptr() as u64
+                },
+                bytes.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn console_clear(handle: u64) -> u64 {
+    unsafe { syscall(SYSCALL_CONSOLE_CLEAR, [handle, 0, 0, 0, 0, 0]) }
 }
 
 pub fn wait_child(pid: u8) -> u64 {

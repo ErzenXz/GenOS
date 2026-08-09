@@ -121,10 +121,19 @@ Delivered so far:
 - blocking `receive_endpoint` with pre-validated buffers and direct sender-to-waiter copy-out that bypasses the queue;
 - stale-handle rejection plus total revocation on close, exit, fault, kill, and reap;
 - `run fanin` and the boot proof of a real three-process `A1`, `B1`, `A2` fan-in with one fairness denial and one direct wake.
+- ABI 10 console capabilities with bounded line output, editable-input replacement, and clear operations;
+- a separately linked and packaged `SHELL.ELF` with a four-page RX budget and private writable ABI data page;
+- persistent Ring 3 shell launch with its own address space, task identity, preemption, and `USER_SHELL_READY` boot proof;
+- focused keyboard delivery to the shell while compositor-owned `Escape` and `Tab` remain in Ring 0;
+- queue-preserving input handoff while the one-shot shell waiter rearms, including burst input from QEMU;
+- userspace parsing and execution of `help`, `echo`, `uname`, and `clear` through an opaque process-owned console capability.
 
 Remaining work:
 
-- move the shell into userspace.
+- add capability-backed directory enumeration and migrate `ls` and `cat`;
+- add userspace file mutation commands for `/USER/`;
+- add process lifecycle capabilities and migrate launch, status, kill, and reap;
+- migrate history and remaining safe commands, then remove the kernel parser fallback.
 
 Acceptance criteria:
 
@@ -164,6 +173,12 @@ Acceptance criteria:
 - [x] A producer's second send is refused while its first message is still queued, and is admitted again after the receiver drains it.
 - [x] A blocking receive leaves the runnable set and is woken directly by a later send that copies into its pre-validated buffer.
 - [x] Close, exit, fault, kill, and reap revoke the endpoint and every remote send handle naming its generation.
+- [x] A separately packaged shell runs persistently in Ring 3 and owns focused terminal command parsing.
+- [x] Console mutation requires an exact process-owned capability; zero, guessed, and foreign handles are rejected.
+- [x] Rapid keyboard input remains queued while the shell processes and rearms its one-shot input wait.
+- [x] `help`, `echo`, `uname`, and `clear` execute in `SHELL.ELF` without the kernel command parser.
+- [ ] Filesystem and process-control commands execute in userspace through capability-backed APIs.
+- [ ] The recovery-only kernel command parser is removed.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

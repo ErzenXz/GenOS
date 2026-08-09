@@ -13,6 +13,7 @@ const BUILD_DIR: &str = "build";
 const IMAGE: &str = "build/genos.img";
 const INITRD: &str = "build/INITRD.GRD";
 const USER_INIT: &str = "target/x86_64-unknown-none/userspace/genos-init";
+const USER_SHELL: &str = "target/x86_64-unknown-none/userspace/genos-shell";
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -44,6 +45,15 @@ fn build() -> Result<(), String> {
         "build",
         "-p",
         "genos-init",
+        "--profile",
+        "userspace",
+        "--target",
+        "x86_64-unknown-none",
+    ])?;
+    cargo([
+        "build",
+        "-p",
+        "genos-shell",
         "--profile",
         "userspace",
         "--target",
@@ -117,6 +127,8 @@ where
 fn write_initrd(path: &Path) -> Result<(), String> {
     let user_init =
         fs::read(USER_INIT).map_err(|error| format!("failed to read {USER_INIT}: {error}"))?;
+    let user_shell =
+        fs::read(USER_SHELL).map_err(|error| format!("failed to read {USER_SHELL}: {error}"))?;
     let files = vec![
         (
             "README.TXT",
@@ -128,6 +140,7 @@ fn write_initrd(path: &Path) -> Result<(), String> {
             b"INIT.ELF is a separately built GenOS userspace executable.\n".to_vec(),
         ),
         ("INIT.ELF", user_init),
+        ("SHELL.ELF", user_shell),
     ];
 
     let mut bytes = Vec::new();
@@ -308,6 +321,7 @@ fn smoke_markers_ready(output: &str) -> bool {
         "USER_INPUT_OWNERSHIP_OK",
         "USER_INPUT_WAKE_OK",
         "USER_ASYNC_LIFECYCLE_OK",
+        "USER_SHELL_READY",
         "USER_ISOLATION_OK",
         "USERMODE_READY",
         "BACKBUFFER_READY",
@@ -349,7 +363,7 @@ mod tests {
     #[test]
     fn smoke_requires_async_lifecycle_and_reclaim_markers() {
         assert!(smoke_markers_ready(
-            "IRQ_READY\nVFS_READY\nTASKS_READY\nSCHED_READY\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_ISOLATION_OK\nUSERMODE_READY\nBACKBUFFER_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nDISPLAY_IDLE_OK\n"
+            "IRQ_READY\nVFS_READY\nTASKS_READY\nSCHED_READY\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_SHELL_READY\nUSER_ISOLATION_OK\nUSERMODE_READY\nBACKBUFFER_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nDISPLAY_IDLE_OK\n"
         ));
         assert!(!smoke_markers_ready("GENOS_READY\n"));
     }

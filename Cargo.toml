@@ -5,6 +5,7 @@ members = [
     "kernel",
     "userspace/runtime",
     "userspace/init",
+    "userspace/shell",
     "tools/xtask",
 ]
 resolver = "2"

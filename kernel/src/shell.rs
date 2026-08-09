@@ -75,13 +75,43 @@ pub fn run(
             display_idle_marker_sent = true;
         }
 
-        while let Some(event) = input_hw::pop_event() {
+        while let Some(next_event) = input_hw::peek_event() {
+            let console_busy =
+                processes.console_process_active() && !processes.console_input_ready();
+            if console_busy
+                && matches!(
+                    next_event,
+                    InputEvent::Key(
+                        KeyEvent::Char(_)
+                            | KeyEvent::Enter
+                            | KeyEvent::Backspace
+                            | KeyEvent::ArrowUp
+                            | KeyEvent::ArrowDown
+                    )
+                )
+            {
+                break;
+            }
+            let Some(event) = input_hw::pop_event() else {
+                break;
+            };
             handled_event = true;
             tasks.mark_running(ids.input, tick);
+            match event {
+                InputEvent::Key(KeyEvent::Escape) => {
+                    display.dismiss_focused();
+                    continue;
+                }
+                InputEvent::Key(KeyEvent::Tab) => {
+                    display.cycle_focus();
+                    continue;
+                }
+                _ => {}
+            }
             match processes.deliver_input(event) {
                 Ok(Some(update)) => {
                     apply_process_update(&mut display, &mut tasks, update, tick);
-                    continue;
+                    break;
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -719,7 +749,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.16 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.17 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -729,7 +759,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.16 adds endpoint capabilities and fair fan-in for Ring 3 applications.",
+                "GenOS 0.17 boots the interactive command shell as an isolated Ring 3 process.",
             );
             display.set_status("about");
         }
@@ -915,7 +945,21 @@ fn apply_process_update(
         line.push_str(update.output.as_str());
         display.push_fixed(LineKind::Output, line);
     }
-    if update.state != userspace::ManagedState::Ready {
+    if let Some(console) = update.console {
+        match console {
+            userspace::ConsoleUpdate::Write { kind, text } => display.push_fixed(kind, text),
+            userspace::ConsoleUpdate::SetInput(text) => display.set_input(text),
+            userspace::ConsoleUpdate::Clear => display.clear_shell(),
+        }
+    }
+    let terminal_state = matches!(
+        update.state,
+        userspace::ManagedState::Exited
+            | userspace::ManagedState::Faulted
+            | userspace::ManagedState::Killed
+    );
+    if update.state != userspace::ManagedState::Ready && (!update.console_process || terminal_state)
+    {
         let mut line = FixedText::from_str("ELF task-pid=");
         line.push_u64(update.task_id as u64);
         line.push_str(" state=");

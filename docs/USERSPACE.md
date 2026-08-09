@@ -1,14 +1,14 @@
 # GenOS userspace boundary
 
-GenOS 0.16 replaces direct PID messaging with endpoint capabilities: a published receive endpoint, process-owned send handles, sender identity in every message, and a fairness rule that admits at most one queued message per producer. This document states exactly what the milestone proves and what it does not.
+GenOS 0.17 boots the interactive command shell as a separately linked Ring 3 process and gives it an opaque console capability. Endpoint messaging from 0.16 remains part of the boundary. This document states exactly what the milestone proves and what it does not.
 
 ## Build and packaging pipeline
 
 1. `userspace/runtime` builds as a `no_std` library and owns the initial `int 0x80` syscall wrappers.
-2. `userspace/init` builds as a separate static `x86_64` executable using the dedicated `userspace` Cargo profile.
-3. Its linker script emits an RX text segment at the GenOS user entry and a separate RW data segment. The link fails if either segment grows beyond one page.
-4. `xtask` builds the userspace executable before the kernel and packages it into the boot initrd as `INIT.ELF`.
-5. The kernel locates `INIT.ELF` by name. A missing or invalid image stops the boot before any Ring 3 transition.
+2. `userspace/init` and `userspace/shell` build as separate static `x86_64` executables using the dedicated `userspace` Cargo profile.
+3. `INIT.ELF` keeps one RX text page. `SHELL.ELF` has a separate RW ABI data page and up to four RX text pages below the stack guard. Both layouts remain W^X.
+4. `xtask` builds both executables before the kernel and packages them into the initrd as `INIT.ELF` and `SHELL.ELF`.
+5. The kernel locates both images by name and excludes them from the writable session VFS. A missing or invalid required image stops boot safely.
 
 The kernel binary no longer contains a `.usertext` payload. Userspace behavior comes from the ELF bytes supplied through the boot filesystem.
 
@@ -32,7 +32,7 @@ Every accepted page receives a newly allocated zeroed physical frame. File bytes
 
 At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
 
-1. all instances query ABI version 9 and become eligible for timer scheduling;
+1. all instances query ABI version 10 and become eligible for timer scheduling;
 2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
 3. the first instance writes to its guard page and is terminated with page-fault status 142 before performing output work;
 4. the two healthy instances resume afterward, write greetings through the validated output syscall, report private values through validated copy-in, and exit with status 0.
@@ -41,7 +41,9 @@ GenOS then launches a fourth instance through the general ELF launch function an
 
 The probe then creates an owned parent-child pair. Each has its own CR3 root. The parent publishes an endpoint and blocks while waiting on the exact child PID. The child blocks on a three-tick sleep deadline, wakes, connects to the parent's live PID, sends one value through the resulting send handle, closes that handle, and exits with status 7. Child termination injects that status into the parent's saved `rax` and returns the parent to `Ready`; the parent's subsequent receive copies out the queued message, checks that `sender_pid` is the child's PID, closes its endpoint, and exits with status 0. Both address spaces are reclaimed and both terminal records are reaped.
 
-The fan-in probe then launches three processes: a receiver and its two producer children. The receiver publishes an endpoint and sleeps four ticks. Producer A wakes after one tick, connects to the receiver's PID, and sends `A1`. Its immediate second send is refused with `USER_ERROR_UNAVAILABLE` because `A1` is still queued, which is the fairness rule observed from Ring 3; A then sleeps five ticks. Producer B wakes after two ticks, connects independently, and sends `B1`. The receiver drains `A1` then `B1` in arrival order. Its third receive finds an empty queue and parks with `BlockReason::Endpoint`. Producer A's retried send now finds a parked receiver whose destination buffer is revalidated, copies the message straight into it, writes `16` into saved `rax`, and returns the receiver to `Ready` without any queue transit. The receiver reaps both producers with `wait_child`, closes its endpoint, and prints `INIT.ELF fan-in A1 B1 A2`. The probe requires exactly three completed messages, exactly one fairness denial, exactly one direct wake, the exact output text, and reclamation of all three address spaces.
+The fan-in probe then launches three processes: a receiver and its two producer children. Second-scale deadlines are intentionally wide enough to remain deterministic in both the headless smoke harness and the graphical desktop. Producer A sends `A1`; its immediate second send is refused with `USER_ERROR_UNAVAILABLE` while that message remains queued. Producer B independently sends `B1`. The receiver drains `A1` then `B1`, parks on its empty third receive, and is woken directly by producer A's later `A2`. The proof requires exactly three completed messages, one fairness denial, one direct wake, exact output, and reclamation of all three address spaces.
+
+After the probes, GenOS launches `SHELL.ELF` persistently in a fresh address space and passes an opaque tagged console handle in its entry register. The shell prints `USER_SHELL_READY`, blocks for focused keyboard events, maintains its editable line in private memory, and executes `help`, `echo`, `uname`, and `clear`. `Escape` and `Tab` remain compositor shortcuts. Hardware input stays queued while the shell is between one-shot waits, so a burst is not diverted into the recovery parser or silently consumed. Each console request yields to the desktop coordinator as its own process event, preserving consecutive lines in order.
 
 Finally, a file-mode process requests `UserSystemInfo` through structured copy-out and opens `/README.TXT`. The open request blocks while the desktop VFS resolves a regular file; completion installs an opaque, read-only capability in the calling process's four-slot handle table. Ring 3 copies out `UserFileStat`, reads 17 bytes, confirms that `stat_handle` now reports offset 17, then reads the remaining 37 bytes through the same handle. The kernel derives the path and offset from the capability rather than trusting userspace. Each read blocks, and a scheduler poll confirms that no userspace slice runs while the request is outstanding.
 
@@ -75,14 +77,14 @@ Completed task history remains in the task registry even after the heavier proce
 
 The shell's `wait PID` remains an observational reap command for operators. ABI `wait_child` is the blocking primitive used by a Ring 3 parent; the two operations intentionally serve different callers.
 
-## ABI version 9
+## ABI version 10
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
 | Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
-| 1 | `abi_version` | all zero | ABI version `9` |
+| 1 | `abi_version` | all zero | ABI version `10` |
 | 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
 | 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
 | 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
@@ -105,6 +107,9 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 21 | `send_endpoint` | nonzero send handle and a `u64` value; remaining arguments zero | `0` when the message is delivered or queued; `USER_ERROR_INVALID_ARGUMENT` for a handle that is not a live send capability or whose target generation is gone; `USER_ERROR_UNAVAILABLE` when this producer already has a message queued, the queue is full, or the copy into a parked receiver fails |
 | 22 | `receive_endpoint` | own receive handle, writable address, exact size `16` | returns `16` after one `UserChannelMessage` is copied out; blocks while the queue is empty; `USER_ERROR_INVALID_ARGUMENT` for a handle that is not the currently published receive capability, a wrong length, or a buffer outside the process's writable data mapping |
 | 23 | `close_endpoint` | handle; remaining arguments zero | `0`; closing a send handle revokes only that handle, closing the receive handle also drops the queue, unpublishes the endpoint, and revokes every remote send handle naming that generation. Unknown or stale values return `USER_ERROR_INVALID_ARGUMENT` |
+| 24 | `console_write` | console handle, mapped text address, length `1..80`, line kind `0..3` | appends one sanitized output, prompt, error, or status line and returns its length |
+| 25 | `console_set_input` | console handle, mapped text address, length `0..80` | replaces the editable terminal line; zero length clears it |
+| 26 | `console_clear` | console handle; remaining arguments zero | clears terminal scrollback and returns `0` |
 
 The output path validates the whole range against the userspace window, translates every byte through the owning address space, rejects unmapped holes, and replaces control or non-ASCII bytes before the shell sees them. The application uses runtime functions instead of handwritten assembly. Cooperative yield remains available for ABI compatibility, but the execution proof relies on timer preemption.
 
@@ -130,7 +135,7 @@ Revocation happens on every path that ends a capability. `close_endpoint` on a s
 
 Input mask `1` selects keyboard events and mask `2` selects pointer events; callers may combine them. Keyboard events use kind `1`; printable characters place ASCII in `value0`, while Enter, Backspace, Escape, Tab, Arrow Up, and Arrow Down have stable codes and zero values. Pointer movement uses kind `2`, signed deltas in `value0`/`value1`, and the active button mask in `code`. Pointer button events use kind `3`, cursor position in the signed values, and left/right/middle bits `1`, `2`, and `4` in `code`.
 
-Input waits are one-shot and unbuffered. At most one live process may own the wait channel. A second waiter is returned to `Ready` with `USER_ERROR_UNAVAILABLE`; it never displaces the owner. The desktop offers each queued hardware event to the owner first. A mask mismatch leaves the process blocked and the event continues through normal shell or window handling. A match copies the encoded event only after the stored destination is revalidated, clears ownership, injects the exact structure size into saved `rax`, and consumes that event so the shell cannot also interpret it.
+Input waits are one-shot. At most one live process may own the wait channel. A second waiter is returned to `Ready` with `USER_ERROR_UNAVAILABLE`; it never displaces the owner. The desktop offers each queued hardware event to the owner first. A mask mismatch leaves the process blocked and the event continues through normal window handling. While the designated console process is live but rearming, the desktop leaves queued input untouched. A matching event is copied only after its stored destination is revalidated, then the waiter wakes with the exact structure size in `rax`.
 
 Paths are 1–64 ASCII bytes, must be absolute, and may use only letters, numbers, `/`, `.`, `_`, or `-`. Read buffers are capped at 128 bytes and must remain inside the process's writable data page, with every byte translating to the physical frame owned by that process. A handle contains a process prefix, monotonically advancing per-process generation, and slot identity, but userspace must treat the value as opaque. Authority comes from an exact entry in the calling process's table; guessing another PID's value never grants access.
 
@@ -188,11 +193,14 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - Input ownership is one-shot and exclusive, with explicit contention failure rather than event duplication or waiter replacement.
 - Keyboard characters, special keys, pointer deltas, positions, and button bits have tested fixed-layout encodings.
 - Exit, fault, or kill clears pending input ownership before the process address space is reclaimed.
+- `SHELL.ELF` is independently linked, mapped W^X, preempted, and kept as a persistent userspace task.
+- Only the exact console handle granted at shell launch can append lines, replace the editor, or clear scrollback.
+- Focused keyboard bursts remain queued until the Ring 3 shell rearms its one-shot input wait.
+- `help`, `echo`, `uname`, and `clear` are parsed and executed outside Ring 0.
 
 ## Current limitations
 
-- `INIT.ELF` is the only packaged userspace program.
-- The immutable initrd ELF is registered directly with the loader and is not copied into the small writable session VFS.
+- `INIT.ELF` and `SHELL.ELF` are the only packaged userspace programs. Their immutable initrd bytes are registered directly with the loader and not copied into the writable session VFS.
 - Shell `wait PID` is observational; blocking semantics are available only to a userspace parent through `wait_child`.
 - The process manager has four slots. A terminal process occupies one until `wait` reaps it.
 - The recycled-frame pool is intentionally bounded to 256 frames; this milestone does not provide a general coalescing physical-memory allocator.
@@ -204,9 +212,9 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - The userspace file API is capped at four handles and 128 bytes per read or write, and it is backed only by the session RAM VFS. Directory capabilities, seek, truncation controls, shared handles, live metadata refresh, and persistent storage are not implemented yet.
 - `/USER/` writes last only for the current boot; there is no durable block device or crash-consistency guarantee yet.
 - The desktop holds one pending VFS request because it schedules at most one userspace slice and services one completion per tick.
-- Input waits have no backlog, timeout, focus capability, per-window routing, or multi-waiter queue yet. Events that arrive before a wait remain desktop events.
+- Input waits have no general per-process backlog, timeout, per-window capability, or multi-waiter queue. Queue preservation while rearming is currently special to the designated console process.
 - There is no heap allocator or userspace window API.
 - Output is a bounded text syscall, not file-descriptor-based standard I/O.
 - The transition state is single-core and supports one active user process at a time.
 
-The next slice is moving the shell into userspace.
+The next slice adds bounded directory enumeration so `ls` and `cat` can move into `SHELL.ELF`, followed by file mutation and process-control capabilities. The recovery-only kernel parser remains until those commands have safe userspace replacements.

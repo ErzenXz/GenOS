@@ -41,6 +41,11 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         serial::println("USER_ELF_MISSING");
         arch::halt_loop();
     };
+    let Some(shell_program) = initrd.find("SHELL.ELF") else {
+        serial::println("USER_SHELL_MISSING");
+        arch::halt_loop();
+    };
+    userspace::register_shell_elf(shell_program.data);
     let user_probe = userspace::run_probe(init_program.data);
     let dynamic_probe = match userspace::launch_init() {
         Ok(result) => result,
@@ -56,7 +61,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     vfs.init_root();
     let _ = vfs.mkdir("/USER");
     for file in initrd.iter() {
-        if file.name != "INIT.ELF" {
+        if file.name != "INIT.ELF" && file.name != "SHELL.ELF" {
             vfs.seed_file(file.name, file.data);
         }
     }
@@ -76,6 +81,21 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     let _ = tasks.record_user_exit("user-a", user_probe.exit_codes[1], interrupts::ticks());
     let _ = tasks.record_user_exit("user-b", user_probe.exit_codes[2], interrupts::ticks());
     let _ = tasks.record_user_exit("init-elf", dynamic_probe.exit_code, interrupts::ticks());
+    let mut processes = userspace::ProcessManager::new();
+    let shell_task = tasks
+        .reserve_user("ring3-shell", interrupts::ticks())
+        .unwrap_or_else(|_| {
+            serial::println("USER_SHELL_TASK_FAILED");
+            arch::halt_loop();
+        });
+    let shell_pid = processes.spawn_shell(shell_task).unwrap_or_else(|_| {
+        serial::println("USER_SHELL_LAUNCH_FAILED");
+        arch::halt_loop();
+    });
+    if tasks.bind_user_runtime(shell_task, shell_pid).is_err() {
+        serial::println("USER_SHELL_BIND_FAILED");
+        arch::halt_loop();
+    }
     serial::println("TASKS_READY");
     serial::println("SCHED_READY");
 
@@ -102,14 +122,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::println("GENOS_READY");
 
     interrupts::enable();
-    shell::run(
-        manager,
-        vfs,
-        boot_info,
-        tasks,
-        task_ids,
-        userspace::ProcessManager::new(),
-    );
+    shell::run(manager, vfs, boot_info, tasks, task_ids, processes);
 }
 
 #[panic_handler]

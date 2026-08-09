@@ -4,6 +4,9 @@ pub use genos_abi::{
     USER_SYSCALL_CLOSE_ENDPOINT as SYSCALL_CLOSE_ENDPOINT,
     USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE,
     USER_SYSCALL_CONNECT_ENDPOINT as SYSCALL_CONNECT_ENDPOINT,
+    USER_SYSCALL_CONSOLE_CLEAR as SYSCALL_CONSOLE_CLEAR,
+    USER_SYSCALL_CONSOLE_SET_INPUT as SYSCALL_CONSOLE_SET_INPUT,
+    USER_SYSCALL_CONSOLE_WRITE as SYSCALL_CONSOLE_WRITE,
     USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
@@ -102,6 +105,20 @@ pub enum SyscallAction {
     CloseEndpoint {
         handle: u64,
     },
+    ConsoleWrite {
+        handle: u64,
+        address: u64,
+        length: u64,
+        kind: u64,
+    },
+    ConsoleSetInput {
+        handle: u64,
+        address: u64,
+        length: u64,
+    },
+    ConsoleClear {
+        handle: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +126,16 @@ pub enum SyscallError {
     UnknownNumber,
     InvalidArgument,
     Unavailable,
+}
+
+const CONSOLE_HANDLE_TAG: u64 = 0xc1 << 56;
+
+pub const fn console_handle(pid: u8, generation: u64) -> u64 {
+    CONSOLE_HANDLE_TAG | ((pid as u64) << 48) | (generation & 0x0000_ffff_ffff_ffff)
+}
+
+pub const fn console_capability_valid(owned: u64, presented: u64) -> bool {
+    owned != 0 && owned == presented && presented & (0xff << 56) == CONSOLE_HANDLE_TAG
 }
 
 pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallError> {
@@ -259,6 +286,35 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         SYSCALL_CLOSE_ENDPOINT if args[0] != 0 && args[1..] == [0; 5] => {
             Ok(SyscallAction::CloseEndpoint { handle: args[0] })
         }
+        SYSCALL_CONSOLE_WRITE
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_CONSOLE_TEXT_MAX as u64).contains(&args[2])
+                && args[3] <= genos_abi::USER_CONSOLE_LINE_STATUS
+                && args[4..] == [0; 2] =>
+        {
+            Ok(SyscallAction::ConsoleWrite {
+                handle: args[0],
+                address: args[1],
+                length: args[2],
+                kind: args[3],
+            })
+        }
+        SYSCALL_CONSOLE_SET_INPUT
+            if args[0] != 0
+                && args[2] <= genos_abi::USER_CONSOLE_TEXT_MAX as u64
+                && (args[2] == 0 || args[1] != 0)
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::ConsoleSetInput {
+                handle: args[0],
+                address: args[1],
+                length: args[2],
+            })
+        }
+        SYSCALL_CONSOLE_CLEAR if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::ConsoleClear { handle: args[0] })
+        }
         SYSCALL_PING
         | SYSCALL_ABI_VERSION
         | SYSCALL_EXIT
@@ -280,7 +336,10 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_CONNECT_ENDPOINT
         | SYSCALL_SEND_ENDPOINT
         | SYSCALL_RECEIVE_ENDPOINT
-        | SYSCALL_CLOSE_ENDPOINT => Err(SyscallError::InvalidArgument),
+        | SYSCALL_CLOSE_ENDPOINT
+        | SYSCALL_CONSOLE_WRITE
+        | SYSCALL_CONSOLE_SET_INPUT
+        | SYSCALL_CONSOLE_CLEAR => Err(SyscallError::InvalidArgument),
         // `SYSCALL_SEND` and `SYSCALL_RECEIVE` stay reserved but unimplemented.
         _ => Err(SyscallError::UnknownNumber),
     }
@@ -310,6 +369,16 @@ pub fn validate_user_buffer(address: u64, length: u64, range_start: u64, range_s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_capabilities_are_tagged_exact_and_process_local() {
+        let owned = console_handle(16, 7);
+        assert!(console_capability_valid(owned, owned));
+        assert!(!console_capability_valid(0, 0));
+        assert!(!console_capability_valid(owned, console_handle(17, 7)));
+        assert!(!console_capability_valid(owned, console_handle(16, 8)));
+        assert!(!console_capability_valid(owned, owned & !(0xff << 56)));
+    }
 
     #[test]
     fn known_calls_have_stable_results() {
@@ -441,6 +510,27 @@ mod tests {
         assert_eq!(
             dispatch(SYSCALL_CLOSE_ENDPOINT, [0x201, 0, 0, 0, 0, 0]),
             Ok(SyscallAction::CloseEndpoint { handle: 0x201 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CONSOLE_WRITE, [0xc1, 0x6000, 12, 1, 0, 0]),
+            Ok(SyscallAction::ConsoleWrite {
+                handle: 0xc1,
+                address: 0x6000,
+                length: 12,
+                kind: 1,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CONSOLE_SET_INPUT, [0xc1, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::ConsoleSetInput {
+                handle: 0xc1,
+                address: 0,
+                length: 0,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CONSOLE_CLEAR, [0xc1, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::ConsoleClear { handle: 0xc1 })
         );
     }
 

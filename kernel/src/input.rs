@@ -188,6 +188,10 @@ impl EventQueue {
         event
     }
 
+    pub fn peek(&self) -> Option<InputEvent> {
+        (self.len != 0).then(|| self.events[self.head]).flatten()
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -426,6 +430,9 @@ mod tests {
         }
         assert_eq!(queue.len(), EVENT_QUEUE_CAP);
         assert_eq!(queue.dropped(), 2);
+        assert_eq!(queue.peek(), Some(InputEvent::Key(KeyEvent::Char(b'x'))));
+        assert_eq!(queue.len(), EVENT_QUEUE_CAP);
+        assert_eq!(queue.pop(), queue.peek());
     }
 
     #[test]

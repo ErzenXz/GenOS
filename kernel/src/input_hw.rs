@@ -74,6 +74,10 @@ pub fn pop_event() -> Option<InputEvent> {
     unsafe { (*core::ptr::addr_of_mut!(QUEUE)).pop() }
 }
 
+pub fn peek_event() -> Option<InputEvent> {
+    unsafe { (*core::ptr::addr_of!(QUEUE)).peek() }
+}
+
 pub fn event_depth() -> usize {
     unsafe { (*core::ptr::addr_of!(QUEUE)).len() }
 }

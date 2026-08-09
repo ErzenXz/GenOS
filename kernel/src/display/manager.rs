@@ -981,7 +981,7 @@ impl DisplayManager {
     }
 
     fn draw_terminal_window(&mut self, rect: Rect) {
-        self.draw_window_frame(rect, "Terminal - GenOS Kernel Shell");
+        self.draw_window_frame(rect, "Terminal - GenOS Ring 3 Shell");
         self.draw_shell(self.shell_body_rect());
     }
 
@@ -1352,7 +1352,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.16",
+            "GenOS 0.17",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1366,7 +1366,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "ENDPOINT CAPS  /  FAIR FAN-IN  /  ABI 9",
+            "RING 3 SHELL  /  CONSOLE CAPS  /  ABI 10",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(
@@ -1449,7 +1449,7 @@ impl DisplayManager {
             &mut self.fb,
             inner,
             Point::new(inner.x, y),
-            "GENOS SHELL  /  HELP FOR COMMANDS  /  UP-DOWN FOR HISTORY",
+            "GENOS SHELL  /  RING 3 COMMANDS  /  HELP FOR COMMANDS",
             TextStyle::regular(14, Color::TEXT_MUTED),
         );
         y += metrics.line_height + 4;

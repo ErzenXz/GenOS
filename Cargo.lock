@@ -36,6 +36,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "genos-shell"
+version = "0.1.0"
+dependencies = [
+ "genos-user-runtime",
+]
+
+[[package]]
 name = "genos-user-runtime"
 version = "0.1.0"
 dependencies = [

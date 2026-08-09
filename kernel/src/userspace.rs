@@ -9,7 +9,7 @@ use genos_abi::{
     USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
-    display::FixedText,
+    display::{FixedText, LineKind},
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     input::{InputEvent, KeyEvent, MouseButtons},
     ipc::ChannelQueue,
@@ -79,8 +79,11 @@ static COMPLETED_ENDPOINT_MESSAGES: AtomicU64 = AtomicU64::new(0);
 static ENDPOINT_FAIRNESS_DENIALS: AtomicU64 = AtomicU64::new(0);
 static ENDPOINT_WAKES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
+static NEXT_CONSOLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
+static mut SHELL_ELF_ADDRESS: u64 = 0;
+static mut SHELL_ELF_LENGTH: usize = 0;
 static mut CURRENT_PROCESS: *mut UserProcess = core::ptr::null_mut();
 
 #[derive(Clone, Copy)]
@@ -183,6 +186,12 @@ enum ProcessEvent {
         length: u64,
     },
     CloseEndpoint(u64),
+    ConsoleWrite {
+        text: FixedText,
+        kind: LineKind,
+    },
+    ConsoleSetInput(FixedText),
+    ConsoleClear,
     Exit,
     Fault,
 }
@@ -209,6 +218,7 @@ struct UserProcess {
     executable_end: u64,
     output: FixedText,
     output_pending: bool,
+    console_handle: u64,
     frames_released: bool,
     killed: bool,
     completed: bool,
@@ -270,7 +280,16 @@ pub struct ProcessUpdate {
     pub exit_code: u8,
     pub preemptions: u64,
     pub output: FixedText,
+    pub console_process: bool,
+    pub console: Option<ConsoleUpdate>,
     pub vfs_request: Option<UserVfsRequest>,
+}
+
+#[derive(Clone, Copy)]
+pub enum ConsoleUpdate {
+    Write { kind: LineKind, text: FixedText },
+    SetInput(FixedText),
+    Clear,
 }
 
 #[derive(Clone, Copy)]
@@ -550,8 +569,16 @@ impl EndpointState {
         if self.published.is_some() || !self.handles.iter().any(Option::is_none) {
             return None;
         }
+        let slot = self.handles.iter().position(Option::is_none)?;
         let generation = self.next_generation()?;
-        let handle = self.allocate(EndpointRole::Receive { generation })?;
+        let handle = endpoint_handle(self.owner_pid, generation, slot);
+        self.handles[slot] = Some(EndpointCapability {
+            handle,
+            owner_pid: self.owner_pid,
+            generation,
+            slot: slot as u8,
+            role: EndpointRole::Receive { generation },
+        });
         self.published = Some(PublishedEndpoint {
             generation,
             queue: ChannelQueue::new(),
@@ -712,6 +739,29 @@ impl ProcessManager {
             slots: [const { None }; MAX_ASYNC_PROCESSES],
             cursor: 0,
         }
+    }
+
+    pub fn spawn_shell(&mut self, task_id: u32) -> Result<u8, LaunchError> {
+        let slot = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or(LaunchError::ProcessTableFull)?;
+        let elf_bytes = shell_elf()?;
+        let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let generation = NEXT_CONSOLE_GENERATION.fetch_add(1, Ordering::AcqRel);
+        let handle = syscall::console_handle(pid, generation);
+        let mut process =
+            build_process(pid, handle, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
+        process.console_handle = handle;
+        self.slots[slot] = Some(ManagedProcess::new(task_id, 0, process));
+        DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
+        crate::serial::print("USER_SHELL_SPAWN pid=");
+        crate::serial::print_u64(pid as u64);
+        crate::serial::print(" task=");
+        crate::serial::print_u64(task_id as u64);
+        crate::serial::println("");
+        Ok(pid)
     }
 
     pub fn spawn_init(&mut self, task_id: u32, hold: bool) -> Result<u8, LaunchError> {
@@ -885,6 +935,7 @@ impl ProcessManager {
                 managed.process.event
             };
             let mut vfs_request = None;
+            let mut console = None;
             match event {
                 ProcessEvent::Yield => {
                     TOTAL_YIELDS.fetch_add(1, Ordering::AcqRel);
@@ -944,6 +995,35 @@ impl ProcessManager {
                     length,
                 } => self.complete_endpoint_receive(index, handle, address, length),
                 ProcessEvent::CloseEndpoint(handle) => self.complete_endpoint_close(index, handle),
+                ProcessEvent::ConsoleWrite { text, kind } => {
+                    let managed = self.slots[index].as_mut().expect("selected process exists");
+                    managed.process.context.rax = text.len() as u64;
+                    managed.state = ManagedState::Ready;
+                    console = Some(ConsoleUpdate::Write { kind, text });
+                    crate::serial::print("USER_CONSOLE_WRITE pid=");
+                    crate::serial::print_u64(managed.process.pid as u64);
+                    crate::serial::print(" text=");
+                    crate::serial::print(text.as_str());
+                    crate::serial::println("");
+                    if text.as_str().starts_with("SHELL.ELF ready") {
+                        crate::serial::println("USER_SHELL_READY");
+                    }
+                }
+                ProcessEvent::ConsoleSetInput(text) => {
+                    let managed = self.slots[index].as_mut().expect("selected process exists");
+                    managed.process.context.rax = text.len() as u64;
+                    managed.state = ManagedState::Ready;
+                    console = Some(ConsoleUpdate::SetInput(text));
+                }
+                ProcessEvent::ConsoleClear => {
+                    let managed = self.slots[index].as_mut().expect("selected process exists");
+                    managed.process.context.rax = 0;
+                    managed.state = ManagedState::Ready;
+                    console = Some(ConsoleUpdate::Clear);
+                    crate::serial::print("USER_CONSOLE_CLEAR pid=");
+                    crate::serial::print_u64(managed.process.pid as u64);
+                    crate::serial::println("");
+                }
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
@@ -962,6 +1042,8 @@ impl ProcessManager {
                 exit_code: managed.process.exit_code,
                 preemptions: managed.process.preemptions,
                 output,
+                console_process: managed.process.console_handle != 0,
+                console,
                 vfs_request,
             });
         }
@@ -1892,6 +1974,8 @@ impl ProcessManager {
             exit_code: managed.process.exit_code,
             preemptions: managed.process.preemptions,
             output: FixedText::empty(),
+            console_process: managed.process.console_handle != 0,
+            console: None,
             vfs_request: None,
         };
         self.wake_waiting_parent(pid, 137);
@@ -1945,6 +2029,22 @@ impl ProcessManager {
             .filter(|managed| !managed.process.completed)
             .count()
     }
+
+    pub fn console_process_active(&self) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .any(|managed| managed.process.console_handle != 0 && !managed.process.completed)
+    }
+
+    pub fn console_input_ready(&self) -> bool {
+        self.slots.iter().flatten().any(|managed| {
+            managed.process.console_handle != 0
+                && !managed.process.completed
+                && managed.state == ManagedState::Waiting
+                && managed.blocked_on == BlockReason::Input
+        })
+    }
 }
 
 impl Default for ProcessManager {
@@ -1961,6 +2061,8 @@ fn process_update(managed: &ManagedProcess) -> ProcessUpdate {
         exit_code: managed.process.exit_code,
         preemptions: managed.process.preemptions,
         output: FixedText::empty(),
+        console_process: managed.process.console_handle != 0,
+        console: None,
         vfs_request: None,
     }
 }
@@ -2145,7 +2247,10 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::ConnectEndpoint(_)
                 | ProcessEvent::SendEndpoint { .. }
                 | ProcessEvent::ReceiveEndpoint { .. }
-                | ProcessEvent::CloseEndpoint(_) => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::CloseEndpoint(_)
+                | ProcessEvent::ConsoleWrite { .. }
+                | ProcessEvent::ConsoleSetInput(_)
+                | ProcessEvent::ConsoleClear => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -2190,6 +2295,13 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     crate::serial::println("USERMODE_READY");
 
     result
+}
+
+pub fn register_shell_elf(elf_bytes: &'static [u8]) {
+    unsafe {
+        core::ptr::addr_of_mut!(SHELL_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
+        core::ptr::addr_of_mut!(SHELL_ELF_LENGTH).write(elf_bytes.len());
+    }
 }
 
 pub fn probe_passed() -> bool {
@@ -2867,6 +2979,15 @@ fn user_elf() -> Result<&'static [u8], LaunchError> {
     Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
 }
 
+fn shell_elf() -> Result<&'static [u8], LaunchError> {
+    let address = unsafe { *core::ptr::addr_of!(SHELL_ELF_ADDRESS) };
+    let length = unsafe { *core::ptr::addr_of!(SHELL_ELF_LENGTH) };
+    if address == 0 || length == 0 {
+        return Err(LaunchError::ImageUnavailable);
+    }
+    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
+}
+
 fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, ProcessBuildError> {
     let image = ElfImage::parse(bytes).map_err(|_| ProcessBuildError::InvalidElf)?;
     if image.entry() < paging::USER_CODE || image.entry() >= paging::USER_STACK_GUARD {
@@ -3033,6 +3154,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         executable_end: loaded.executable_end,
         output: FixedText::empty(),
         output_pending: false,
+        console_handle: 0,
         frames_released: false,
         killed: false,
         completed: false,
@@ -3440,6 +3562,58 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.event = ProcessEvent::CloseEndpoint(handle);
             1
         }
+        Ok(SyscallAction::ConsoleWrite {
+            handle,
+            address,
+            length,
+            kind,
+        }) => {
+            if syscall::console_capability_valid(process.console_handle, handle) {
+                if let (Some(text), Some(kind)) = (
+                    copy_user_text(process, address, length),
+                    console_line_kind(kind),
+                ) {
+                    frame.rax = 0;
+                    process.context = *frame;
+                    process.event = ProcessEvent::ConsoleWrite { text, kind };
+                    return 1;
+                }
+            }
+            frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+            0
+        }
+        Ok(SyscallAction::ConsoleSetInput {
+            handle,
+            address,
+            length,
+        }) => {
+            let text = if length == 0 {
+                Some(FixedText::empty())
+            } else {
+                copy_user_text(process, address, length)
+            };
+            if syscall::console_capability_valid(process.console_handle, handle) {
+                if let Some(text) = text {
+                    frame.rax = 0;
+                    process.context = *frame;
+                    process.event = ProcessEvent::ConsoleSetInput(text);
+                    return 1;
+                }
+            }
+            frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+            0
+        }
+        Ok(SyscallAction::ConsoleClear { handle }) => {
+            if syscall::console_capability_valid(process.console_handle, handle) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ConsoleClear;
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;
             process.exit_code = code;
@@ -3496,6 +3670,16 @@ fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64
         return None;
     }
     Some(unsafe { core::ptr::read_unaligned(address as *const u64) })
+}
+
+fn console_line_kind(kind: u64) -> Option<LineKind> {
+    match kind {
+        genos_abi::USER_CONSOLE_LINE_OUTPUT => Some(LineKind::Output),
+        genos_abi::USER_CONSOLE_LINE_PROMPT => Some(LineKind::Prompt),
+        genos_abi::USER_CONSOLE_LINE_ERROR => Some(LineKind::Error),
+        genos_abi::USER_CONSOLE_LINE_STATUS => Some(LineKind::Status),
+        _ => None,
+    }
 }
 
 fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
@@ -3711,6 +3895,7 @@ mod tests {
         assert_eq!(handle & ENDPOINT_HANDLE_TAG_MASK, ENDPOINT_HANDLE_TAG);
         assert_eq!(capability.owner_pid, 7);
         assert_eq!(capability.slot, 0);
+        assert_eq!(capability.generation, state.published_generation().unwrap());
         assert_eq!(
             capability.role,
             EndpointRole::Receive {
@@ -3977,6 +4162,6 @@ mod tests {
         );
         // The reissued endpoint carries a fresh generation, so send handles held
         // against the closed one stay unusable even in the same slot.
-        assert_eq!(state.published_generation(), Some(3));
+        assert_eq!(state.published_generation(), Some(2));
     }
 }
