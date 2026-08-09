@@ -64,6 +64,14 @@ pub fn print_hex(mut value: u64) {
     }
 }
 
+pub fn read_byte() -> Option<u8> {
+    unsafe { (inb(COM1 + 5) & 1 != 0).then(|| inb(COM1)) }
+}
+
+pub fn echo_byte(byte: u8) {
+    write_byte(byte);
+}
+
 struct Serial;
 
 impl Write for Serial {

@@ -4,8 +4,8 @@
 use core::arch::asm;
 
 pub use genos_abi::{
-    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserProcessHeader,
-    UserSystemInfo, USER_ABI_VERSION as ABI_VERSION,
+    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
+    UserProcessHeader, UserProcessStatus, UserSystemInfo, USER_ABI_VERSION as ABI_VERSION,
     USER_CHANNEL_MESSAGE_SIZE as CHANNEL_MESSAGE_SIZE,
     USER_CONSOLE_LINE_ERROR as CONSOLE_LINE_ERROR, USER_CONSOLE_LINE_OUTPUT as CONSOLE_LINE_OUTPUT,
     USER_CONSOLE_LINE_PROMPT as CONSOLE_LINE_PROMPT,
@@ -14,10 +14,13 @@ pub use genos_abi::{
     USER_ENDPOINT_HANDLE_CAPACITY as ENDPOINT_HANDLE_CAPACITY,
     USER_ENDPOINT_QUEUE_CAPACITY as ENDPOINT_QUEUE_CAPACITY,
     USER_ERROR_INVALID_ARGUMENT as ERROR_INVALID_ARGUMENT,
-    USER_ERROR_UNAVAILABLE as ERROR_UNAVAILABLE, USER_FILE_HANDLE_CAPACITY as FILE_HANDLE_CAPACITY,
+    USER_ERROR_UNAVAILABLE as ERROR_UNAVAILABLE,
+    USER_EXECUTABLE_PAGE_CAPACITY as EXECUTABLE_PAGE_CAPACITY,
+    USER_FILE_HANDLE_CAPACITY as FILE_HANDLE_CAPACITY,
     USER_FILE_KIND_DIRECTORY as FILE_KIND_DIRECTORY, USER_FILE_KIND_REGULAR as FILE_KIND_REGULAR,
-    USER_FILE_READ_MAX as FILE_READ_MAX, USER_FILE_RIGHT_READ as FILE_RIGHT_READ,
-    USER_FILE_RIGHT_WRITE as FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX as FILE_WRITE_MAX,
+    USER_FILE_READ_MAX as FILE_READ_MAX, USER_FILE_RIGHT_MANAGE as FILE_RIGHT_MANAGE,
+    USER_FILE_RIGHT_READ as FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE as FILE_RIGHT_WRITE,
+    USER_FILE_WRITE_MAX as FILE_WRITE_MAX, USER_IMAGE_LAYOUT_VERSION as IMAGE_LAYOUT_VERSION,
     USER_INPUT_KIND_KEY as INPUT_KIND_KEY,
     USER_INPUT_KIND_POINTER_BUTTON as INPUT_KIND_POINTER_BUTTON,
     USER_INPUT_KIND_POINTER_MOVE as INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_ALL as INPUT_MASK_ALL,
@@ -29,9 +32,15 @@ pub use genos_abi::{
     USER_PATH_MAX as PATH_MAX, USER_PING_REPLY as PING_REPLY,
     USER_POINTER_BUTTON_LEFT as POINTER_BUTTON_LEFT,
     USER_POINTER_BUTTON_MIDDLE as POINTER_BUTTON_MIDDLE,
-    USER_POINTER_BUTTON_RIGHT as POINTER_BUTTON_RIGHT, USER_TIMER_HZ as TIMER_HZ,
+    USER_POINTER_BUTTON_RIGHT as POINTER_BUTTON_RIGHT,
+    USER_PROCESS_HANDLE_CAPACITY as PROCESS_HANDLE_CAPACITY,
+    USER_PROCESS_IMAGE_INIT as PROCESS_IMAGE_INIT, USER_PROCESS_MODE_HOLD as PROCESS_MODE_HOLD,
+    USER_PROCESS_MODE_NORMAL as PROCESS_MODE_NORMAL, USER_PROCESS_STATE_EXITED as PROCESS_EXITED,
+    USER_PROCESS_STATE_FAULTED as PROCESS_FAULTED, USER_PROCESS_STATE_KILLED as PROCESS_KILLED,
+    USER_PROCESS_STATE_READY as PROCESS_READY, USER_PROCESS_STATE_SLEEPING as PROCESS_SLEEPING,
+    USER_PROCESS_STATE_WAITING as PROCESS_WAITING, USER_TIMER_HZ as TIMER_HZ,
 };
-pub const STACK_GUARD: u64 = 0x0000_4000_0000_7000;
+pub const STACK_GUARD: u64 = 0x0000_4000_0000_b000;
 
 use genos_abi::{
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION,
@@ -41,17 +50,28 @@ use genos_abi::{
     USER_SYSCALL_CONSOLE_CLEAR as SYSCALL_CONSOLE_CLEAR,
     USER_SYSCALL_CONSOLE_SET_INPUT as SYSCALL_CONSOLE_SET_INPUT,
     USER_SYSCALL_CONSOLE_WRITE as SYSCALL_CONSOLE_WRITE,
+    USER_SYSCALL_CREATE_DIRECTORY as SYSCALL_CREATE_DIRECTORY,
     USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
+    USER_SYSCALL_NETWORK_CONFIG as SYSCALL_NETWORK_CONFIG,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_DIRECTORY as SYSCALL_READ_DIRECTORY,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_PROCESS_KILL as SYSCALL_PROCESS_KILL,
+    USER_SYSCALL_PROCESS_LAUNCH as SYSCALL_PROCESS_LAUNCH,
+    USER_SYSCALL_PROCESS_REAP as SYSCALL_PROCESS_REAP,
+    USER_SYSCALL_PROCESS_STATUS as SYSCALL_PROCESS_STATUS,
+    USER_SYSCALL_READ_DIRECTORY as SYSCALL_READ_DIRECTORY,
     USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE, USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE,
     USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
-    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT,
-    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
-    USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
-    USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT, USER_SYSCALL_WRITE as SYSCALL_WRITE,
-    USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
+    USER_SYSCALL_REMOVE_PATH as SYSCALL_REMOVE_PATH, USER_SYSCALL_REPORT as SYSCALL_REPORT,
+    USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
+    USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
+    USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO,
+    USER_SYSCALL_TCP_EXCHANGE as SYSCALL_TCP_EXCHANGE,
+    USER_SYSCALL_TRUNCATE_HANDLE as SYSCALL_TRUNCATE_HANDLE,
+    USER_SYSCALL_UDP_EXCHANGE as SYSCALL_UDP_EXCHANGE,
+    USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD, USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT,
+    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE,
+    USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
 pub fn ping() -> u64 {
@@ -175,6 +195,54 @@ pub fn system_info(info: &mut UserSystemInfo) -> u64 {
     }
 }
 
+pub fn network_config(config: &mut UserNetworkConfig) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_NETWORK_CONFIG,
+            [
+                config as *mut UserNetworkConfig as u64,
+                core::mem::size_of::<UserNetworkConfig>() as u64,
+                0,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn udp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_UDP_EXCHANGE,
+            [
+                target as u64,
+                port as u64,
+                request.as_ptr() as u64,
+                request.len() as u64,
+                response.as_mut_ptr() as u64,
+                response.len() as u64,
+            ],
+        )
+    }
+}
+
+pub fn tcp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_TCP_EXCHANGE,
+            [
+                target as u64,
+                port as u64,
+                request.as_ptr() as u64,
+                request.len() as u64,
+                response.as_mut_ptr() as u64,
+                response.len() as u64,
+            ],
+        )
+    }
+}
+
 pub fn read_file(path: &[u8], output: &mut [u8]) -> u64 {
     unsafe {
         syscall(
@@ -262,6 +330,68 @@ pub fn write_handle(handle: u64, input: &[u8]) -> u64 {
         syscall(
             SYSCALL_WRITE_HANDLE,
             [handle, input.as_ptr() as u64, input.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+pub fn truncate_handle(handle: u64) -> u64 {
+    unsafe { syscall(SYSCALL_TRUNCATE_HANDLE, [handle, 0, 0, 0, 0, 0]) }
+}
+
+pub fn create_directory(parent: u64, name: &[u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_CREATE_DIRECTORY,
+            [parent, name.as_ptr() as u64, name.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+pub fn remove_path(parent: u64, name: &[u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_REMOVE_PATH,
+            [parent, name.as_ptr() as u64, name.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+pub fn process_launch(supervisor: u64, image: u64, mode: u64) -> u64 {
+    unsafe { syscall(SYSCALL_PROCESS_LAUNCH, [supervisor, image, mode, 0, 0, 0]) }
+}
+
+pub fn process_status(handle: u64, status: &mut UserProcessStatus) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_PROCESS_STATUS,
+            [
+                handle,
+                status as *mut UserProcessStatus as u64,
+                core::mem::size_of::<UserProcessStatus>() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn process_kill(handle: u64) -> u64 {
+    unsafe { syscall(SYSCALL_PROCESS_KILL, [handle, 0, 0, 0, 0, 0]) }
+}
+
+pub fn process_reap(handle: u64, status: &mut UserProcessStatus) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_PROCESS_REAP,
+            [
+                handle,
+                status as *mut UserProcessStatus as u64,
+                core::mem::size_of::<UserProcessStatus>() as u64,
+                0,
+                0,
+                0,
+            ],
         )
     }
 }

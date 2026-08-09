@@ -5,7 +5,9 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 11;
+pub const USER_ABI_VERSION: u64 = 15;
+pub const USER_IMAGE_LAYOUT_VERSION: u64 = 2;
+pub const USER_EXECUTABLE_PAGE_CAPACITY: u64 = 8;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
@@ -36,6 +38,16 @@ pub const USER_SYSCALL_CONSOLE_WRITE: u64 = 24;
 pub const USER_SYSCALL_CONSOLE_SET_INPUT: u64 = 25;
 pub const USER_SYSCALL_CONSOLE_CLEAR: u64 = 26;
 pub const USER_SYSCALL_READ_DIRECTORY: u64 = 27;
+pub const USER_SYSCALL_TRUNCATE_HANDLE: u64 = 28;
+pub const USER_SYSCALL_PROCESS_LAUNCH: u64 = 29;
+pub const USER_SYSCALL_PROCESS_STATUS: u64 = 30;
+pub const USER_SYSCALL_PROCESS_KILL: u64 = 31;
+pub const USER_SYSCALL_PROCESS_REAP: u64 = 32;
+pub const USER_SYSCALL_CREATE_DIRECTORY: u64 = 33;
+pub const USER_SYSCALL_REMOVE_PATH: u64 = 34;
+pub const USER_SYSCALL_NETWORK_CONFIG: u64 = 35;
+pub const USER_SYSCALL_UDP_EXCHANGE: u64 = 36;
+pub const USER_SYSCALL_TCP_EXCHANGE: u64 = 37;
 pub const USER_CONSOLE_LINE_OUTPUT: u64 = 0;
 pub const USER_CONSOLE_LINE_PROMPT: u64 = 1;
 pub const USER_CONSOLE_LINE_ERROR: u64 = 2;
@@ -48,13 +60,25 @@ pub const USER_ENDPOINT_QUEUE_CAPACITY: usize = 4;
 pub const USER_FILE_READ_MAX: usize = 128;
 pub const USER_FILE_WRITE_MAX: usize = 128;
 pub const USER_FILE_HANDLE_CAPACITY: u64 = 4;
+pub const USER_PROCESS_HANDLE_CAPACITY: u64 = 3;
+pub const USER_PROCESS_IMAGE_INIT: u64 = 1;
+pub const USER_PROCESS_MODE_NORMAL: u64 = 0;
+pub const USER_PROCESS_MODE_HOLD: u64 = 1;
+pub const USER_PROCESS_STATE_READY: u64 = 1;
+pub const USER_PROCESS_STATE_SLEEPING: u64 = 2;
+pub const USER_PROCESS_STATE_WAITING: u64 = 3;
+pub const USER_PROCESS_STATE_EXITED: u64 = 4;
+pub const USER_PROCESS_STATE_FAULTED: u64 = 5;
+pub const USER_PROCESS_STATE_KILLED: u64 = 6;
 pub const USER_PATH_MAX: usize = 64;
 pub const USER_DIRECTORY_NAME_MAX: usize = 64;
 pub const USER_FILE_KIND_REGULAR: u64 = 1;
 pub const USER_FILE_KIND_DIRECTORY: u64 = 2;
 pub const USER_FILE_RIGHT_READ: u64 = 1;
 pub const USER_FILE_RIGHT_WRITE: u64 = 2;
-pub const USER_FILE_RIGHTS_MASK: u64 = USER_FILE_RIGHT_READ | USER_FILE_RIGHT_WRITE;
+pub const USER_FILE_RIGHT_MANAGE: u64 = 4;
+pub const USER_FILE_RIGHTS_MASK: u64 =
+    USER_FILE_RIGHT_READ | USER_FILE_RIGHT_WRITE | USER_FILE_RIGHT_MANAGE;
 pub const USER_WRITABLE_PREFIX: &str = "/USER/";
 pub const USER_INPUT_MASK_KEYBOARD: u64 = 1;
 pub const USER_INPUT_MASK_POINTER: u64 = 2;
@@ -78,6 +102,30 @@ pub const USER_ERROR_UNAVAILABLE: u64 = u64::MAX - 2;
 pub const USER_PAGE_SIZE: u64 = 4096;
 pub const USER_TIMER_HZ: u64 = 100;
 pub const USER_PING_REPLY: u64 = 0x4745_4e4f_535f_4f4b;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserNetworkConfig {
+    pub address: u32,
+    pub subnet: u32,
+    pub gateway: u32,
+    pub dns: u32,
+    pub mac: [u8; 6],
+    pub reserved: [u8; 2],
+}
+
+impl UserNetworkConfig {
+    pub const fn empty() -> Self {
+        Self {
+            address: 0,
+            subnet: 0,
+            gateway: 0,
+            dns: 0,
+            mac: [0; 6],
+            reserved: [0; 2],
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,6 +159,10 @@ pub struct UserSystemInfo {
     pub channel_message_size: u64,
     pub directory_entry_size: u64,
     pub max_path_length: u64,
+    pub process_status_size: u64,
+    pub process_handle_capacity: u64,
+    pub image_layout_version: u64,
+    pub executable_page_capacity: u64,
 }
 
 impl UserSystemInfo {
@@ -129,6 +181,38 @@ impl UserSystemInfo {
             channel_message_size: 0,
             directory_entry_size: 0,
             max_path_length: 0,
+            process_status_size: 0,
+            process_handle_capacity: 0,
+            image_layout_version: 0,
+            executable_page_capacity: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserProcessStatus {
+    pub instance_id: u64,
+    pub task_id: u64,
+    pub runtime_pid: u64,
+    pub state: u64,
+    pub exit_code: u64,
+    pub fault_vector: u64,
+    pub preemptions: u64,
+    pub reserved: u64,
+}
+
+impl UserProcessStatus {
+    pub const fn empty() -> Self {
+        Self {
+            instance_id: 0,
+            task_id: 0,
+            runtime_pid: 0,
+            state: 0,
+            exit_code: 0,
+            fault_vector: 0,
+            preemptions: 0,
+            reserved: 0,
         }
     }
 }

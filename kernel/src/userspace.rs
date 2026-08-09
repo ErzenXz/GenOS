@@ -2,22 +2,30 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
-    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserProcessHeader,
-    UserSystemInfo, USER_ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY,
-    USER_ENDPOINT_QUEUE_CAPACITY, USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_REGULAR,
-    USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE,
-    USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL, USER_PATH_MAX, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
+    UserProcessHeader, UserProcessStatus, UserSystemInfo, USER_ABI_VERSION,
+    USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY, USER_ENDPOINT_QUEUE_CAPACITY,
+    USER_EXECUTABLE_PAGE_CAPACITY, USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_DIRECTORY,
+    USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_MANAGE,
+    USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_IMAGE_LAYOUT_VERSION,
+    USER_INPUT_MASK_ALL, USER_PATH_MAX, USER_PROCESS_HANDLE_CAPACITY, USER_PROCESS_IMAGE_INIT,
+    USER_PROCESS_MODE_HOLD, USER_PROCESS_MODE_NORMAL, USER_PROCESS_STATE_EXITED,
+    USER_PROCESS_STATE_FAULTED, USER_PROCESS_STATE_KILLED, USER_PROCESS_STATE_READY,
+    USER_PROCESS_STATE_SLEEPING, USER_PROCESS_STATE_WAITING, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
+    capability::{HandleKind, HandleTable},
     display::{FixedText, LineKind},
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     input::{InputEvent, KeyEvent, MouseButtons},
     ipc::ChannelQueue,
+    request::RequestSequence,
     syscall::{self, SyscallAction},
+    tasks::{TaskClass, TaskSnapshot, TaskSnapshotSet, TaskState},
     vfs::{NodeKind, RamVfs},
 };
 
-use crate::{arch, memory, paging};
+use crate::{arch, memory, network, paging};
 
 pub const SYSCALL_VECTOR: usize = 0x80;
 const PROCESS_COUNT: usize = 3;
@@ -28,7 +36,6 @@ const TOKEN_A: u64 = 0x1111_aaaa_1111_aaaa;
 const TOKEN_B: u64 = 0x2222_bbbb_2222_bbbb;
 const TOKEN_DYNAMIC_BASE: u64 = 0x3333_cccc_3333_0000;
 const TOKEN_HOLD_BIT: u64 = 1 << 63;
-const TOKEN_SLEEP_MODE: u64 = 0x4000_0000_0000_0000;
 const TOKEN_CHILD_MODE: u64 = 0x5000_0000_0000_0000;
 const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
 const TOKEN_FILE_MODE: u64 = 0x7000_0000_0000_0000;
@@ -41,6 +48,8 @@ const TOKEN_FANIN_PRODUCER_A_MODE: u64 = 0xd000_0000_0000_0000;
 const TOKEN_FANIN_PRODUCER_B_MODE: u64 = 0xe000_0000_0000_0000;
 const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
 const ENDPOINT_HANDLE_CAPACITY: usize = USER_ENDPOINT_HANDLE_CAPACITY as usize;
+const HANDLE_TABLE_CAPACITY: usize = 16;
+const HANDLE_RIGHT_USE: u64 = 1;
 const ENDPOINT_QUEUE_CAPACITY: usize = USER_ENDPOINT_QUEUE_CAPACITY;
 /// Endpoint handles carry a dedicated tag byte in the position file handles use
 /// for their owner pid, so endpoint authority can never be spent on the file
@@ -65,10 +74,10 @@ static ADDRESS_SPACES: AtomicU8 = AtomicU8::new(0);
 static TOTAL_YIELDS: AtomicU8 = AtomicU8::new(0);
 static TOTAL_PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
 static LOCAL_FAULTS: AtomicU8 = AtomicU8::new(0);
-static COMPLETION_SEQUENCE: AtomicU8 = AtomicU8::new(0);
-static DYNAMIC_PROCESSES: AtomicU8 = AtomicU8::new(0);
+static COMPLETION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static DYNAMIC_PROCESSES: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_PROCESSES: AtomicU8 = AtomicU8::new(0);
-static RECLAIMED_SPACES: AtomicU8 = AtomicU8::new(0);
+static RECLAIMED_SPACES: AtomicU64 = AtomicU64::new(0);
 static RECLAIMED_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_FILE_READS: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_FILE_WRITES: AtomicU64 = AtomicU64::new(0);
@@ -80,6 +89,8 @@ static ENDPOINT_FAIRNESS_DENIALS: AtomicU64 = AtomicU64::new(0);
 static ENDPOINT_WAKES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
 static NEXT_CONSOLE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_LIFECYCLE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_PROCESS_HANDLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
 static mut SHELL_ELF_ADDRESS: u64 = 0;
@@ -175,6 +186,35 @@ enum ProcessEvent {
         handle: u64,
         data: FileWriteBuffer,
     },
+    TruncateHandle {
+        handle: u64,
+    },
+    CreateDirectory {
+        parent: u64,
+        name: FixedText,
+    },
+    RemovePath {
+        parent: u64,
+        name: FixedText,
+    },
+    ProcessLaunch {
+        supervisor: u64,
+        image: u64,
+        mode: u64,
+    },
+    ProcessStatus {
+        handle: u64,
+        address: u64,
+        length: u64,
+    },
+    ProcessKill {
+        handle: u64,
+    },
+    ProcessReap {
+        handle: u64,
+        address: u64,
+        length: u64,
+    },
     WaitInput {
         address: u64,
         length: u64,
@@ -193,11 +233,15 @@ enum ProcessEvent {
     },
     CloseEndpoint(u64),
     ConsoleWrite {
+        handle: u64,
         text: FixedText,
         kind: LineKind,
     },
-    ConsoleSetInput(FixedText),
-    ConsoleClear,
+    ConsoleSetInput {
+        handle: u64,
+        text: FixedText,
+    },
+    ConsoleClear(u64),
     Exit,
     Fault,
 }
@@ -216,7 +260,7 @@ struct UserProcess {
     fault_vector: u8,
     fault_error: u64,
     fault_address: u64,
-    completion_order: u8,
+    completion_order: u64,
     preemption_armed: bool,
     elf_segments: u8,
     elf_pages: u8,
@@ -225,6 +269,7 @@ struct UserProcess {
     output: FixedText,
     output_pending: bool,
     console_handle: u64,
+    lifecycle_handle: u64,
     frames_released: bool,
     killed: bool,
     completed: bool,
@@ -248,14 +293,8 @@ enum ProcessBuildError {
 }
 
 #[derive(Clone, Copy)]
-pub struct UserProbeResult {
-    pub exit_codes: [u8; PROCESS_COUNT],
-}
-
-#[derive(Clone, Copy)]
 pub struct LaunchResult {
     pub pid: u8,
-    pub exit_code: u8,
     pub preemptions: u64,
 }
 
@@ -289,6 +328,60 @@ pub struct ProcessUpdate {
     pub console_process: bool,
     pub console: Option<ConsoleUpdate>,
     pub vfs_request: Option<UserVfsRequest>,
+    pub lifecycle_request: Option<UserLifecycleRequest>,
+}
+
+#[derive(Clone, Copy)]
+pub enum UserLifecycleRequest {
+    Launch(ProcessLaunchRequest),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AsyncOperation {
+    ProcessLaunch,
+    FileOpen,
+    FileRead,
+    FileWrite,
+    FileTruncate,
+    DirectoryRead,
+    DirectoryCreate,
+    PathRemove,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AsyncRequestIdentity {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub operation: AsyncOperation,
+}
+
+impl UserLifecycleRequest {
+    pub const fn identity(self) -> AsyncRequestIdentity {
+        match self {
+            Self::Launch(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::ProcessLaunch,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessLaunchRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub owner_task_id: u32,
+    pub owner_pid: u8,
+    pub image: u64,
+    pub mode: u64,
+}
+
+pub struct ProcessLaunchCompletion {
+    pub owner: ProcessUpdate,
 }
 
 #[derive(Clone, Copy)]
@@ -303,11 +396,78 @@ pub enum UserVfsRequest {
     Open(FileOpenRequest),
     Read(FileReadRequest),
     Write(FileWriteRequest),
+    Truncate(FileTruncateRequest),
     ReadDirectory(DirectoryReadRequest),
+    CreateDirectory(NamespaceMutationRequest),
+    RemovePath(NamespaceMutationRequest),
+}
+
+impl UserVfsRequest {
+    pub const fn identity(self) -> AsyncRequestIdentity {
+        match self {
+            Self::Open(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::FileOpen,
+            },
+            Self::Read(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::FileRead,
+            },
+            Self::Write(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::FileWrite,
+            },
+            Self::Truncate(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::FileTruncate,
+            },
+            Self::ReadDirectory(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::DirectoryRead,
+            },
+            Self::CreateDirectory(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::DirectoryCreate,
+            },
+            Self::RemovePath(request) => AsyncRequestIdentity {
+                request_id: request.request_id,
+                owner_slot: request.owner_slot,
+                owner_instance: request.owner_instance,
+                operation: AsyncOperation::PathRemove,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NamespaceMutationRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub task_id: u32,
+    pub pid: u8,
+    pub parent: FixedText,
+    pub target: FixedText,
+    pub handle: u64,
 }
 
 #[derive(Clone, Copy)]
 pub struct DirectoryReadRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
     pub task_id: u32,
     pub pid: u8,
     pub path: FixedText,
@@ -331,6 +491,9 @@ pub enum DirectoryReadResult {
 
 #[derive(Clone, Copy)]
 pub struct FileOpenRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
     pub task_id: u32,
     pub pid: u8,
     pub path: FixedText,
@@ -345,6 +508,9 @@ pub struct FileOpenInfo {
 
 #[derive(Clone, Copy)]
 pub struct FileReadRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
     pub task_id: u32,
     pub pid: u8,
     pub path: FixedText,
@@ -355,12 +521,26 @@ pub struct FileReadRequest {
 
 #[derive(Clone, Copy)]
 pub struct FileWriteRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
     pub task_id: u32,
     pub pid: u8,
     pub path: FixedText,
     pub handle: u64,
     pub offset: u64,
     pub data: FileWriteBuffer,
+}
+
+#[derive(Clone, Copy)]
+pub struct FileTruncateRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub task_id: u32,
+    pub pid: u8,
+    pub path: FixedText,
+    pub handle: u64,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -395,28 +575,70 @@ pub struct WaitResult {
     pub pid: u8,
     pub state: ManagedState,
     pub exit_code: u8,
-    pub preemptions: u64,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalRecord {
+    key: ProcessKey,
+    task_id: u32,
+    pid: u8,
+    exit_code: u8,
+    preemptions: u64,
+    console_process: bool,
 }
 
 struct ManagedProcess {
+    key: ProcessKey,
     task_id: u32,
-    parent_pid: u8,
+    parent_key: Option<ProcessKey>,
+    console_process: bool,
+    supervisor: bool,
     state: ManagedState,
     wake_at: u64,
     blocked_on: BlockReason,
+    request_ids: RequestSequence,
+    handles: HandleTable<HANDLE_TABLE_CAPACITY>,
     file_handles: [Option<FileCapability>; FILE_HANDLE_CAPACITY],
     next_file_generation: u64,
     endpoints: EndpointState,
     pending_file_open: Option<PendingFileOpen>,
     pending_file_read: Option<PendingFileRead>,
     pending_file_write: Option<PendingFileWrite>,
+    pending_file_truncate: Option<PendingFileTruncate>,
     pending_directory_read: Option<PendingDirectoryRead>,
+    pending_namespace_mutation: Option<PendingNamespaceMutation>,
+    pending_process_launch: Option<PendingProcessLaunch>,
+    process_handles: [Option<ProcessCapability>; PROCESS_HANDLE_CAPACITY],
     pending_input: Option<PendingInput>,
     process: UserProcess,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessKey {
+    slot: u8,
+    incarnation: u64,
+}
+
+const PROCESS_HANDLE_CAPACITY: usize = USER_PROCESS_HANDLE_CAPACITY as usize;
+const PROCESS_HANDLE_TAG: u64 = 0xd1 << 56;
+const PROCESS_HANDLE_GENERATION_MAX: u64 = (1u64 << 48) - 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProcessCapability {
+    handle: u64,
+    target: ProcessKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingProcessLaunch {
+    request_id: u64,
+    image: u64,
+    mode: u64,
+}
+
 #[derive(Clone, Copy)]
 struct PendingFileRead {
+    request_id: u64,
     handle: u64,
     path: FixedText,
     offset: u64,
@@ -426,12 +648,14 @@ struct PendingFileRead {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct PendingFileOpen {
+    request_id: u64,
     path: FixedText,
     rights: u64,
 }
 
 #[derive(Clone, Copy)]
 struct PendingFileWrite {
+    request_id: u64,
     handle: u64,
     path: FixedText,
     offset: u64,
@@ -439,12 +663,28 @@ struct PendingFileWrite {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
+struct PendingFileTruncate {
+    request_id: u64,
+    handle: u64,
+    path: FixedText,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
 struct PendingDirectoryRead {
+    request_id: u64,
     path: FixedText,
     handle: u64,
     cursor: u64,
     address: u64,
     length: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingNamespaceMutation {
+    request_id: u64,
+    parent: FixedText,
+    target: FixedText,
+    handle: u64,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -557,10 +797,21 @@ impl EndpointState {
         Some(generation)
     }
 
-    fn allocate(&mut self, role: EndpointRole) -> Option<u64> {
+    fn allocate(
+        &mut self,
+        handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>,
+        role: EndpointRole,
+    ) -> Option<u64> {
         let slot = self.handles.iter().position(Option::is_none)?;
         let generation = self.next_generation()?;
         let handle = endpoint_handle(self.owner_pid, generation, slot);
+        let kind = match role {
+            EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
+            EndpointRole::Send { .. } => HandleKind::EndpointSend,
+        };
+        if !handles.register(handle, kind, HANDLE_RIGHT_USE) {
+            return None;
+        }
         self.handles[slot] = Some(EndpointCapability {
             handle,
             owner_pid: self.owner_pid,
@@ -574,18 +825,31 @@ impl EndpointState {
     /// Resolves a handle this process owns. The tag, decoded slot, owner pid and
     /// generation must reproduce the handle exactly, so neither a guessed value
     /// nor another process' handle nor a stale local handle can ever resolve.
-    fn capability(&self, handle: u64) -> Option<EndpointCapability> {
+    fn capability(
+        &self,
+        handles: &HandleTable<HANDLE_TABLE_CAPACITY>,
+        handle: u64,
+    ) -> Option<EndpointCapability> {
         let slot = endpoint_handle_slot(handle)?;
         let capability = self.handles[slot]?;
+        let kind = match capability.role {
+            EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
+            EndpointRole::Send { .. } => HandleKind::EndpointSend,
+        };
         (capability.handle == handle
             && capability.owner_pid == self.owner_pid
             && capability.slot as usize == slot
-            && endpoint_handle(capability.owner_pid, capability.generation, slot) == handle)
-            .then_some(capability)
+            && endpoint_handle(capability.owner_pid, capability.generation, slot) == handle
+            && handles.allows(handle, kind, HANDLE_RIGHT_USE))
+        .then_some(capability)
     }
 
-    fn send_capability(&self, handle: u64) -> Option<(u8, u64)> {
-        match self.capability(handle)?.role {
+    fn send_capability(
+        &self,
+        handles: &HandleTable<HANDLE_TABLE_CAPACITY>,
+        handle: u64,
+    ) -> Option<(u8, u64)> {
+        match self.capability(handles, handle)?.role {
             EndpointRole::Send {
                 target_pid,
                 target_generation,
@@ -596,8 +860,12 @@ impl EndpointState {
 
     /// A receive capability is only usable while it still names the exact
     /// endpoint generation this process publishes right now.
-    fn receive_generation(&self, handle: u64) -> Option<u64> {
-        let EndpointRole::Receive { generation } = self.capability(handle)?.role else {
+    fn receive_generation(
+        &self,
+        handles: &HandleTable<HANDLE_TABLE_CAPACITY>,
+        handle: u64,
+    ) -> Option<u64> {
+        let EndpointRole::Receive { generation } = self.capability(handles, handle)?.role else {
             return None;
         };
         (self.published_generation() == Some(generation)).then_some(generation)
@@ -605,13 +873,16 @@ impl EndpointState {
 
     /// Publishes an empty endpoint and returns its owned receive handle. Fails
     /// when an endpoint is already published or the handle table is full.
-    fn create(&mut self) -> Option<u64> {
+    fn create(&mut self, handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>) -> Option<u64> {
         if self.published.is_some() || !self.handles.iter().any(Option::is_none) {
             return None;
         }
         let slot = self.handles.iter().position(Option::is_none)?;
         let generation = self.next_generation()?;
         let handle = endpoint_handle(self.owner_pid, generation, slot);
+        if !handles.register(handle, HandleKind::EndpointReceive, HANDLE_RIGHT_USE) {
+            return None;
+        }
         self.handles[slot] = Some(EndpointCapability {
             handle,
             owner_pid: self.owner_pid,
@@ -628,8 +899,12 @@ impl EndpointState {
 
     /// Closing a send capability revokes only that handle; closing the receive
     /// capability also drops the queue and unpublishes the endpoint.
-    fn close(&mut self, handle: u64) -> Option<EndpointRole> {
-        let capability = self.capability(handle)?;
+    fn close(
+        &mut self,
+        handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>,
+        handle: u64,
+    ) -> Option<EndpointRole> {
+        let capability = self.capability(handles, handle)?;
         if let EndpointRole::Receive { generation } = capability.role {
             if self.published_generation() != Some(generation) {
                 return None;
@@ -637,12 +912,24 @@ impl EndpointState {
             self.published = None;
             self.pending_receive = None;
         }
+        let kind = match capability.role {
+            EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
+            EndpointRole::Send { .. } => HandleKind::EndpointSend,
+        };
+        if !handles.unregister(handle, kind) {
+            return None;
+        }
         self.handles[capability.slot as usize] = None;
         Some(capability.role)
     }
 
     /// Drops every send capability naming one remote endpoint generation.
-    fn revoke_send_handles(&mut self, target_pid: u8, target_generation: u64) -> usize {
+    fn revoke_send_handles(
+        &mut self,
+        handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>,
+        target_pid: u8,
+        target_generation: u64,
+    ) -> usize {
         let mut revoked = 0;
         for entry in self.handles.iter_mut() {
             let names_target = matches!(
@@ -653,6 +940,9 @@ impl EndpointState {
                 }) if pid == target_pid && generation == target_generation
             );
             if names_target {
+                let handle = entry.expect("matched endpoint capability").handle;
+                let removed = handles.unregister(handle, HandleKind::EndpointSend);
+                debug_assert!(removed);
                 *entry = None;
                 revoked += 1;
             }
@@ -660,7 +950,19 @@ impl EndpointState {
         revoked
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self, handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>) {
+        for capability in self.handles.iter().flatten() {
+            let kind = match capability.role {
+                EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
+                EndpointRole::Send { .. } => HandleKind::EndpointSend,
+            };
+            let removed = handles.unregister(capability.handle, kind);
+            debug_assert!(removed);
+        }
+        self.clear_payload();
+    }
+
+    fn clear_payload(&mut self) {
         self.handles = [None; ENDPOINT_HANDLE_CAPACITY];
         self.published = None;
         self.pending_receive = None;
@@ -681,30 +983,65 @@ struct FileCapability {
 enum BlockReason {
     None,
     Endpoint,
-    Child(u8),
+    Child(ProcessKey),
     FileOpen,
     FileRead,
     FileWrite,
+    FileTruncate,
+    ProcessLaunch,
     DirectoryRead,
+    DirectoryCreate,
+    PathRemove,
     Input,
 }
 
 impl ManagedProcess {
-    fn new(task_id: u32, parent_pid: u8, process: UserProcess) -> Self {
+    fn new(
+        key: ProcessKey,
+        task_id: u32,
+        parent_key: Option<ProcessKey>,
+        process: UserProcess,
+    ) -> Self {
         let endpoints = EndpointState::new(process.pid);
+        let console_process = process.console_handle != 0;
+        let supervisor = process.lifecycle_handle != 0;
+        let mut handles = HandleTable::new();
+        if process.console_handle != 0 {
+            assert!(handles.register(
+                process.console_handle,
+                HandleKind::Console,
+                HANDLE_RIGHT_USE,
+            ));
+        }
+        if process.lifecycle_handle != 0 {
+            assert!(handles.register(
+                process.lifecycle_handle,
+                HandleKind::Lifecycle,
+                HANDLE_RIGHT_USE,
+            ));
+        }
         Self {
+            key,
             task_id,
-            parent_pid,
+            parent_key,
+            console_process,
+            supervisor,
             state: ManagedState::Ready,
             wake_at: 0,
             blocked_on: BlockReason::None,
+            request_ids: RequestSequence::new(),
+            handles,
             file_handles: [None; FILE_HANDLE_CAPACITY],
             next_file_generation: 1,
             endpoints,
             pending_file_open: None,
             pending_file_read: None,
             pending_file_write: None,
+            pending_file_truncate: None,
             pending_directory_read: None,
+            pending_namespace_mutation: None,
+            pending_process_launch: None,
+            process_handles: [None; PROCESS_HANDLE_CAPACITY],
             pending_input: None,
             process,
         }
@@ -723,6 +1060,9 @@ impl ManagedProcess {
         let generation = self.next_file_generation;
         self.next_file_generation = self.next_file_generation.saturating_add(1);
         let handle = ((self.process.pid as u64) << 56) | (generation << 8) | (slot as u64 + 1);
+        if !self.handles.register(handle, HandleKind::File, rights) {
+            return None;
+        }
         self.file_handles[slot] = Some(FileCapability {
             handle,
             path,
@@ -734,14 +1074,34 @@ impl ManagedProcess {
         Some(handle)
     }
 
-    fn file_handle(&self, handle: u64) -> Option<&FileCapability> {
+    fn allocate_request_id(&mut self) -> Option<u64> {
+        self.request_ids.allocate()
+    }
+
+    fn file_handle(&self, handle: u64, required_rights: u64) -> Option<&FileCapability> {
+        if !self
+            .handles
+            .allows(handle, HandleKind::File, required_rights)
+        {
+            return None;
+        }
         self.file_handles
             .iter()
             .flatten()
             .find(|capability| capability.handle == handle)
     }
 
-    fn file_handle_mut(&mut self, handle: u64) -> Option<&mut FileCapability> {
+    fn file_handle_mut(
+        &mut self,
+        handle: u64,
+        required_rights: u64,
+    ) -> Option<&mut FileCapability> {
+        if !self
+            .handles
+            .allows(handle, HandleKind::File, required_rights)
+        {
+            return None;
+        }
         self.file_handles
             .iter_mut()
             .flatten()
@@ -756,23 +1116,173 @@ impl ManagedProcess {
         else {
             return false;
         };
+        if !self.handles.unregister(handle, HandleKind::File) {
+            return false;
+        }
         self.file_handles[slot] = None;
         true
     }
 
+    fn allocate_process_handle(&mut self, target: ProcessKey) -> Option<u64> {
+        let slot = self.process_handles.iter().position(Option::is_none)?;
+        let generation = NEXT_PROCESS_HANDLE_GENERATION
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < PROCESS_HANDLE_GENERATION_MAX).then_some(current + 1)
+            })
+            .ok()?;
+        if generation == 0 || generation > PROCESS_HANDLE_GENERATION_MAX {
+            return None;
+        }
+        let handle = PROCESS_HANDLE_TAG | (generation << 8) | (slot as u64 + 1);
+        if !self
+            .handles
+            .register(handle, HandleKind::Process, HANDLE_RIGHT_USE)
+        {
+            return None;
+        }
+        self.process_handles[slot] = Some(ProcessCapability { handle, target });
+        Some(handle)
+    }
+
+    fn process_capability(&self, handle: u64) -> Option<ProcessCapability> {
+        if handle & (0xff << 56) != PROCESS_HANDLE_TAG
+            || !self
+                .handles
+                .allows(handle, HandleKind::Process, HANDLE_RIGHT_USE)
+        {
+            return None;
+        }
+        self.process_handles
+            .iter()
+            .flatten()
+            .find(|capability| capability.handle == handle)
+            .copied()
+    }
+
+    fn close_process_handle(&mut self, handle: u64) -> bool {
+        let Some(slot) = self
+            .process_handles
+            .iter()
+            .position(|entry| entry.is_some_and(|capability| capability.handle == handle))
+        else {
+            return false;
+        };
+        if !self.handles.unregister(handle, HandleKind::Process) {
+            return false;
+        }
+        self.process_handles[slot] = None;
+        true
+    }
+
     fn revoke_resources(&mut self) {
+        self.handles.clear();
         self.file_handles = [None; FILE_HANDLE_CAPACITY];
-        self.endpoints.clear();
+        self.endpoints.clear_payload();
         self.pending_file_open = None;
         self.pending_file_read = None;
         self.pending_file_write = None;
+        self.pending_file_truncate = None;
         self.pending_directory_read = None;
+        self.pending_namespace_mutation = None;
+        self.pending_process_launch = None;
+        self.process_handles = [None; PROCESS_HANDLE_CAPACITY];
         self.pending_input = None;
+        self.process.console_handle = 0;
+        self.process.lifecycle_handle = 0;
+    }
+
+    fn handle_table_is_consistent(&self) -> bool {
+        let expected = self.file_handles.iter().flatten().count()
+            + self.endpoints.handles.iter().flatten().count()
+            + self.process_handles.iter().flatten().count()
+            + usize::from(self.process.console_handle != 0)
+            + usize::from(self.process.lifecycle_handle != 0);
+        if self.handles.len() != expected {
+            return false;
+        }
+        if self.process.console_handle != 0
+            && (!self.handles.allows(
+                self.process.console_handle,
+                HandleKind::Console,
+                HANDLE_RIGHT_USE,
+            ) || self.handles.allows(
+                self.process.console_handle,
+                HandleKind::Lifecycle,
+                HANDLE_RIGHT_USE,
+            ))
+        {
+            return false;
+        }
+        if self.process.lifecycle_handle != 0
+            && (!self.handles.allows(
+                self.process.lifecycle_handle,
+                HandleKind::Lifecycle,
+                HANDLE_RIGHT_USE,
+            ) || self.handles.allows(
+                self.process.lifecycle_handle,
+                HandleKind::Console,
+                HANDLE_RIGHT_USE,
+            ))
+        {
+            return false;
+        }
+        if self.file_handles.iter().flatten().any(|capability| {
+            !self
+                .handles
+                .allows(capability.handle, HandleKind::File, capability.rights)
+                || self.handles.allows(
+                    capability.handle,
+                    HandleKind::EndpointSend,
+                    HANDLE_RIGHT_USE,
+                )
+        }) {
+            return false;
+        }
+        if self.endpoints.handles.iter().flatten().any(|capability| {
+            let kind = match capability.role {
+                EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
+                EndpointRole::Send { .. } => HandleKind::EndpointSend,
+            };
+            !self
+                .handles
+                .allows(capability.handle, kind, HANDLE_RIGHT_USE)
+                || self.handles.allows(capability.handle, HandleKind::File, 0)
+        }) {
+            return false;
+        }
+        !self.process_handles.iter().flatten().any(|capability| {
+            !self
+                .handles
+                .allows(capability.handle, HandleKind::Process, HANDLE_RIGHT_USE)
+                || self
+                    .handles
+                    .allows(capability.handle, HandleKind::Lifecycle, HANDLE_RIGHT_USE)
+        })
+    }
+
+    fn resources_are_revoked(&self) -> bool {
+        self.handles.is_empty()
+            && self.file_handles.iter().all(Option::is_none)
+            && self.endpoints.handles.iter().all(Option::is_none)
+            && self.endpoints.published.is_none()
+            && self.endpoints.pending_receive.is_none()
+            && self.process_handles.iter().all(Option::is_none)
+            && self.pending_file_open.is_none()
+            && self.pending_file_read.is_none()
+            && self.pending_file_write.is_none()
+            && self.pending_file_truncate.is_none()
+            && self.pending_directory_read.is_none()
+            && self.pending_namespace_mutation.is_none()
+            && self.pending_process_launch.is_none()
+            && self.pending_input.is_none()
+            && self.process.console_handle == 0
+            && self.process.lifecycle_handle == 0
     }
 }
 
 pub struct ProcessManager {
     slots: [Option<ManagedProcess>; MAX_ASYNC_PROCESSES],
+    slot_incarnations: [u64; MAX_ASYNC_PROCESSES],
     cursor: usize,
 }
 
@@ -780,8 +1290,43 @@ impl ProcessManager {
     pub const fn new() -> Self {
         Self {
             slots: [const { None }; MAX_ASYNC_PROCESSES],
+            slot_incarnations: [0; MAX_ASYNC_PROCESSES],
             cursor: 0,
         }
+    }
+
+    pub fn unified_handle_table_is_authoritative(&self) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .all(ManagedProcess::handle_table_is_consistent)
+    }
+
+    fn allocate_key(&mut self, slot: usize) -> Result<ProcessKey, LaunchError> {
+        let incarnation = self.slot_incarnations[slot]
+            .checked_add(1)
+            .ok_or(LaunchError::ProcessTableFull)?;
+        self.slot_incarnations[slot] = incarnation;
+        Ok(ProcessKey {
+            slot: slot as u8,
+            incarnation,
+        })
+    }
+
+    fn allocate_pid(&self) -> Result<u8, LaunchError> {
+        for _ in 0..u8::MAX {
+            let candidate = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+            if candidate != 0
+                && !self
+                    .slots
+                    .iter()
+                    .flatten()
+                    .any(|managed| managed.process.pid == candidate)
+            {
+                return Ok(candidate);
+            }
+        }
+        Err(LaunchError::ProcessTableFull)
     }
 
     pub fn spawn_shell(&mut self, task_id: u32) -> Result<u8, LaunchError> {
@@ -791,18 +1336,29 @@ impl ProcessManager {
             .position(Option::is_none)
             .ok_or(LaunchError::ProcessTableFull)?;
         let elf_bytes = shell_elf()?;
-        let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let pid = self.allocate_pid()?;
+        let key = self.allocate_key(slot)?;
         let generation = NEXT_CONSOLE_GENERATION.fetch_add(1, Ordering::AcqRel);
         let handle = syscall::console_handle(pid, generation);
+        let lifecycle_generation = NEXT_LIFECYCLE_GENERATION
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < 0x00ff_ffff_ffff_ffff).then_some(current + 1)
+            })
+            .map_err(|_| LaunchError::ProcessTableFull)?;
+        let lifecycle_handle = syscall::lifecycle_handle(lifecycle_generation);
         let mut process =
             build_process(pid, handle, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
         process.console_handle = handle;
-        self.slots[slot] = Some(ManagedProcess::new(task_id, 0, process));
+        process.lifecycle_handle = lifecycle_handle;
+        process.context.rsi = lifecycle_handle;
+        self.slots[slot] = Some(ManagedProcess::new(key, task_id, None, process));
         DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
         crate::serial::print("USER_SHELL_SPAWN pid=");
         crate::serial::print_u64(pid as u64);
         crate::serial::print(" task=");
         crate::serial::print_u64(task_id as u64);
+        crate::serial::print(" supervisor=0x");
+        crate::serial::print_hex(lifecycle_handle);
         crate::serial::println("");
         Ok(pid)
     }
@@ -810,10 +1366,6 @@ impl ProcessManager {
     pub fn spawn_init(&mut self, task_id: u32, hold: bool) -> Result<u8, LaunchError> {
         let token_mode = if hold { TOKEN_HOLD_BIT } else { 0 };
         self.spawn_single(task_id, token_mode, if hold { "hold" } else { "normal" })
-    }
-
-    pub fn spawn_sleep_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
-        self.spawn_single(task_id, TOKEN_SLEEP_MODE, "sleep")
     }
 
     pub fn spawn_file_init(&mut self, task_id: u32) -> Result<u8, LaunchError> {
@@ -840,7 +1392,8 @@ impl ProcessManager {
             .position(Option::is_none)
             .ok_or(LaunchError::ProcessTableFull)?;
         let elf_bytes = user_elf()?;
-        let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let pid = self.allocate_pid()?;
+        let key = self.allocate_key(slot)?;
         let token = if token_mode == 0 || token_mode == TOKEN_HOLD_BIT {
             TOKEN_DYNAMIC_BASE | token_mode | pid as u64
         } else {
@@ -848,7 +1401,7 @@ impl ProcessManager {
         };
         let process =
             build_process(pid, token, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
-        self.slots[slot] = Some(ManagedProcess::new(task_id, 0, process));
+        self.slots[slot] = Some(ManagedProcess::new(key, task_id, None, process));
         DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
         crate::serial::print("USER_ASYNC_SPAWN pid=");
         crate::serial::print_u64(pid as u64);
@@ -877,8 +1430,10 @@ impl ProcessManager {
             .find_map(|(index, slot)| (index != parent_slot && slot.is_none()).then_some(index))
             .ok_or(LaunchError::ProcessTableFull)?;
         let elf_bytes = user_elf()?;
-        let parent_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
-        let child_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let parent_pid = self.allocate_pid()?;
+        let parent_key = self.allocate_key(parent_slot)?;
+        let child_pid = self.allocate_pid()?;
+        let child_key = self.allocate_key(child_slot)?;
         let mut parent = build_process(parent_pid, TOKEN_PARENT_MODE | child_pid as u64, elf_bytes)
             .map_err(|_| LaunchError::ProcessBuildFailed)?;
         let child = match build_process(child_pid, TOKEN_CHILD_MODE | parent_pid as u64, elf_bytes)
@@ -889,8 +1444,18 @@ impl ProcessManager {
                 return Err(LaunchError::ProcessBuildFailed);
             }
         };
-        self.slots[parent_slot] = Some(ManagedProcess::new(parent_task_id, 0, parent));
-        self.slots[child_slot] = Some(ManagedProcess::new(child_task_id, parent_pid, child));
+        self.slots[parent_slot] = Some(ManagedProcess::new(
+            parent_key,
+            parent_task_id,
+            None,
+            parent,
+        ));
+        self.slots[child_slot] = Some(ManagedProcess::new(
+            child_key,
+            child_task_id,
+            Some(parent_key),
+            child,
+        ));
         DYNAMIC_PROCESSES.fetch_add(2, Ordering::AcqRel);
         crate::serial::print("USER_PAIR_SPAWN parent=");
         crate::serial::print_u64(parent_pid as u64);
@@ -918,9 +1483,12 @@ impl ProcessManager {
         let a_slot = free.next().ok_or(LaunchError::ProcessTableFull)?;
         let b_slot = free.next().ok_or(LaunchError::ProcessTableFull)?;
         let elf_bytes = user_elf()?;
-        let receiver_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
-        let a_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
-        let b_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let receiver_pid = self.allocate_pid()?;
+        let receiver_key = self.allocate_key(receiver_slot)?;
+        let a_pid = self.allocate_pid()?;
+        let a_key = self.allocate_key(a_slot)?;
+        let b_pid = self.allocate_pid()?;
+        let b_key = self.allocate_key(b_slot)?;
         let receiver_token = TOKEN_FANIN_RECEIVER_MODE | ((a_pid as u64) << 8) | b_pid as u64;
         let mut receiver = build_process(receiver_pid, receiver_token, elf_bytes)
             .map_err(|_| LaunchError::ProcessBuildFailed)?;
@@ -947,9 +1515,24 @@ impl ProcessManager {
                 return Err(LaunchError::ProcessBuildFailed);
             }
         };
-        self.slots[receiver_slot] = Some(ManagedProcess::new(receiver_task_id, 0, receiver));
-        self.slots[a_slot] = Some(ManagedProcess::new(a_task_id, receiver_pid, producer_a));
-        self.slots[b_slot] = Some(ManagedProcess::new(b_task_id, receiver_pid, producer_b));
+        self.slots[receiver_slot] = Some(ManagedProcess::new(
+            receiver_key,
+            receiver_task_id,
+            None,
+            receiver,
+        ));
+        self.slots[a_slot] = Some(ManagedProcess::new(
+            a_key,
+            a_task_id,
+            Some(receiver_key),
+            producer_a,
+        ));
+        self.slots[b_slot] = Some(ManagedProcess::new(
+            b_key,
+            b_task_id,
+            Some(receiver_key),
+            producer_b,
+        ));
         DYNAMIC_PROCESSES.fetch_add(3, Ordering::AcqRel);
         crate::serial::print("USER_FANIN_SPAWN receiver=");
         crate::serial::print_u64(receiver_pid as u64);
@@ -978,6 +1561,7 @@ impl ProcessManager {
                 managed.process.event
             };
             let mut vfs_request = None;
+            let mut lifecycle_request = None;
             let mut console = None;
             match event {
                 ProcessEvent::Yield => {
@@ -993,9 +1577,9 @@ impl ProcessManager {
                     address,
                     capacity,
                 } => {
-                    vfs_request = Some(UserVfsRequest::Read(
-                        self.block_file_read(index, path, address, capacity),
-                    ));
+                    vfs_request = self
+                        .block_file_read(index, path, address, capacity)
+                        .map(UserVfsRequest::Read);
                 }
                 ProcessEvent::ReadDirectory {
                     handle,
@@ -1032,6 +1616,43 @@ impl ProcessManager {
                         .block_file_handle_write(index, handle, data)
                         .map(UserVfsRequest::Write);
                 }
+                ProcessEvent::TruncateHandle { handle } => {
+                    vfs_request = self
+                        .block_file_handle_truncate(index, handle)
+                        .map(UserVfsRequest::Truncate);
+                }
+                ProcessEvent::CreateDirectory { parent, name } => {
+                    vfs_request = self
+                        .block_namespace_mutation(index, parent, name, BlockReason::DirectoryCreate)
+                        .map(UserVfsRequest::CreateDirectory);
+                }
+                ProcessEvent::RemovePath { parent, name } => {
+                    vfs_request = self
+                        .block_namespace_mutation(index, parent, name, BlockReason::PathRemove)
+                        .map(UserVfsRequest::RemovePath);
+                }
+                ProcessEvent::ProcessLaunch {
+                    supervisor,
+                    image,
+                    mode,
+                } => {
+                    lifecycle_request = self
+                        .block_process_launch(index, supervisor, image, mode)
+                        .map(UserLifecycleRequest::Launch);
+                }
+                ProcessEvent::ProcessStatus {
+                    handle,
+                    address,
+                    length,
+                } => self.complete_process_status(index, handle, address, length),
+                ProcessEvent::ProcessKill { handle } => {
+                    self.complete_controlled_kill(index, handle)
+                }
+                ProcessEvent::ProcessReap {
+                    handle,
+                    address,
+                    length,
+                } => self.complete_controlled_reap(index, handle, address, length),
                 ProcessEvent::WaitInput {
                     address,
                     length,
@@ -1048,8 +1669,17 @@ impl ProcessManager {
                     length,
                 } => self.complete_endpoint_receive(index, handle, address, length),
                 ProcessEvent::CloseEndpoint(handle) => self.complete_endpoint_close(index, handle),
-                ProcessEvent::ConsoleWrite { text, kind } => {
+                ProcessEvent::ConsoleWrite { handle, text, kind } => {
                     let managed = self.slots[index].as_mut().expect("selected process exists");
+                    if !managed
+                        .handles
+                        .allows(handle, HandleKind::Console, HANDLE_RIGHT_USE)
+                    {
+                        managed.process.context.rax =
+                            syscall::error_code(syscall::SyscallError::InvalidArgument);
+                        managed.state = ManagedState::Ready;
+                        continue;
+                    }
                     managed.process.context.rax = text.len() as u64;
                     managed.state = ManagedState::Ready;
                     console = Some(ConsoleUpdate::Write { kind, text });
@@ -1058,18 +1688,82 @@ impl ProcessManager {
                     crate::serial::print(" text=");
                     crate::serial::print(text.as_str());
                     crate::serial::println("");
+                    if text.as_str() == "storage status visible" {
+                        crate::serial::println("USER_STORAGE_STATUS_VISIBLE_OK");
+                    }
+                    if text.as_str() == "storage failure visible" {
+                        crate::serial::println("USER_STORAGE_FAILURE_VISIBLE_OK");
+                        crate::serial::println("STORAGE_FAILURE_SURFACE_READY");
+                    }
+                    if text.as_str() == "storage read-only visible" {
+                        crate::serial::println("USER_STORAGE_READ_ONLY_OK");
+                    }
+                    if text.as_str() == "RAMFS temp visible" {
+                        crate::serial::println("USER_RAMFS_TEMP_APP_OK");
+                    }
+                    if text.as_str() == "network DNS resolved" {
+                        crate::serial::println("USER_DNS_RESOLVE_OK");
+                    }
+                    if text.as_str() == "network HTTP complete" {
+                        crate::serial::println("USER_HTTP_REQUEST_OK");
+                        crate::serial::println("USER_SOCKET_API_READY");
+                    }
+                    if text.as_str() == "network timeout handled" {
+                        crate::serial::println("USER_NETWORK_TIMEOUT_OK");
+                    }
+                    if text.as_str() == "network diagnostics ready" {
+                        crate::serial::println("USER_NETWORK_DIAGNOSTICS_READY");
+                    }
+                    if text.as_str() == "durable file committed" {
+                        crate::serial::println("USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT");
+                    }
+                    if text.as_str() == "durable file restored" {
+                        crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
+                    }
+                    if text.as_str() == "durable file restored read-only" {
+                        crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
+                        crate::serial::println("USER_READ_ONLY_MUTATION_DENIED_OK");
+                    }
+                    if text.as_str() == "session file written" {
+                        crate::serial::println("USER_SESSION_WRITE_OK path=/USER/SHELL.TXT");
+                    }
                     if text.as_str().starts_with("SHELL.ELF ready") {
+                        if text.as_str().contains("process control") {
+                            crate::serial::println("USER_SHELL_PROCESS_CONTROL_OK");
+                        }
+                        if text.as_str().contains("filesystem") {
+                            crate::serial::println("USER_SHELL_NAMESPACE_OK");
+                            crate::serial::println("USER_SHELL_HISTORY_OK");
+                        }
                         crate::serial::println("USER_SHELL_READY");
                     }
                 }
-                ProcessEvent::ConsoleSetInput(text) => {
+                ProcessEvent::ConsoleSetInput { handle, text } => {
                     let managed = self.slots[index].as_mut().expect("selected process exists");
+                    if !managed
+                        .handles
+                        .allows(handle, HandleKind::Console, HANDLE_RIGHT_USE)
+                    {
+                        managed.process.context.rax =
+                            syscall::error_code(syscall::SyscallError::InvalidArgument);
+                        managed.state = ManagedState::Ready;
+                        continue;
+                    }
                     managed.process.context.rax = text.len() as u64;
                     managed.state = ManagedState::Ready;
                     console = Some(ConsoleUpdate::SetInput(text));
                 }
-                ProcessEvent::ConsoleClear => {
+                ProcessEvent::ConsoleClear(handle) => {
                     let managed = self.slots[index].as_mut().expect("selected process exists");
+                    if !managed
+                        .handles
+                        .allows(handle, HandleKind::Console, HANDLE_RIGHT_USE)
+                    {
+                        managed.process.context.rax =
+                            syscall::error_code(syscall::SyscallError::InvalidArgument);
+                        managed.state = ManagedState::Ready;
+                        continue;
+                    }
                     managed.process.context.rax = 0;
                     managed.state = ManagedState::Ready;
                     console = Some(ConsoleUpdate::Clear);
@@ -1095,12 +1789,322 @@ impl ProcessManager {
                 exit_code: managed.process.exit_code,
                 preemptions: managed.process.preemptions,
                 output,
-                console_process: managed.process.console_handle != 0,
+                console_process: managed.handles.allows(
+                    managed.process.console_handle,
+                    HandleKind::Console,
+                    HANDLE_RIGHT_USE,
+                ),
                 console,
                 vfs_request,
+                lifecycle_request,
             });
         }
         None
+    }
+
+    fn block_process_launch(
+        &mut self,
+        index: usize,
+        supervisor: u64,
+        image: u64,
+        mode: u64,
+    ) -> Option<ProcessLaunchRequest> {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        if !managed
+            .handles
+            .allows(supervisor, HandleKind::Lifecycle, HANDLE_RIGHT_USE)
+            || image != USER_PROCESS_IMAGE_INIT
+            || !matches!(mode, USER_PROCESS_MODE_NORMAL | USER_PROCESS_MODE_HOLD)
+            || !managed.process_handles.iter().any(Option::is_none)
+        {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_PROCESS_LAUNCH_DENIED owner=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::println("");
+            return None;
+        }
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::ProcessLaunch;
+        managed.pending_process_launch = Some(PendingProcessLaunch {
+            request_id,
+            image,
+            mode,
+        });
+        Some(ProcessLaunchRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
+            owner_task_id: managed.task_id,
+            owner_pid: managed.process.pid,
+            image,
+            mode,
+        })
+    }
+
+    pub fn complete_process_launch(
+        &mut self,
+        request: ProcessLaunchRequest,
+        task_id: Option<u32>,
+    ) -> Result<ProcessLaunchCompletion, LaunchError> {
+        let owner_index = self
+            .slots
+            .iter()
+            .position(|slot| {
+                slot.as_ref().is_some_and(|managed| {
+                    managed.key
+                        == (ProcessKey {
+                            slot: request.owner_slot,
+                            incarnation: request.owner_instance,
+                        })
+                        && managed.task_id == request.owner_task_id
+                        && managed.process.pid == request.owner_pid
+                })
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        let pending = self.slots[owner_index]
+            .as_ref()
+            .and_then(|managed| managed.pending_process_launch)
+            .ok_or(LaunchError::InvalidResult)?;
+        if self.slots[owner_index].as_ref().is_none_or(|managed| {
+            managed.state != ManagedState::Waiting
+                || managed.blocked_on != BlockReason::ProcessLaunch
+                || managed.process.completed
+        }) || pending.request_id != request.request_id
+            || pending.image != request.image
+            || pending.mode != request.mode
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+
+        let child_slot = self
+            .slots
+            .iter()
+            .enumerate()
+            .find_map(|(slot, entry)| (slot != owner_index && entry.is_none()).then_some(slot));
+        let launch = task_id.zip(child_slot).and_then(|(task_id, child_slot)| {
+            let pid = self.allocate_pid().ok()?;
+            let key = self.allocate_key(child_slot).ok()?;
+            let token = TOKEN_DYNAMIC_BASE
+                | if request.mode == USER_PROCESS_MODE_HOLD {
+                    TOKEN_HOLD_BIT
+                } else {
+                    0
+                }
+                | pid as u64;
+            let mut process = build_process(pid, token, user_elf().ok()?).ok()?;
+            let handle = {
+                let owner = self.slots[owner_index].as_mut()?;
+                owner.allocate_process_handle(key)
+            };
+            let Some(handle) = handle else {
+                let _ = reclaim_process(&mut process);
+                return None;
+            };
+            let owner_key = self.slots[owner_index].as_ref()?.key;
+            self.slots[child_slot] =
+                Some(ManagedProcess::new(key, task_id, Some(owner_key), process));
+            DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
+            Some((pid, handle))
+        });
+
+        let owner = self.slots[owner_index]
+            .as_mut()
+            .ok_or(LaunchError::ImageUnavailable)?;
+        owner.pending_process_launch = None;
+        owner.blocked_on = BlockReason::None;
+        owner.state = ManagedState::Ready;
+        owner.process.context.rax = launch
+            .map(|(_, handle)| handle)
+            .unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+        if let Some((pid, handle)) = launch {
+            crate::serial::print("USER_PROCESS_LAUNCHED owner=");
+            crate::serial::print_u64(request.owner_pid as u64);
+            crate::serial::print(" pid=");
+            crate::serial::print_u64(pid as u64);
+            crate::serial::print(" handle=0x");
+            crate::serial::print_hex(handle);
+            crate::serial::print(" mode=");
+            crate::serial::println(if request.mode == USER_PROCESS_MODE_HOLD {
+                "hold"
+            } else {
+                "normal"
+            });
+        }
+        Ok(ProcessLaunchCompletion {
+            owner: process_update(owner),
+        })
+    }
+
+    fn process_status_for_key(&self, key: ProcessKey) -> Option<UserProcessStatus> {
+        let managed = self.slots.get(key.slot as usize)?.as_ref()?;
+        (managed.key == key).then(|| UserProcessStatus {
+            instance_id: key.incarnation,
+            task_id: managed.task_id as u64,
+            runtime_pid: managed.process.pid as u64,
+            state: managed_state_abi(managed.state),
+            exit_code: if managed.process.completed {
+                managed.process.exit_code as u64
+            } else {
+                0
+            },
+            fault_vector: managed.process.fault_vector as u64,
+            preemptions: managed.process.preemptions,
+            reserved: 0,
+        })
+    }
+
+    fn complete_process_status(&mut self, index: usize, handle: u64, address: u64, length: u64) {
+        let capability = self.slots[index]
+            .as_ref()
+            .and_then(|managed| managed.process_capability(handle));
+        let status =
+            capability.and_then(|capability| self.process_status_for_key(capability.target));
+        let copied = status.is_some_and(|status| {
+            let bytes = user_process_status_bytes(&status);
+            length as usize == bytes.len()
+                && self.slots[index]
+                    .as_ref()
+                    .is_some_and(|managed| copy_to_user_data(&managed.process, address, bytes))
+        });
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        managed.process.context.rax = if copied {
+            length
+        } else {
+            syscall::error_code(syscall::SyscallError::InvalidArgument)
+        };
+        managed.state = ManagedState::Ready;
+        if copied {
+            crate::serial::print("USER_PROCESS_STATUS owner=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::print(" target=");
+            crate::serial::print_u64(status.map(|status| status.runtime_pid).unwrap_or(0));
+            crate::serial::println("");
+        }
+    }
+
+    fn complete_controlled_kill(&mut self, owner_index: usize, handle: u64) {
+        let capability = self.slots[owner_index]
+            .as_ref()
+            .and_then(|managed| managed.process_capability(handle));
+        let target_index = capability.and_then(|capability| {
+            self.slots
+                .get(capability.target.slot as usize)
+                .filter(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|managed| managed.key == capability.target)
+                })
+                .map(|_| capability.target.slot as usize)
+        });
+        let live_target = target_index.filter(|target_index| {
+            *target_index != owner_index
+                && self.slots[*target_index]
+                    .as_ref()
+                    .is_some_and(|managed| !managed.process.completed)
+        });
+        let Some(target_index) = live_target else {
+            let managed = self.slots[owner_index]
+                .as_mut()
+                .expect("selected process exists");
+            managed.process.context.rax = if target_index.is_some() {
+                syscall::error_code(syscall::SyscallError::Unavailable)
+            } else {
+                syscall::error_code(syscall::SyscallError::InvalidArgument)
+            };
+            managed.state = ManagedState::Ready;
+            return;
+        };
+        let target_pid = self
+            .terminate_process_at(target_index, ManagedState::Killed, Some(137))
+            .unwrap_or_else(|_| fail("USER_RECLAIM_FAILED"))
+            .pid;
+        let owner = self.slots[owner_index]
+            .as_mut()
+            .expect("selected process exists");
+        owner.process.context.rax = 0;
+        owner.state = ManagedState::Ready;
+        crate::serial::print("USER_PROCESS_KILLED owner=");
+        crate::serial::print_u64(owner.process.pid as u64);
+        crate::serial::print(" pid=");
+        crate::serial::print_u64(target_pid as u64);
+        crate::serial::println(" code=137");
+    }
+
+    fn complete_controlled_reap(
+        &mut self,
+        owner_index: usize,
+        handle: u64,
+        address: u64,
+        length: u64,
+    ) {
+        let capability = self.slots[owner_index]
+            .as_ref()
+            .and_then(|managed| managed.process_capability(handle));
+        let target_index = capability.and_then(|capability| {
+            self.slots
+                .get(capability.target.slot as usize)
+                .filter(|slot| {
+                    slot.as_ref()
+                        .is_some_and(|managed| managed.key == capability.target)
+                })
+                .map(|_| capability.target.slot as usize)
+        });
+        let status =
+            capability.and_then(|capability| self.process_status_for_key(capability.target));
+        let terminal = target_index.is_some_and(|target_index| {
+            self.slots[target_index]
+                .as_ref()
+                .is_some_and(|managed| managed.process.completed)
+        });
+        if !terminal {
+            let owner = self.slots[owner_index]
+                .as_mut()
+                .expect("selected process exists");
+            owner.process.context.rax = if target_index.is_some() {
+                syscall::error_code(syscall::SyscallError::Unavailable)
+            } else {
+                syscall::error_code(syscall::SyscallError::InvalidArgument)
+            };
+            owner.state = ManagedState::Ready;
+            return;
+        }
+        let copied = status.is_some_and(|status| {
+            let bytes = user_process_status_bytes(&status);
+            length as usize == bytes.len()
+                && self.slots[owner_index]
+                    .as_ref()
+                    .is_some_and(|owner| copy_to_user_data(&owner.process, address, bytes))
+        });
+        if !copied {
+            let owner = self.slots[owner_index]
+                .as_mut()
+                .expect("selected process exists");
+            owner.process.context.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+            owner.state = ManagedState::Ready;
+            return;
+        }
+        let target_index = target_index.expect("terminal target exists");
+        self.release_endpoints(target_index);
+        self.slots[target_index] = None;
+        let owner = self.slots[owner_index]
+            .as_mut()
+            .expect("selected process exists");
+        if !owner.close_process_handle(handle) {
+            fail("USER_PROCESS_HANDLE_RELEASE_FAILED");
+        }
+        owner.process.context.rax = length;
+        owner.state = ManagedState::Ready;
+        crate::serial::print("USER_PROCESS_REAPED owner=");
+        crate::serial::print_u64(owner.process.pid as u64);
+        crate::serial::print(" pid=");
+        crate::serial::print_u64(status.map(|status| status.runtime_pid).unwrap_or(0));
+        crate::serial::println("");
     }
 
     fn wake_sleepers(&mut self, tick: u64) {
@@ -1125,18 +2129,28 @@ impl ProcessManager {
         length: u64,
     ) -> Option<DirectoryReadRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
-            capability.kind == genos_abi::USER_FILE_KIND_DIRECTORY
-                && capability.rights & USER_FILE_RIGHT_READ != 0
-        }) else {
+        let Some(capability) = managed
+            .file_handle(handle, USER_FILE_RIGHT_READ)
+            .copied()
+            .filter(|capability| {
+                capability.kind == genos_abi::USER_FILE_KIND_DIRECTORY
+                    && capability.rights & USER_FILE_RIGHT_READ != 0
+            })
+        else {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
             managed.state = ManagedState::Ready;
             return None;
         };
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::DirectoryRead;
         managed.pending_directory_read = Some(PendingDirectoryRead {
+            request_id,
             path: capability.path,
             handle,
             cursor,
@@ -1151,6 +2165,9 @@ impl ProcessManager {
         crate::serial::print_u64(cursor);
         crate::serial::println("");
         Some(DirectoryReadRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
             task_id: managed.task_id,
             pid: managed.process.pid,
             path: capability.path,
@@ -1169,7 +2186,10 @@ impl ProcessManager {
             .iter_mut()
             .flatten()
             .find(|managed| {
-                managed.task_id == request.task_id && managed.process.pid == request.pid
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.task_id
+                    && managed.process.pid == request.pid
             })
             .ok_or(LaunchError::ImageUnavailable)?;
         if managed.state != ManagedState::Waiting
@@ -1182,14 +2202,15 @@ impl ProcessManager {
             .pending_directory_read
             .as_ref()
             .ok_or(LaunchError::InvalidResult)?;
-        if pending.path != request.path
+        if pending.request_id != request.request_id
+            || pending.path != request.path
             || pending.handle != request.handle
             || pending.cursor != request.cursor
         {
             return Err(LaunchError::InvalidResult);
         }
         if !managed
-            .file_handle(request.handle)
+            .file_handle(request.handle, USER_FILE_RIGHT_READ)
             .is_some_and(|capability| {
                 capability.path == request.path
                     && capability.kind == genos_abi::USER_FILE_KIND_DIRECTORY
@@ -1249,6 +2270,166 @@ impl ProcessManager {
         Ok(process_update(managed))
     }
 
+    fn block_namespace_mutation(
+        &mut self,
+        index: usize,
+        parent: u64,
+        name: FixedText,
+        reason: BlockReason,
+    ) -> Option<NamespaceMutationRequest> {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let capability = managed
+            .file_handle(parent, USER_FILE_RIGHT_MANAGE)
+            .copied()
+            .filter(|capability| {
+                capability.kind == USER_FILE_KIND_DIRECTORY
+                    && capability.rights & USER_FILE_RIGHT_MANAGE != 0
+                    && is_user_writable_directory(capability.path.as_str())
+            });
+        let target = capability.and_then(|capability| join_child_path(capability.path, name));
+        let Some((capability, target)) = capability.zip(target) else {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        if !matches!(
+            reason,
+            BlockReason::DirectoryCreate | BlockReason::PathRemove
+        ) {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            return None;
+        }
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        let pending = PendingNamespaceMutation {
+            request_id,
+            parent: capability.path,
+            target,
+            handle: parent,
+        };
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = reason;
+        managed.pending_namespace_mutation = Some(pending);
+        crate::serial::print(match reason {
+            BlockReason::DirectoryCreate => "USER_DIRECTORY_CREATE_BLOCK pid=",
+            BlockReason::PathRemove => "USER_PATH_REMOVE_BLOCK pid=",
+            _ => "USER_NAMESPACE_BLOCK pid=",
+        });
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" target=");
+        crate::serial::println(target.as_str());
+        Some(NamespaceMutationRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            parent: capability.path,
+            target,
+            handle: parent,
+        })
+    }
+
+    pub fn complete_directory_create(
+        &mut self,
+        request: NamespaceMutationRequest,
+        created: bool,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        self.complete_namespace_mutation(request, BlockReason::DirectoryCreate, created)
+    }
+
+    pub fn complete_path_remove(
+        &mut self,
+        request: NamespaceMutationRequest,
+        removed: bool,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        self.complete_namespace_mutation(request, BlockReason::PathRemove, removed)
+    }
+
+    fn complete_namespace_mutation(
+        &mut self,
+        request: NamespaceMutationRequest,
+        reason: BlockReason,
+        succeeded: bool,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| {
+                slot.as_ref().is_some_and(|managed| {
+                    managed.key.slot == request.owner_slot
+                        && managed.key.incarnation == request.owner_instance
+                        && managed.task_id == request.task_id
+                        && managed.process.pid == request.pid
+                })
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        let valid = self.slots[index].as_ref().is_some_and(|managed| {
+            managed.state == ManagedState::Waiting
+                && managed.blocked_on == reason
+                && !managed.process.completed
+                && managed.pending_namespace_mutation
+                    == Some(PendingNamespaceMutation {
+                        request_id: request.request_id,
+                        parent: request.parent,
+                        target: request.target,
+                        handle: request.handle,
+                    })
+                && managed
+                    .file_handle(request.handle, USER_FILE_RIGHT_MANAGE)
+                    .is_some_and(|capability| {
+                        capability.path == request.parent
+                            && capability.kind == USER_FILE_KIND_DIRECTORY
+                            && capability.rights & USER_FILE_RIGHT_MANAGE != 0
+                            && is_user_writable_directory(capability.path.as_str())
+                    })
+        });
+        if !valid {
+            return Err(LaunchError::InvalidResult);
+        }
+        if succeeded && reason == BlockReason::PathRemove {
+            for managed in self.slots.iter_mut().flatten() {
+                for entry in managed.file_handles.iter_mut() {
+                    if entry.is_some_and(|capability| {
+                        paths_equal(capability.path.as_str(), request.target.as_str())
+                    }) {
+                        let handle = entry.expect("matched file capability").handle;
+                        let removed = managed.handles.unregister(handle, HandleKind::File);
+                        debug_assert!(removed);
+                        *entry = None;
+                    }
+                }
+            }
+        }
+        let managed = self.slots[index]
+            .as_mut()
+            .expect("namespace request owner exists");
+        managed.pending_namespace_mutation = None;
+        managed.process.context.rax = if succeeded {
+            0
+        } else {
+            syscall::error_code(syscall::SyscallError::Unavailable)
+        };
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print(match (reason, succeeded) {
+            (BlockReason::DirectoryCreate, true) => "USER_DIRECTORY_CREATE_OK pid=",
+            (BlockReason::DirectoryCreate, false) => "USER_DIRECTORY_CREATE_UNAVAILABLE pid=",
+            (BlockReason::PathRemove, true) => "USER_PATH_REMOVE_OK pid=",
+            (BlockReason::PathRemove, false) => "USER_PATH_REMOVE_UNAVAILABLE pid=",
+            _ => "USER_NAMESPACE_COMPLETE pid=",
+        });
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::println("");
+        Ok(process_update(managed))
+    }
+
     fn block_sleep(&mut self, index: usize, tick: u64, ticks: u64) {
         let managed = self.slots[index].as_mut().expect("selected process exists");
         managed.state = ManagedState::Sleeping;
@@ -1262,7 +2443,7 @@ impl ProcessManager {
 
     fn complete_endpoint_create(&mut self, index: usize) {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let handle = managed.endpoints.create();
+        let handle = managed.endpoints.create(&mut managed.handles);
         managed.process.context.rax =
             handle.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
         managed.state = ManagedState::Ready;
@@ -1292,10 +2473,13 @@ impl ProcessManager {
         });
         let managed = self.slots[index].as_mut().expect("selected process exists");
         let handle = target_generation.and_then(|target_generation| {
-            managed.endpoints.allocate(EndpointRole::Send {
-                target_pid,
-                target_generation,
-            })
+            managed.endpoints.allocate(
+                &mut managed.handles,
+                EndpointRole::Send {
+                    target_pid,
+                    target_generation,
+                },
+            )
         });
         managed.process.context.rax =
             handle.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
@@ -1327,7 +2511,7 @@ impl ProcessManager {
             let managed = self.slots[index].as_ref().expect("selected process exists");
             (
                 managed.process.pid,
-                managed.endpoints.send_capability(handle),
+                managed.endpoints.send_capability(&managed.handles, handle),
             )
         };
         let Some((target_pid, target_generation)) = target else {
@@ -1420,7 +2604,10 @@ impl ProcessManager {
         });
         if let Some(pending) = pending {
             if pending.length != USER_CHANNEL_MESSAGE_SIZE
-                || target.endpoints.receive_generation(pending.handle) != Some(target_generation)
+                || target
+                    .endpoints
+                    .receive_generation(&target.handles, pending.handle)
+                    != Some(target_generation)
                 || !copy_to_user_data(
                     &target.process,
                     pending.address,
@@ -1449,10 +2636,13 @@ impl ProcessManager {
 
     fn complete_endpoint_receive(&mut self, index: usize, handle: u64, address: u64, length: u64) {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let generation = managed.endpoints.receive_generation(handle).filter(|_| {
-            length == USER_CHANNEL_MESSAGE_SIZE
-                && valid_user_data_buffer(&managed.process, address, length)
-        });
+        let generation = managed
+            .endpoints
+            .receive_generation(&managed.handles, handle)
+            .filter(|_| {
+                length == USER_CHANNEL_MESSAGE_SIZE
+                    && valid_user_data_buffer(&managed.process, address, length)
+            });
         let Some(generation) = generation else {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -1517,7 +2707,10 @@ impl ProcessManager {
     fn complete_endpoint_close(&mut self, index: usize, handle: u64) {
         let (owner_pid, role) = {
             let managed = self.slots[index].as_mut().expect("selected process exists");
-            (managed.process.pid, managed.endpoints.close(handle))
+            (
+                managed.process.pid,
+                managed.endpoints.close(&mut managed.handles, handle),
+            )
         };
         let revoked = match role {
             Some(EndpointRole::Receive { generation }) => {
@@ -1552,9 +2745,11 @@ impl ProcessManager {
     fn revoke_endpoint_send_handles(&mut self, target_pid: u8, target_generation: u64) -> usize {
         let mut revoked = 0;
         for managed in self.slots.iter_mut().flatten() {
-            revoked += managed
-                .endpoints
-                .revoke_send_handles(target_pid, target_generation);
+            revoked += managed.endpoints.revoke_send_handles(
+                &mut managed.handles,
+                target_pid,
+                target_generation,
+            );
         }
         if revoked > 0 {
             crate::serial::print("USER_ENDPOINT_REVOKED pid=");
@@ -1574,7 +2769,7 @@ impl ProcessManager {
         let (owner_pid, generation) = {
             let managed = self.slots[index].as_mut().expect("selected process exists");
             let generation = managed.endpoints.published_generation();
-            managed.endpoints.clear();
+            managed.endpoints.clear(&mut managed.handles);
             (managed.process.pid, generation)
         };
         if let Some(generation) = generation {
@@ -1663,33 +2858,31 @@ impl ProcessManager {
     }
 
     fn complete_child_wait(&mut self, parent_index: usize, child_pid: u8) {
-        let parent_pid = self.slots[parent_index]
+        let (parent_pid, parent_key) = self.slots[parent_index]
             .as_ref()
-            .expect("selected process exists")
-            .process
-            .pid;
-        let child =
-            self.slots.iter().flatten().find(|managed| {
-                managed.process.pid == child_pid && managed.parent_pid == parent_pid
-            });
+            .map(|managed| (managed.process.pid, managed.key))
+            .expect("selected process exists");
+        let child = self.slots.iter().flatten().find(|managed| {
+            managed.process.pid == child_pid && managed.parent_key == Some(parent_key)
+        });
         let result = child.map(|managed| {
             if managed.process.completed {
-                Some(managed.process.exit_code as u64)
+                (managed.key, Some(managed.process.exit_code as u64))
             } else {
-                None
+                (managed.key, None)
             }
         });
         let parent = self.slots[parent_index]
             .as_mut()
             .expect("selected process exists");
         match result {
-            Some(Some(status)) => {
+            Some((_, Some(status))) => {
                 parent.process.context.rax = status;
                 parent.state = ManagedState::Ready;
             }
-            Some(None) => {
+            Some((child_key, None)) => {
                 parent.state = ManagedState::Waiting;
-                parent.blocked_on = BlockReason::Child(child_pid);
+                parent.blocked_on = BlockReason::Child(child_key);
                 crate::serial::print("USER_CHILD_WAIT parent=");
                 crate::serial::print_u64(parent_pid as u64);
                 crate::serial::print(" child=");
@@ -1711,9 +2904,15 @@ impl ProcessManager {
         rights: u64,
     ) -> Option<FileOpenRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
+        let writable = rights & USER_FILE_RIGHT_WRITE != 0;
+        let manageable = rights & USER_FILE_RIGHT_MANAGE != 0;
         if rights == 0
             || rights & !USER_FILE_RIGHTS_MASK != 0
-            || (rights & USER_FILE_RIGHT_WRITE != 0 && !is_user_writable_path(path.as_str()))
+            || (writable && manageable)
+            || (writable && !is_user_writable_path(path.as_str()))
+            || (manageable
+                && (rights & USER_FILE_RIGHT_READ == 0
+                    || !is_user_writable_directory(path.as_str())))
         {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -1724,9 +2923,18 @@ impl ProcessManager {
             crate::serial::println(path.as_str());
             return None;
         }
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::FileOpen;
-        managed.pending_file_open = Some(PendingFileOpen { path, rights });
+        managed.pending_file_open = Some(PendingFileOpen {
+            request_id,
+            path,
+            rights,
+        });
         crate::serial::print("USER_FILE_OPEN_BLOCK pid=");
         crate::serial::print_u64(managed.process.pid as u64);
         crate::serial::print(" path=");
@@ -1735,6 +2943,9 @@ impl ProcessManager {
         crate::serial::print_u64(rights);
         crate::serial::println("");
         Some(FileOpenRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
             task_id: managed.task_id,
             pid: managed.process.pid,
             path,
@@ -1752,7 +2963,10 @@ impl ProcessManager {
             .iter_mut()
             .flatten()
             .find(|managed| {
-                managed.task_id == request.task_id && managed.process.pid == request.pid
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.task_id
+                    && managed.process.pid == request.pid
             })
             .ok_or(LaunchError::ImageUnavailable)?;
         if managed.state != ManagedState::Waiting
@@ -1760,6 +2974,7 @@ impl ProcessManager {
             || managed.process.completed
             || managed.pending_file_open
                 != Some(PendingFileOpen {
+                    request_id: request.request_id,
                     path: request.path,
                     rights: request.rights,
                 })
@@ -1771,9 +2986,15 @@ impl ProcessManager {
             .filter(|metadata| {
                 matches!(
                     metadata.kind,
-                    USER_FILE_KIND_REGULAR | genos_abi::USER_FILE_KIND_DIRECTORY
-                ) && (metadata.kind == USER_FILE_KIND_REGULAR
-                    || request.rights == USER_FILE_RIGHT_READ)
+                    USER_FILE_KIND_REGULAR | USER_FILE_KIND_DIRECTORY
+                ) && match metadata.kind {
+                    USER_FILE_KIND_REGULAR => request.rights & USER_FILE_RIGHT_MANAGE == 0,
+                    USER_FILE_KIND_DIRECTORY => {
+                        request.rights & USER_FILE_RIGHT_READ != 0
+                            && request.rights & USER_FILE_RIGHT_WRITE == 0
+                    }
+                    _ => false,
+                }
             })
             .and_then(|metadata| {
                 managed.allocate_file_handle(request.path, metadata, request.rights)
@@ -1801,18 +3022,28 @@ impl ProcessManager {
         capacity: u64,
     ) -> Option<FileReadRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
-            capability.kind == USER_FILE_KIND_REGULAR
-                && capability.rights & USER_FILE_RIGHT_READ != 0
-        }) else {
+        let Some(capability) = managed
+            .file_handle(handle, USER_FILE_RIGHT_READ)
+            .copied()
+            .filter(|capability| {
+                capability.kind == USER_FILE_KIND_REGULAR
+                    && capability.rights & USER_FILE_RIGHT_READ != 0
+            })
+        else {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
             managed.state = ManagedState::Ready;
             return None;
         };
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::FileRead;
         managed.pending_file_read = Some(PendingFileRead {
+            request_id,
             handle,
             path: capability.path,
             offset: capability.offset,
@@ -1827,6 +3058,9 @@ impl ProcessManager {
         crate::serial::print_u64(capability.offset);
         crate::serial::println("");
         Some(FileReadRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
             task_id: managed.task_id,
             pid: managed.process.pid,
             path: capability.path,
@@ -1838,12 +3072,14 @@ impl ProcessManager {
 
     fn complete_file_stat(&mut self, index: usize, handle: u64, address: u64, length: u64) {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let stat = managed.file_handle(handle).map(|capability| UserFileStat {
-            size: capability.size,
-            offset: capability.offset,
-            kind: capability.kind,
-            rights: capability.rights,
-        });
+        let stat = managed
+            .file_handle(handle, 0)
+            .map(|capability| UserFileStat {
+                size: capability.size,
+                offset: capability.offset,
+                kind: capability.kind,
+                rights: capability.rights,
+            });
         let copied = stat.is_some_and(|stat| {
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -1888,12 +3124,16 @@ impl ProcessManager {
         data: FileWriteBuffer,
     ) -> Option<FileWriteRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
-            capability.kind == USER_FILE_KIND_REGULAR
-                && capability.rights & USER_FILE_RIGHT_WRITE != 0
-                && is_user_writable_path(capability.path.as_str())
-                && !data.is_empty()
-        }) else {
+        let Some(capability) = managed
+            .file_handle(handle, USER_FILE_RIGHT_WRITE)
+            .copied()
+            .filter(|capability| {
+                capability.kind == USER_FILE_KIND_REGULAR
+                    && capability.rights & USER_FILE_RIGHT_WRITE != 0
+                    && is_user_writable_path(capability.path.as_str())
+                    && !data.is_empty()
+            })
+        else {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
@@ -1902,7 +3142,13 @@ impl ProcessManager {
             crate::serial::println("");
             return None;
         };
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
         let pending = PendingFileWrite {
+            request_id,
             handle,
             path: capability.path,
             offset: capability.offset,
@@ -1921,6 +3167,9 @@ impl ProcessManager {
         crate::serial::print_u64(data.len() as u64);
         crate::serial::println("");
         Some(FileWriteRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
             task_id: managed.task_id,
             pid: managed.process.pid,
             path: capability.path,
@@ -1940,7 +3189,10 @@ impl ProcessManager {
             .iter_mut()
             .flatten()
             .find(|managed| {
-                managed.task_id == request.task_id && managed.process.pid == request.pid
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.task_id
+                    && managed.process.pid == request.pid
             })
             .ok_or(LaunchError::ImageUnavailable)?;
         if managed.state != ManagedState::Waiting
@@ -1953,7 +3205,8 @@ impl ProcessManager {
             .pending_file_write
             .as_ref()
             .ok_or(LaunchError::InvalidResult)?;
-        if pending.handle != request.handle
+        if pending.request_id != request.request_id
+            || pending.handle != request.handle
             || pending.path != request.path
             || pending.offset != request.offset
             || pending.data != request.data
@@ -1961,7 +3214,7 @@ impl ProcessManager {
             return Err(LaunchError::InvalidResult);
         }
         let capability = managed
-            .file_handle(request.handle)
+            .file_handle(request.handle, USER_FILE_RIGHT_WRITE)
             .copied()
             .filter(|capability| {
                 capability.path == request.path
@@ -1973,7 +3226,7 @@ impl ProcessManager {
         managed.pending_file_write = None;
         if let Some(count) = written {
             let capability = managed
-                .file_handle_mut(request.handle)
+                .file_handle_mut(request.handle, USER_FILE_RIGHT_WRITE)
                 .ok_or(LaunchError::InvalidResult)?;
             capability.offset = capability.offset.saturating_add(count);
             capability.size = capability.size.max(capability.offset);
@@ -1997,17 +3250,138 @@ impl ProcessManager {
         Ok(process_update(managed))
     }
 
+    fn block_file_handle_truncate(
+        &mut self,
+        index: usize,
+        handle: u64,
+    ) -> Option<FileTruncateRequest> {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let Some(capability) = managed
+            .file_handle(handle, USER_FILE_RIGHT_WRITE)
+            .copied()
+            .filter(|capability| {
+                capability.kind == USER_FILE_KIND_REGULAR
+                    && capability.rights & USER_FILE_RIGHT_WRITE != 0
+                    && is_user_writable_path(capability.path.as_str())
+            })
+        else {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_HANDLE_TRUNCATE_DENIED pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::println("");
+            return None;
+        };
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::FileTruncate;
+        managed.pending_file_truncate = Some(PendingFileTruncate {
+            request_id,
+            handle,
+            path: capability.path,
+        });
+        crate::serial::print("USER_HANDLE_TRUNCATE_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" handle=0x");
+        crate::serial::print_hex(handle);
+        crate::serial::println("");
+        Some(FileTruncateRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            path: capability.path,
+            handle,
+        })
+    }
+
+    pub fn complete_file_truncate(
+        &mut self,
+        request: FileTruncateRequest,
+        truncated: bool,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| {
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.task_id
+                    && managed.process.pid == request.pid
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if managed.state != ManagedState::Waiting
+            || managed.blocked_on != BlockReason::FileTruncate
+            || managed.process.completed
+            || managed.pending_file_truncate
+                != Some(PendingFileTruncate {
+                    request_id: request.request_id,
+                    handle: request.handle,
+                    path: request.path,
+                })
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        let valid_capability = managed
+            .file_handle(request.handle, USER_FILE_RIGHT_WRITE)
+            .is_some_and(|capability| {
+                capability.path == request.path
+                    && capability.kind == USER_FILE_KIND_REGULAR
+                    && capability.rights & USER_FILE_RIGHT_WRITE != 0
+                    && is_user_writable_path(capability.path.as_str())
+            });
+        if !valid_capability {
+            return Err(LaunchError::InvalidResult);
+        }
+        managed.pending_file_truncate = None;
+        if truncated {
+            let capability = managed
+                .file_handle_mut(request.handle, USER_FILE_RIGHT_WRITE)
+                .ok_or(LaunchError::InvalidResult)?;
+            capability.offset = 0;
+            capability.size = 0;
+        }
+        managed.process.context.rax = if truncated {
+            0
+        } else {
+            syscall::error_code(syscall::SyscallError::Unavailable)
+        };
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print(if truncated {
+            "USER_HANDLE_TRUNCATE_OK pid="
+        } else {
+            "USER_HANDLE_TRUNCATE_FAILED pid="
+        });
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::println("");
+        Ok(process_update(managed))
+    }
+
     fn block_file_read(
         &mut self,
         index: usize,
         path: FixedText,
         address: u64,
         capacity: u64,
-    ) -> FileReadRequest {
+    ) -> Option<FileReadRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
+        let Some(request_id) = managed.allocate_request_id() else {
+            managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::FileRead;
         managed.pending_file_read = Some(PendingFileRead {
+            request_id,
             handle: 0,
             path,
             offset: 0,
@@ -2021,14 +3395,17 @@ impl ProcessManager {
         crate::serial::print(" cap=");
         crate::serial::print_u64(capacity);
         crate::serial::println("");
-        FileReadRequest {
+        Some(FileReadRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
             task_id: managed.task_id,
             pid: managed.process.pid,
             path,
             handle: 0,
             offset: 0,
             capacity,
-        }
+        })
     }
 
     pub fn complete_file_read(
@@ -2041,7 +3418,10 @@ impl ProcessManager {
             .iter_mut()
             .flatten()
             .find(|managed| {
-                managed.task_id == request.task_id && managed.process.pid == request.pid
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.task_id
+                    && managed.process.pid == request.pid
             })
             .ok_or(LaunchError::ImageUnavailable)?;
         if managed.state != ManagedState::Waiting
@@ -2054,7 +3434,8 @@ impl ProcessManager {
             .pending_file_read
             .as_ref()
             .ok_or(LaunchError::InvalidResult)?;
-        if pending.path != request.path
+        if pending.request_id != request.request_id
+            || pending.path != request.path
             || pending.handle != request.handle
             || pending.offset != request.offset
             || pending.capacity != request.capacity
@@ -2074,7 +3455,8 @@ impl ProcessManager {
             COMPLETED_FILE_READS.fetch_add(1, Ordering::AcqRel);
         }
         if pending.handle != 0 {
-            let Some(capability) = managed.file_handle_mut(pending.handle) else {
+            let Some(capability) = managed.file_handle_mut(pending.handle, USER_FILE_RIGHT_READ)
+            else {
                 return Err(LaunchError::InvalidResult);
             };
             if capability.path != pending.path || capability.offset != pending.offset {
@@ -2098,23 +3480,90 @@ impl ProcessManager {
     }
 
     fn complete_terminal(&mut self, index: usize, state: ManagedState) {
-        self.release_endpoints(index);
-        let (pid, exit_code) = {
-            let managed = self.slots[index].as_mut().expect("selected process exists");
-            managed.state = state;
-            managed.revoke_resources();
-            if reclaim_process(&mut managed.process).is_err() {
-                fail("USER_RECLAIM_FAILED");
-            }
-            (managed.process.pid, managed.process.exit_code)
-        };
-        self.wake_waiting_parent(pid, exit_code);
+        if self.terminate_process_at(index, state, None).is_err() {
+            fail("USER_RECLAIM_FAILED");
+        }
     }
 
-    fn wake_waiting_parent(&mut self, child_pid: u8, exit_code: u8) {
+    fn terminate_process_at(
+        &mut self,
+        index: usize,
+        state: ManagedState,
+        forced_exit_code: Option<u8>,
+    ) -> Result<TerminalRecord, LaunchError> {
+        self.release_endpoints(index);
+        let (record, supervisor) = {
+            let managed = self.slots[index]
+                .as_mut()
+                .ok_or(LaunchError::ImageUnavailable)?;
+            if let Some(exit_code) = forced_exit_code {
+                managed.process.completed = true;
+                managed.process.killed = state == ManagedState::Killed;
+                managed.process.event = ProcessEvent::Exit;
+                managed.process.exit_code = exit_code;
+                managed.process.completion_order =
+                    COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+            } else if !managed.process.completed {
+                return Err(LaunchError::InvalidResult);
+            }
+            managed.state = state;
+            managed.revoke_resources();
+            reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
+            (
+                TerminalRecord {
+                    key: managed.key,
+                    task_id: managed.task_id,
+                    pid: managed.process.pid,
+                    exit_code: managed.process.exit_code,
+                    preemptions: managed.process.preemptions,
+                    console_process: managed.console_process,
+                },
+                managed.supervisor,
+            )
+        };
+        if supervisor {
+            let cleaned = self.cleanup_supervised_children(record.key)?;
+            crate::serial::print("USER_SUPERVISOR_CHILDREN_CLEANED owner=");
+            crate::serial::print_u64(record.pid as u64);
+            crate::serial::print(" children=");
+            crate::serial::print_u64(cleaned as u64);
+            crate::serial::println("");
+        }
+        self.wake_waiting_parent(record.key, record.pid, record.exit_code);
+        Ok(record)
+    }
+
+    fn cleanup_supervised_children(&mut self, owner_key: ProcessKey) -> Result<usize, LaunchError> {
+        let mut cleaned = 0usize;
+        let mut index = 0usize;
+        while index < self.slots.len() {
+            if self.slots[index]
+                .as_ref()
+                .is_some_and(|managed| managed.parent_key == Some(owner_key))
+            {
+                self.release_endpoints(index);
+                let managed = self.slots[index].as_mut().expect("supervised child exists");
+                if !managed.process.completed {
+                    managed.process.completed = true;
+                    managed.process.killed = true;
+                    managed.process.exit_code = 137;
+                    managed.state = ManagedState::Killed;
+                    managed.revoke_resources();
+                    reclaim_process(&mut managed.process)
+                        .map_err(|_| LaunchError::InvalidResult)?;
+                }
+                self.slots[index] = None;
+                cleaned += 1;
+            }
+            index += 1;
+        }
+        Ok(cleaned)
+    }
+
+    fn wake_waiting_parent(&mut self, child_key: ProcessKey, child_pid: u8, exit_code: u8) {
         for managed in self.slots.iter_mut().flatten() {
             if managed.state == ManagedState::Waiting
-                && managed.blocked_on == BlockReason::Child(child_pid)
+                && managed.blocked_on == BlockReason::Child(child_key)
             {
                 managed.process.context.rax = exit_code as u64;
                 managed.state = ManagedState::Ready;
@@ -2143,34 +3592,24 @@ impl ProcessManager {
         {
             return Err(LaunchError::InvalidResult);
         }
-        self.release_endpoints(index);
-        let managed = self.slots[index].as_mut().expect("killed process exists");
-        managed.process.completed = true;
-        managed.process.killed = true;
-        managed.process.event = ProcessEvent::Exit;
-        managed.process.exit_code = 137;
-        managed.process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
-        managed.state = ManagedState::Killed;
-        managed.revoke_resources();
-        let pid = managed.process.pid;
-        reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
+        let record = self.terminate_process_at(index, ManagedState::Killed, Some(137))?;
         crate::serial::print("USER_KILLED pid=");
-        crate::serial::print_u64(pid as u64);
+        crate::serial::print_u64(record.pid as u64);
         crate::serial::print(" task=");
         crate::serial::print_u64(task_id as u64);
         crate::serial::println("");
         let update = ProcessUpdate {
-            task_id,
-            pid,
+            task_id: record.task_id,
+            pid: record.pid,
             state: ManagedState::Killed,
-            exit_code: managed.process.exit_code,
-            preemptions: managed.process.preemptions,
+            exit_code: record.exit_code,
+            preemptions: record.preemptions,
             output: FixedText::empty(),
-            console_process: managed.process.console_handle != 0,
+            console_process: record.console_process,
             console: None,
             vfs_request: None,
+            lifecycle_request: None,
         };
-        self.wake_waiting_parent(pid, 137);
         Ok(update)
     }
 
@@ -2205,7 +3644,6 @@ impl ProcessManager {
                 ManagedState::Exited
             },
             exit_code: managed.process.exit_code,
-            preemptions: managed.process.preemptions,
         };
         self.slots[index] = None;
         crate::serial::print("USER_WAIT_REAPED pid=");
@@ -2226,16 +3664,187 @@ impl ProcessManager {
         self.slots
             .iter()
             .flatten()
-            .any(|managed| managed.process.console_handle != 0 && !managed.process.completed)
+            .any(|managed| managed.console_process && !managed.process.completed)
     }
 
     pub fn console_input_ready(&self) -> bool {
         self.slots.iter().flatten().any(|managed| {
-            managed.process.console_handle != 0
+            managed.console_process
                 && !managed.process.completed
                 && managed.state == ManagedState::Waiting
                 && managed.blocked_on == BlockReason::Input
         })
+    }
+
+    pub fn append_task_snapshots(&self, snapshot: &mut TaskSnapshotSet) {
+        for managed in self.slots.iter().flatten() {
+            let state = managed_task_state(managed.state);
+            let name = if managed.console_process {
+                "ring3-shell"
+            } else {
+                "init-elf"
+            };
+            let _ = snapshot.push(TaskSnapshot {
+                id: managed.task_id,
+                name: FixedText::from_str(name),
+                class: TaskClass::User,
+                state,
+                memory_kib: 40,
+            });
+        }
+    }
+
+    pub fn task_snapshots_match(&self, snapshot: &TaskSnapshotSet) -> bool {
+        if snapshot.class_len(TaskClass::User) != self.slots.iter().flatten().count() {
+            return false;
+        }
+        self.slots.iter().flatten().all(|managed| {
+            snapshot.find(managed.task_id).is_some_and(|task| {
+                task.class == TaskClass::User
+                    && task.state == managed_task_state(managed.state)
+                    && task.name.as_str()
+                        == if managed.console_process {
+                            "ring3-shell"
+                        } else {
+                            "init-elf"
+                        }
+            })
+        })
+    }
+
+    /// Confirms that a deferred VFS operation still belongs to the exact
+    /// process request that was parked. The outer VFS coordinator calls this
+    /// before any mutation so a killed or replaced process cannot leave a
+    /// stale write behind.
+    pub fn vfs_request_active(&self, request: UserVfsRequest) -> bool {
+        self.slots.iter().flatten().any(|managed| {
+            if managed.state != ManagedState::Waiting || managed.process.completed {
+                return false;
+            }
+            match request {
+                UserVfsRequest::Open(request) => {
+                    managed.key.slot == request.owner_slot
+                        && managed.key.incarnation == request.owner_instance
+                        && managed.task_id == request.task_id
+                        && managed.process.pid == request.pid
+                        && managed.blocked_on == BlockReason::FileOpen
+                        && managed.pending_file_open.is_some_and(|pending| {
+                            pending.request_id == request.request_id
+                                && pending.path == request.path
+                                && pending.rights == request.rights
+                        })
+                }
+                UserVfsRequest::Read(request) => {
+                    managed.key.slot == request.owner_slot
+                        && managed.key.incarnation == request.owner_instance
+                        && managed.task_id == request.task_id
+                        && managed.process.pid == request.pid
+                        && managed.blocked_on == BlockReason::FileRead
+                        && managed.pending_file_read.is_some_and(|pending| {
+                            pending.request_id == request.request_id
+                                && pending.handle == request.handle
+                                && pending.path == request.path
+                                && pending.offset == request.offset
+                                && pending.capacity == request.capacity
+                        })
+                }
+                UserVfsRequest::Write(request) => {
+                    managed.key.slot == request.owner_slot
+                        && managed.key.incarnation == request.owner_instance
+                        && managed.task_id == request.task_id
+                        && managed.process.pid == request.pid
+                        && managed.blocked_on == BlockReason::FileWrite
+                        && managed.pending_file_write.is_some_and(|pending| {
+                            pending.request_id == request.request_id
+                                && pending.handle == request.handle
+                                && pending.path == request.path
+                                && pending.offset == request.offset
+                                && pending.data == request.data
+                        })
+                }
+                UserVfsRequest::Truncate(request) => {
+                    managed.key.slot == request.owner_slot
+                        && managed.key.incarnation == request.owner_instance
+                        && managed.task_id == request.task_id
+                        && managed.process.pid == request.pid
+                        && managed.blocked_on == BlockReason::FileTruncate
+                        && managed.pending_file_truncate.is_some_and(|pending| {
+                            pending.request_id == request.request_id
+                                && pending.handle == request.handle
+                                && pending.path == request.path
+                        })
+                }
+                UserVfsRequest::ReadDirectory(request) => {
+                    managed.key.slot == request.owner_slot
+                        && managed.key.incarnation == request.owner_instance
+                        && managed.task_id == request.task_id
+                        && managed.process.pid == request.pid
+                        && managed.blocked_on == BlockReason::DirectoryRead
+                        && managed.pending_directory_read.is_some_and(|pending| {
+                            pending.request_id == request.request_id
+                                && pending.handle == request.handle
+                                && pending.path == request.path
+                                && pending.cursor == request.cursor
+                        })
+                }
+                UserVfsRequest::CreateDirectory(request) => {
+                    namespace_request_active(managed, request, BlockReason::DirectoryCreate)
+                }
+                UserVfsRequest::RemovePath(request) => {
+                    namespace_request_active(managed, request, BlockReason::PathRemove)
+                }
+            }
+        })
+    }
+
+    pub fn lifecycle_request_active(&self, request: UserLifecycleRequest) -> bool {
+        match request {
+            UserLifecycleRequest::Launch(request) => self.slots.iter().flatten().any(|managed| {
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.owner_task_id
+                    && managed.process.pid == request.owner_pid
+                    && managed.state == ManagedState::Waiting
+                    && !managed.process.completed
+                    && managed.blocked_on == BlockReason::ProcessLaunch
+                    && managed.pending_process_launch
+                        == Some(PendingProcessLaunch {
+                            request_id: request.request_id,
+                            image: request.image,
+                            mode: request.mode,
+                        })
+            }),
+        }
+    }
+}
+
+fn namespace_request_active(
+    managed: &ManagedProcess,
+    request: NamespaceMutationRequest,
+    reason: BlockReason,
+) -> bool {
+    managed.key.slot == request.owner_slot
+        && managed.key.incarnation == request.owner_instance
+        && managed.task_id == request.task_id
+        && managed.process.pid == request.pid
+        && managed.blocked_on == reason
+        && managed.pending_namespace_mutation
+            == Some(PendingNamespaceMutation {
+                request_id: request.request_id,
+                parent: request.parent,
+                target: request.target,
+                handle: request.handle,
+            })
+}
+
+fn managed_task_state(state: ManagedState) -> TaskState {
+    match state {
+        ManagedState::Ready => TaskState::Ready,
+        ManagedState::Sleeping => TaskState::Sleeping,
+        ManagedState::Waiting => TaskState::Waiting,
+        ManagedState::Exited => TaskState::Exited,
+        ManagedState::Faulted => TaskState::Faulted,
+        ManagedState::Killed => TaskState::Killed,
     }
 }
 
@@ -2253,9 +3862,30 @@ fn process_update(managed: &ManagedProcess) -> ProcessUpdate {
         exit_code: managed.process.exit_code,
         preemptions: managed.process.preemptions,
         output: FixedText::empty(),
-        console_process: managed.process.console_handle != 0,
+        console_process: managed.console_process,
         console: None,
         vfs_request: None,
+        lifecycle_request: None,
+    }
+}
+
+fn managed_state_abi(state: ManagedState) -> u64 {
+    match state {
+        ManagedState::Ready => USER_PROCESS_STATE_READY,
+        ManagedState::Sleeping => USER_PROCESS_STATE_SLEEPING,
+        ManagedState::Waiting => USER_PROCESS_STATE_WAITING,
+        ManagedState::Exited => USER_PROCESS_STATE_EXITED,
+        ManagedState::Faulted => USER_PROCESS_STATE_FAULTED,
+        ManagedState::Killed => USER_PROCESS_STATE_KILLED,
+    }
+}
+
+fn user_process_status_bytes(status: &UserProcessStatus) -> &[u8] {
+    unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::from_ref(status).cast::<u8>(),
+            core::mem::size_of::<UserProcessStatus>(),
+        )
     }
 }
 
@@ -2395,7 +4025,7 @@ pub fn syscall_handler() -> unsafe extern "C" fn() {
     genos_syscall_stub
 }
 
-pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
+pub fn run_probe(elf_bytes: &'static [u8]) {
     unsafe {
         core::ptr::addr_of_mut!(USER_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
         core::ptr::addr_of_mut!(USER_ELF_LENGTH).write(elf_bytes.len());
@@ -2413,6 +4043,19 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     crate::serial::println("");
     let first = require_process(build_process(2, TOKEN_A, elf_bytes));
     let second = require_process(build_process(3, TOKEN_B, elf_bytes));
+    let switch_benchmark = paging::benchmark_address_space_switch(first.space, 32)
+        .filter(|result| {
+            result.min_pair_cycles > 0 && result.average_pair_cycles >= result.min_pair_cycles
+        })
+        .unwrap_or_else(|| fail("SCHED_CONTEXT_BENCH_FAILED"));
+    crate::serial::print("SCHED_CONTEXT_BENCH switches=");
+    crate::serial::print_u64(u64::from(switch_benchmark.samples) * 2);
+    crate::serial::print(" min_pair_cycles=");
+    crate::serial::print_u64(switch_benchmark.min_pair_cycles);
+    crate::serial::print(" avg_pair_cycles=");
+    crate::serial::print_u64(switch_benchmark.average_pair_cycles);
+    crate::serial::println("");
+    crate::serial::println("SCHED_CONTEXT_BENCH_OK");
     let mut processes = [faulting, first, second];
     crate::serial::println("ADDRESS_SPACES_READY count=3");
 
@@ -2435,6 +4078,13 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::StatHandle { .. }
                 | ProcessEvent::CloseHandle(_)
                 | ProcessEvent::WriteHandle { .. }
+                | ProcessEvent::TruncateHandle { .. }
+                | ProcessEvent::CreateDirectory { .. }
+                | ProcessEvent::RemovePath { .. }
+                | ProcessEvent::ProcessLaunch { .. }
+                | ProcessEvent::ProcessStatus { .. }
+                | ProcessEvent::ProcessKill { .. }
+                | ProcessEvent::ProcessReap { .. }
                 | ProcessEvent::WaitInput { .. }
                 | ProcessEvent::CreateEndpoint
                 | ProcessEvent::ConnectEndpoint(_)
@@ -2442,8 +4092,8 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::ReceiveEndpoint { .. }
                 | ProcessEvent::CloseEndpoint(_)
                 | ProcessEvent::ConsoleWrite { .. }
-                | ProcessEvent::ConsoleSetInput(_)
-                | ProcessEvent::ConsoleClear => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::ConsoleSetInput { .. }
+                | ProcessEvent::ConsoleClear(_) => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -2454,13 +4104,6 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     if !verify_processes(&processes, switches) {
         fail("USER_ISOLATION_FAILED");
     }
-    let result = UserProbeResult {
-        exit_codes: [
-            processes[0].exit_code,
-            processes[1].exit_code,
-            processes[2].exit_code,
-        ],
-    };
     COMPLETED_PROCESSES.store(PROCESS_COUNT as u8, Ordering::Release);
     TOTAL_YIELDS.store(
         processes
@@ -2486,8 +4129,6 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
     crate::serial::println("USER_FAULT_ISOLATED");
     crate::serial::println("USER_ISOLATION_OK");
     crate::serial::println("USERMODE_READY");
-
-    result
 }
 
 pub fn register_shell_elf(elf_bytes: &'static [u8]) {
@@ -2501,46 +4142,12 @@ pub fn probe_passed() -> bool {
     PROBE_PASSED.load(Ordering::Acquire)
 }
 
-pub fn elf_ready() -> bool {
-    ELF_READY.load(Ordering::Acquire)
-}
-
-pub fn process_count() -> u8 {
-    COMPLETED_PROCESSES
-        .load(Ordering::Acquire)
-        .saturating_add(DYNAMIC_PROCESSES.load(Ordering::Acquire))
-}
-
-pub fn address_space_count() -> u8 {
-    ADDRESS_SPACES.load(Ordering::Acquire)
-}
-
-pub fn yield_count() -> u8 {
-    TOTAL_YIELDS.load(Ordering::Acquire)
-}
-
-pub fn preemption_count() -> u64 {
-    TOTAL_PREEMPTIONS.load(Ordering::Acquire)
-}
-
-pub fn local_fault_count() -> u8 {
-    LOCAL_FAULTS.load(Ordering::Acquire)
-}
-
 pub fn active_process_count() -> u8 {
     ACTIVE_PROCESSES.load(Ordering::Acquire)
 }
 
-pub fn reclaimed_space_count() -> u8 {
-    RECLAIMED_SPACES.load(Ordering::Acquire)
-}
-
 pub fn reclaimed_frame_count() -> u64 {
     RECLAIMED_FRAMES.load(Ordering::Acquire)
-}
-
-pub fn copy_out_passed() -> bool {
-    COPY_OUT_PASSED.load(Ordering::Acquire)
 }
 
 pub fn completed_file_read_count() -> u64 {
@@ -2556,7 +4163,41 @@ pub fn completed_input_wait_count() -> u64 {
 }
 
 pub fn is_user_writable_path(path: &str) -> bool {
-    path.starts_with(USER_WRITABLE_PREFIX) && path.len() > USER_WRITABLE_PREFIX.len()
+    path.len() > USER_WRITABLE_PREFIX.len()
+        && path
+            .get(..USER_WRITABLE_PREFIX.len())
+            .is_some_and(|prefix| paths_equal(prefix, USER_WRITABLE_PREFIX))
+}
+
+fn is_user_writable_directory(path: &str) -> bool {
+    paths_equal(path, USER_WRITABLE_PREFIX.trim_end_matches('/')) || is_user_writable_path(path)
+}
+
+fn paths_equal(left: &str, right: &str) -> bool {
+    left.len() == right.len()
+        && left
+            .bytes()
+            .zip(right.bytes())
+            .all(|(left, right)| left.eq_ignore_ascii_case(&right))
+}
+
+fn join_child_path(parent: FixedText, name: FixedText) -> Option<FixedText> {
+    let name = name.as_str();
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return None;
+    }
+    let separator = if parent.as_str() == "/" { "" } else { "/" };
+    let length = parent
+        .len()
+        .checked_add(separator.len())?
+        .checked_add(name.len())?;
+    if length > USER_PATH_MAX {
+        return None;
+    }
+    let mut target = parent;
+    target.push_str(separator);
+    target.push_str(name);
+    (target.len() == length).then_some(target)
 }
 
 pub fn opened_file_handle_count() -> u64 {
@@ -2613,7 +4254,6 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
 
     let result = LaunchResult {
         pid,
-        exit_code: process.exit_code,
         preemptions: process.preemptions,
     };
     reclaim_process(&mut process).map_err(|_| LaunchError::InvalidResult)?;
@@ -2685,6 +4325,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     const FANIN_RECEIVER_TASK: u32 = 0x1008;
     const FANIN_A_TASK: u32 = 0x1009;
     const FANIN_B_TASK: u32 = 0x100a;
+    const CANCELED_VFS_TASK: u32 = 0x100b;
 
     let reclaimed_before = reclaimed_frame_count();
     let mut manager = ProcessManager::new();
@@ -2897,6 +4538,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     let mut outputs = OutputLatch::new();
     let mut saw_file_wait = false;
     let mut saw_file_exit = false;
+    let mut saw_one_shot_rejection = false;
     let mut file_pid = 0u8;
     let mut read_offsets = [u64::MAX; 2];
     let mut read_count = 0usize;
@@ -2919,7 +4561,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                         })
                     });
                     let mut invalid = request;
-                    invalid.pid = invalid.pid.wrapping_add(1);
+                    invalid.request_id = invalid.request_id.saturating_add(1);
                     if manager.complete_file_open(invalid, info).is_ok() {
                         fail("USER_FILE_OPEN_IDENTITY_FAILED");
                     }
@@ -2927,6 +4569,10 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                     {
                         fail("USER_FILE_OPEN_COMPLETION_FAILED");
                     }
+                    if manager.complete_file_open(request, info).is_ok() {
+                        fail("USER_FILE_OPEN_REPLAY_ACCEPTED");
+                    }
+                    saw_one_shot_rejection = true;
                 }
                 UserVfsRequest::Read(request) => {
                     if request.handle == 0 || read_count >= read_offsets.len() {
@@ -2939,7 +4585,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                         .unwrap_or_else(|_| fail("USER_FILE_LOOKUP_FAILED"));
                     let start = (request.offset as usize).min(data.len());
                     let mut invalid = request;
-                    invalid.offset = invalid.offset.saturating_add(1);
+                    invalid.request_id = invalid.request_id.saturating_add(1);
                     if manager
                         .complete_file_read(invalid, Some(&data[start..]))
                         .is_ok()
@@ -2952,7 +4598,10 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                     }
                 }
                 UserVfsRequest::Write(_) => fail("USER_UNEXPECTED_FILE_WRITE"),
+                UserVfsRequest::Truncate(_) => fail("USER_UNEXPECTED_FILE_TRUNCATE"),
                 UserVfsRequest::ReadDirectory(_) => fail("USER_UNEXPECTED_DIRECTORY_READ"),
+                UserVfsRequest::CreateDirectory(_) => fail("USER_UNEXPECTED_DIRECTORY_CREATE"),
+                UserVfsRequest::RemovePath(_) => fail("USER_UNEXPECTED_PATH_REMOVE"),
             }
         }
         if update.state == ManagedState::Exited && update.exit_code == 0 {
@@ -2963,6 +4612,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     if !saw_file_exit
         || outputs.text(file_pid) != "INIT.ELF used open/read/stat/close"
         || !saw_file_wait
+        || !saw_one_shot_rejection
         || read_count != 2
         || read_offsets != [0, 17]
         || opened_file_handle_count() != opened_before + 1
@@ -2981,6 +4631,43 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     crate::serial::println("USER_FILE_CAPABILITY_OK");
     crate::serial::println("USER_FILE_OFFSET_OK");
     crate::serial::println("USER_FILE_CLOSE_OK");
+    crate::serial::println("USER_ASYNC_ONE_SHOT_OK");
+
+    if vfs.find("/USER/APP.TXT").is_some() || manager.spawn_write_init(CANCELED_VFS_TASK).is_err() {
+        fail("USER_ASYNC_CANCELLATION_SETUP_FAILED");
+    }
+    let mut canceled_request = None;
+    for tick in 113..=119 {
+        let Some(update) = manager.poll(tick) else {
+            continue;
+        };
+        if update.task_id == CANCELED_VFS_TASK {
+            if let Some(request) = update.vfs_request {
+                canceled_request = Some(request);
+                break;
+            }
+        }
+    }
+    let Some(request @ UserVfsRequest::Open(open)) = canceled_request else {
+        fail("USER_ASYNC_CANCELLATION_REQUEST_FAILED");
+    };
+    let mut wrong_id = open;
+    wrong_id.request_id = wrong_id.request_id.saturating_add(1);
+    if open.request_id == 0
+        || manager.vfs_request_active(UserVfsRequest::Open(wrong_id))
+        || !manager.vfs_request_active(request)
+        || !matches!(manager.kill(CANCELED_VFS_TASK), Ok(update) if update.state == ManagedState::Killed)
+        || manager.vfs_request_active(request)
+        || manager.complete_file_open(open, None).is_ok()
+        || vfs.find(open.path.as_str()).is_some()
+        || !matches!(manager.wait(CANCELED_VFS_TASK), Ok(result) if result.state == ManagedState::Killed)
+        || manager.live_count() != 0
+        || active_process_count() != 0
+    {
+        fail("USER_ASYNC_CANCELLATION_FAILED");
+    }
+    crate::serial::println("USER_ASYNC_REQUEST_ID_OK");
+    crate::serial::println("USER_ASYNC_CANCELLATION_OK");
 
     if manager.spawn_write_init(WRITE_TASK).is_err() {
         fail("USER_FILE_WRITE_SPAWN_FAILED");
@@ -3033,7 +4720,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                     write_offsets[write_count] = request.offset;
                     write_count += 1;
                     let mut invalid = request;
-                    invalid.offset = invalid.offset.saturating_add(1);
+                    invalid.request_id = invalid.request_id.saturating_add(1);
                     if manager.complete_file_write(invalid, Some(0)).is_ok() {
                         fail("USER_FILE_WRITE_IDENTITY_FAILED");
                     }
@@ -3059,7 +4746,10 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                         fail("USER_FILE_WRITE_READBACK_FAILED");
                     }
                 }
+                UserVfsRequest::Truncate(_) => fail("USER_UNEXPECTED_FILE_TRUNCATE"),
                 UserVfsRequest::ReadDirectory(_) => fail("USER_UNEXPECTED_DIRECTORY_READ"),
+                UserVfsRequest::CreateDirectory(_) => fail("USER_UNEXPECTED_DIRECTORY_CREATE"),
+                UserVfsRequest::RemovePath(_) => fail("USER_UNEXPECTED_PATH_REMOVE"),
             }
         }
         if update.state == ManagedState::Exited && update.exit_code == 0 {
@@ -3080,7 +4770,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         || !matches!(manager.wait(WRITE_TASK), Ok(result) if result.exit_code == 0)
         || manager.live_count() != 0
         || active_process_count() != 0
-        || reclaimed_frame_count() < reclaimed_before + 90
+        || reclaimed_frame_count() < reclaimed_before + 100
     {
         fail("USER_FILE_WRITE_PROBE_FAILED");
     }
@@ -3154,7 +4844,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         || !matches!(manager.wait(INPUT_CONTENDER_TASK), Ok(result) if result.exit_code == 0)
         || manager.live_count() != 0
         || active_process_count() != 0
-        || reclaimed_frame_count() < reclaimed_before + 110
+        || reclaimed_frame_count() < reclaimed_before + 120
     {
         fail("USER_INPUT_PROBE_FAILED");
     }
@@ -3163,6 +4853,412 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     crate::serial::println("USER_INPUT_OWNERSHIP_OK");
     crate::serial::println("USER_INPUT_WAKE_OK");
     crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
+}
+
+pub fn run_supervisor_cleanup_probe() {
+    run_supervisor_cleanup_case(ManagedState::Exited, 0x1100, 0x1101);
+    run_supervisor_cleanup_case(ManagedState::Faulted, 0x1102, 0x1103);
+    run_supervisor_cleanup_case(ManagedState::Killed, 0x1104, 0x1105);
+    crate::serial::println("USER_SUPERVISOR_POLICY_OK");
+    crate::serial::println("USER_SUPERVISOR_NO_STALE_TASKS_OK");
+    crate::serial::println("USER_SUPERVISOR_NO_STALE_HANDLES_OK");
+    crate::serial::println("USER_SUPERVISOR_PENDING_CANCEL_OK");
+}
+
+pub fn run_transactional_rollback_probe() {
+    let active_before = active_process_count();
+    let reclaimed_before = reclaimed_frame_count();
+    let mut manager = ProcessManager::new();
+    let owner_task = 0x1200;
+    manager
+        .spawn_shell(owner_task)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_SHELL_FAILED"));
+    let owner_index = manager
+        .slots
+        .iter()
+        .position(|slot| {
+            slot.as_ref()
+                .is_some_and(|managed| managed.task_id == owner_task)
+        })
+        .unwrap_or_else(|| fail("USER_ROLLBACK_OWNER_MISSING"));
+    let supervisor = manager.slots[owner_index]
+        .as_ref()
+        .map(|managed| managed.process.lifecycle_handle)
+        .unwrap_or_else(|| fail("USER_ROLLBACK_OWNER_MISSING"));
+
+    for ordinal in 0..PROCESS_HANDLE_CAPACITY {
+        let request = manager
+            .block_process_launch(
+                owner_index,
+                supervisor,
+                USER_PROCESS_IMAGE_INIT,
+                USER_PROCESS_MODE_HOLD,
+            )
+            .unwrap_or_else(|| fail("USER_ROLLBACK_FILL_BLOCK_FAILED"));
+        manager
+            .complete_process_launch(request, Some(0x1210 + ordinal as u32))
+            .unwrap_or_else(|_| fail("USER_ROLLBACK_FILL_LAUNCH_FAILED"));
+    }
+    let full_active = active_process_count();
+    if manager.live_count() != MAX_ASYNC_PROCESSES
+        || manager
+            .block_process_launch(
+                owner_index,
+                supervisor,
+                USER_PROCESS_IMAGE_INIT,
+                USER_PROCESS_MODE_HOLD,
+            )
+            .is_some()
+        || active_process_count() != full_active
+        || !manager.unified_handle_table_is_authoritative()
+    {
+        fail("USER_ROLLBACK_FULL_TABLE_FAILED");
+    }
+    manager
+        .kill(owner_task)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_FULL_CLEANUP_FAILED"));
+    manager
+        .wait(owner_task)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_FULL_REAP_FAILED"));
+    if manager.slots.iter().any(Option::is_some) || active_process_count() != active_before {
+        fail("USER_ROLLBACK_FULL_LEAKED");
+    }
+
+    let owner_task = 0x1220;
+    manager
+        .spawn_shell(owner_task)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_RESTART_FAILED"));
+    let owner_index = manager
+        .slots
+        .iter()
+        .position(|slot| {
+            slot.as_ref()
+                .is_some_and(|managed| managed.task_id == owner_task)
+        })
+        .unwrap_or_else(|| fail("USER_ROLLBACK_OWNER_MISSING"));
+    let supervisor = manager.slots[owner_index]
+        .as_ref()
+        .map(|managed| managed.process.lifecycle_handle)
+        .unwrap_or_else(|| fail("USER_ROLLBACK_OWNER_MISSING"));
+    let failed_request = manager
+        .block_process_launch(
+            owner_index,
+            supervisor,
+            USER_PROCESS_IMAGE_INIT,
+            USER_PROCESS_MODE_HOLD,
+        )
+        .unwrap_or_else(|| fail("USER_ROLLBACK_FAILED_LAUNCH_BLOCK_FAILED"));
+    let active_with_owner = active_process_count();
+    manager
+        .complete_process_launch(failed_request, None)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_FAILED_LAUNCH_COMPLETE_FAILED"));
+    if manager.live_count() != 1
+        || active_process_count() != active_with_owner
+        || manager.slots.iter().flatten().count() != 1
+        || manager.slots[owner_index]
+            .as_ref()
+            .is_none_or(|owner| owner.pending_process_launch.is_some() || owner.handles.len() != 2)
+    {
+        fail("USER_ROLLBACK_FAILED_LAUNCH_LEAKED");
+    }
+
+    let request = manager
+        .block_process_launch(
+            owner_index,
+            supervisor,
+            USER_PROCESS_IMAGE_INIT,
+            USER_PROCESS_MODE_HOLD,
+        )
+        .unwrap_or_else(|| fail("USER_ROLLBACK_COPYOUT_LAUNCH_BLOCK_FAILED"));
+    manager
+        .complete_process_launch(request, Some(0x1221))
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_COPYOUT_LAUNCH_FAILED"));
+    let handle = manager.slots[owner_index]
+        .as_ref()
+        .map(|owner| owner.process.context.rax)
+        .unwrap_or_else(|| fail("USER_ROLLBACK_OWNER_MISSING"));
+    manager.complete_controlled_kill(owner_index, handle);
+    let child_key = manager.slots[owner_index]
+        .as_ref()
+        .and_then(|owner| owner.process_capability(handle))
+        .map(|capability| capability.target)
+        .unwrap_or_else(|| fail("USER_ROLLBACK_HANDLE_MISSING"));
+    manager.complete_controlled_reap(
+        owner_index,
+        handle,
+        paging::USER_STACK_GUARD,
+        core::mem::size_of::<UserProcessStatus>() as u64,
+    );
+    if manager.slots[child_key.slot as usize].is_none()
+        || manager.slots[owner_index]
+            .as_ref()
+            .and_then(|owner| owner.process_capability(handle))
+            .is_none()
+    {
+        fail("USER_ROLLBACK_COPYOUT_REMOVED_AUTHORITY");
+    }
+    manager.complete_controlled_reap(
+        owner_index,
+        handle,
+        paging::USER_DATA + 0x200,
+        core::mem::size_of::<UserProcessStatus>() as u64,
+    );
+    if manager.slots[child_key.slot as usize].is_some()
+        || manager.slots[owner_index]
+            .as_ref()
+            .and_then(|owner| owner.process_capability(handle))
+            .is_some()
+    {
+        fail("USER_ROLLBACK_COPYOUT_COMMIT_FAILED");
+    }
+
+    let canceled = manager
+        .block_file_open(
+            owner_index,
+            FixedText::from_str("/USER/CANCEL.TXT"),
+            USER_FILE_RIGHT_WRITE,
+        )
+        .map(UserVfsRequest::Open)
+        .unwrap_or_else(|| fail("USER_ROLLBACK_CANCEL_BLOCK_FAILED"));
+    manager
+        .kill(owner_task)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_CANCEL_KILL_FAILED"));
+    if manager.vfs_request_active(canceled) {
+        fail("USER_ROLLBACK_CANCEL_STILL_ACTIVE");
+    }
+    manager
+        .wait(owner_task)
+        .unwrap_or_else(|_| fail("USER_ROLLBACK_CANCEL_REAP_FAILED"));
+    if manager.slots.iter().any(Option::is_some)
+        || active_process_count() != active_before
+        || reclaimed_frame_count() < reclaimed_before + 70
+    {
+        fail("USER_ROLLBACK_FINAL_LEAK");
+    }
+    crate::serial::println("USER_ROLLBACK_FULL_TABLE_OK");
+    crate::serial::println("USER_ROLLBACK_LAUNCH_REFUSED_OK");
+    crate::serial::println("USER_ROLLBACK_COPYOUT_OK");
+    crate::serial::println("USER_ROLLBACK_CANCELLATION_OK");
+}
+
+pub fn run_process_generation_stress_probe() {
+    const LAUNCHES: usize = 257;
+    let active_before = active_process_count();
+    let mut manager = ProcessManager::new();
+    let owner_task = 0x1300;
+    manager
+        .spawn_shell(owner_task)
+        .unwrap_or_else(|_| fail("USER_GENERATION_STRESS_SHELL_FAILED"));
+    let owner_index = manager
+        .slots
+        .iter()
+        .position(|slot| {
+            slot.as_ref()
+                .is_some_and(|managed| managed.task_id == owner_task)
+        })
+        .unwrap_or_else(|| fail("USER_GENERATION_STRESS_OWNER_MISSING"));
+    let supervisor = manager.slots[owner_index]
+        .as_ref()
+        .map(|managed| managed.process.lifecycle_handle)
+        .unwrap_or_else(|| fail("USER_GENERATION_STRESS_OWNER_MISSING"));
+    let mut seen_pids = [false; 256];
+    let mut pid_reused = false;
+    let mut previous_incarnation = 0u64;
+    let mut previous_handle = 0u64;
+    let mut first_stale_handle = 0u64;
+
+    for ordinal in 0..LAUNCHES {
+        let request = manager
+            .block_process_launch(
+                owner_index,
+                supervisor,
+                USER_PROCESS_IMAGE_INIT,
+                USER_PROCESS_MODE_HOLD,
+            )
+            .unwrap_or_else(|| fail("USER_GENERATION_STRESS_BLOCK_FAILED"));
+        manager
+            .complete_process_launch(request, Some(0x1400 + ordinal as u32))
+            .unwrap_or_else(|_| fail("USER_GENERATION_STRESS_LAUNCH_FAILED"));
+        let handle = manager.slots[owner_index]
+            .as_ref()
+            .map(|owner| owner.process.context.rax)
+            .unwrap_or_else(|| fail("USER_GENERATION_STRESS_OWNER_MISSING"));
+        let capability = manager.slots[owner_index]
+            .as_ref()
+            .and_then(|owner| owner.process_capability(handle))
+            .unwrap_or_else(|| fail("USER_GENERATION_STRESS_HANDLE_FAILED"));
+        let child = manager.slots[capability.target.slot as usize]
+            .as_ref()
+            .unwrap_or_else(|| fail("USER_GENERATION_STRESS_CHILD_MISSING"));
+        let pid = child.process.pid as usize;
+        pid_reused |= seen_pids[pid];
+        seen_pids[pid] = true;
+        if capability.target.incarnation <= previous_incarnation
+            || handle == previous_handle
+            || (first_stale_handle != 0
+                && manager.slots[owner_index]
+                    .as_ref()
+                    .and_then(|owner| owner.process_capability(first_stale_handle))
+                    .is_some())
+        {
+            fail("USER_GENERATION_STRESS_IDENTITY_CONFUSED");
+        }
+        previous_incarnation = capability.target.incarnation;
+        previous_handle = handle;
+        manager.complete_controlled_kill(owner_index, handle);
+        manager.complete_controlled_reap(
+            owner_index,
+            handle,
+            paging::USER_DATA + 0x200,
+            core::mem::size_of::<UserProcessStatus>() as u64,
+        );
+        if ordinal == 0 {
+            first_stale_handle = handle;
+        }
+        if manager.slots.iter().flatten().count() != 1
+            || manager.slots[owner_index].as_ref().is_none_or(|owner| {
+                owner.process_capability(handle).is_some() || !owner.handle_table_is_consistent()
+            })
+        {
+            fail("USER_GENERATION_STRESS_REAP_LEAKED");
+        }
+    }
+    if !pid_reused || first_stale_handle == 0 {
+        fail("USER_GENERATION_STRESS_NO_PID_REUSE");
+    }
+    manager
+        .kill(owner_task)
+        .unwrap_or_else(|_| fail("USER_GENERATION_STRESS_CLEANUP_FAILED"));
+    manager
+        .wait(owner_task)
+        .unwrap_or_else(|_| fail("USER_GENERATION_STRESS_REAP_FAILED"));
+    if active_process_count() != active_before || manager.slots.iter().any(Option::is_some) {
+        fail("USER_GENERATION_STRESS_FINAL_LEAK");
+    }
+    crate::serial::println("USER_PROCESS_GENERATION_STRESS_OK launches=257");
+    crate::serial::println("USER_PID_REUSE_SAFE_OK");
+    crate::serial::println("USER_STALE_PROCESS_HANDLE_REJECTED_OK");
+}
+
+fn run_supervisor_cleanup_case(state: ManagedState, owner_task: u32, child_task: u32) {
+    let active_before = active_process_count();
+    let reclaimed_before = reclaimed_frame_count();
+    let mut manager = ProcessManager::new();
+    manager
+        .spawn_shell(owner_task)
+        .unwrap_or_else(|_| fail("USER_SUPERVISOR_PROBE_SPAWN_FAILED"));
+    let owner_index = manager
+        .slots
+        .iter()
+        .position(|slot| {
+            slot.as_ref()
+                .is_some_and(|managed| managed.task_id == owner_task)
+        })
+        .unwrap_or_else(|| fail("USER_SUPERVISOR_PROBE_OWNER_MISSING"));
+    let (owner_key, supervisor) = manager.slots[owner_index]
+        .as_ref()
+        .map(|managed| (managed.key, managed.process.lifecycle_handle))
+        .unwrap_or_else(|| fail("USER_SUPERVISOR_PROBE_OWNER_MISSING"));
+    let launch = manager
+        .block_process_launch(
+            owner_index,
+            supervisor,
+            USER_PROCESS_IMAGE_INIT,
+            USER_PROCESS_MODE_HOLD,
+        )
+        .unwrap_or_else(|| fail("USER_SUPERVISOR_PROBE_LAUNCH_BLOCK_FAILED"));
+    manager
+        .complete_process_launch(launch, Some(child_task))
+        .unwrap_or_else(|_| fail("USER_SUPERVISOR_PROBE_LAUNCH_FAILED"));
+    if !manager
+        .slots
+        .iter()
+        .flatten()
+        .any(|managed| managed.task_id == child_task && managed.parent_key == Some(owner_key))
+    {
+        fail("USER_SUPERVISOR_PROBE_CHILD_MISSING");
+    }
+    let canceled = manager
+        .block_process_launch(
+            owner_index,
+            supervisor,
+            USER_PROCESS_IMAGE_INIT,
+            USER_PROCESS_MODE_HOLD,
+        )
+        .map(UserLifecycleRequest::Launch)
+        .unwrap_or_else(|| fail("USER_SUPERVISOR_PROBE_CANCEL_BLOCK_FAILED"));
+    match state {
+        ManagedState::Killed => {
+            if !matches!(manager.kill(owner_task), Ok(update) if update.state == ManagedState::Killed)
+            {
+                fail("USER_SUPERVISOR_PROBE_KILL_FAILED");
+            }
+        }
+        ManagedState::Exited | ManagedState::Faulted => {
+            let managed = manager.slots[owner_index]
+                .as_mut()
+                .unwrap_or_else(|| fail("USER_SUPERVISOR_PROBE_OWNER_MISSING"));
+            managed.process.completed = true;
+            managed.process.event = if state == ManagedState::Faulted {
+                ProcessEvent::Fault
+            } else {
+                ProcessEvent::Exit
+            };
+            managed.process.exit_code = if state == ManagedState::Faulted {
+                142
+            } else {
+                0
+            };
+            managed.process.completion_order =
+                COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+            manager.complete_terminal(owner_index, state);
+        }
+        _ => fail("USER_SUPERVISOR_PROBE_STATE_INVALID"),
+    }
+    let owner = manager.slots[owner_index]
+        .as_ref()
+        .unwrap_or_else(|| fail("USER_SUPERVISOR_PROBE_OWNER_MISSING"));
+    let mut snapshot = TaskSnapshotSet::new();
+    manager.append_task_snapshots(&mut snapshot);
+    if owner.state != state
+        || !owner.process.completed
+        || !owner.resources_are_revoked()
+        || manager.lifecycle_request_active(canceled)
+        || manager
+            .slots
+            .iter()
+            .flatten()
+            .any(|managed| managed.parent_key == Some(owner_key))
+        || manager.live_count() != 0
+        || !manager.unified_handle_table_is_authoritative()
+        || !manager.task_snapshots_match(&snapshot)
+        || snapshot.class_len(TaskClass::User) != 1
+        || snapshot
+            .find(owner_task)
+            .is_none_or(|task| task.state != managed_task_state(state))
+        || reclaimed_frame_count() < reclaimed_before + 20
+    {
+        fail("USER_SUPERVISOR_PROBE_CLEANUP_FAILED");
+    }
+    let waited = manager
+        .wait(owner_task)
+        .unwrap_or_else(|_| fail("USER_SUPERVISOR_PROBE_REAP_FAILED"));
+    let mut empty_snapshot = TaskSnapshotSet::new();
+    manager.append_task_snapshots(&mut empty_snapshot);
+    if waited.state != state
+        || manager.slots.iter().any(Option::is_some)
+        || empty_snapshot.class_len(TaskClass::User) != 0
+        || active_process_count() != active_before
+    {
+        fail("USER_SUPERVISOR_PROBE_STALE_STATE_FAILED");
+    }
+    crate::serial::print("USER_SUPERVISOR_CLEANUP_OK mode=");
+    crate::serial::println(match state {
+        ManagedState::Exited => "exit",
+        ManagedState::Faulted => "fault",
+        ManagedState::Killed => "kill",
+        _ => "invalid",
+    });
 }
 
 fn user_elf() -> Result<&'static [u8], LaunchError> {
@@ -3196,6 +5292,7 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
     let mut data_frame = 0u64;
     let mut segment_count = 0u8;
     let mut page_count = 0u8;
+    let mut executable_pages = 0u64;
     for segment in image.segments() {
         let segment = segment.map_err(|_| ProcessBuildError::InvalidElf)?;
         let writable = segment.flags & FLAG_WRITE != 0;
@@ -3228,6 +5325,14 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
         let pages = segment.memory_size.div_ceil(paging::PAGE_SIZE);
         if pages == 0 || pages > 16 {
             return Err(ProcessBuildError::InvalidLayout);
+        }
+        if executable {
+            executable_pages = executable_pages
+                .checked_add(pages)
+                .ok_or(ProcessBuildError::InvalidLayout)?;
+            if executable_pages > USER_EXECUTABLE_PAGE_CAPACITY {
+                return Err(ProcessBuildError::InvalidLayout);
+            }
         }
         for page in 0..pages {
             let virtual_address = segment.virtual_address + page * paging::PAGE_SIZE;
@@ -3350,6 +5455,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         output: FixedText::empty(),
         output_pending: false,
         console_handle: 0,
+        lifecycle_handle: 0,
         frames_released: false,
         killed: false,
         completed: false,
@@ -3562,6 +5668,10 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 channel_message_size: USER_CHANNEL_MESSAGE_SIZE,
                 directory_entry_size: core::mem::size_of::<UserDirectoryEntry>() as u64,
                 max_path_length: USER_PATH_MAX as u64,
+                process_status_size: core::mem::size_of::<UserProcessStatus>() as u64,
+                process_handle_capacity: USER_PROCESS_HANDLE_CAPACITY as u64,
+                image_layout_version: USER_IMAGE_LAYOUT_VERSION,
+                executable_page_capacity: USER_EXECUTABLE_PAGE_CAPACITY,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -3693,6 +5803,104 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 0
             }
         }
+        Ok(SyscallAction::TruncateHandle { handle }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::TruncateHandle { handle };
+            1
+        }
+        Ok(SyscallAction::CreateDirectory {
+            parent,
+            name_address,
+            name_length,
+        }) => {
+            if let Some(name) = copy_user_name(process, name_address, name_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::CreateDirectory { parent, name };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::RemovePath {
+            parent,
+            name_address,
+            name_length,
+        }) => {
+            if let Some(name) = copy_user_name(process, name_address, name_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::RemovePath { parent, name };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::NetworkConfig {
+            output_address,
+            output_length,
+        }) => {
+            let result = network::config().filter(|_| {
+                output_length as usize == core::mem::size_of::<UserNetworkConfig>()
+                    && valid_user_data_buffer(process, output_address, output_length)
+            });
+            frame.rax = result
+                .filter(|config| {
+                    let bytes = unsafe {
+                        core::slice::from_raw_parts(
+                            core::ptr::from_ref(config).cast::<u8>(),
+                            core::mem::size_of::<UserNetworkConfig>(),
+                        )
+                    };
+                    copy_to_user_data(process, output_address, bytes)
+                })
+                .map(|_| output_length)
+                .unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+            0
+        }
+        Ok(SyscallAction::UdpExchange {
+            target,
+            port,
+            input_address,
+            input_length,
+            output_address,
+            output_capacity,
+        }) => {
+            frame.rax = complete_network_exchange(
+                process,
+                false,
+                target,
+                port,
+                input_address,
+                input_length,
+                output_address,
+                output_capacity,
+            );
+            0
+        }
+        Ok(SyscallAction::TcpExchange {
+            target,
+            port,
+            input_address,
+            input_length,
+            output_address,
+            output_capacity,
+        }) => {
+            frame.rax = complete_network_exchange(
+                process,
+                true,
+                target,
+                port,
+                input_address,
+                input_length,
+                output_address,
+                output_capacity,
+            );
+            0
+        }
         Ok(SyscallAction::WaitInput {
             output_address,
             output_length,
@@ -3772,7 +5980,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 ) {
                     frame.rax = 0;
                     process.context = *frame;
-                    process.event = ProcessEvent::ConsoleWrite { text, kind };
+                    process.event = ProcessEvent::ConsoleWrite { handle, text, kind };
                     return 1;
                 }
             }
@@ -3793,7 +6001,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 if let Some(text) = text {
                     frame.rax = 0;
                     process.context = *frame;
-                    process.event = ProcessEvent::ConsoleSetInput(text);
+                    process.event = ProcessEvent::ConsoleSetInput { handle, text };
                     return 1;
                 }
             }
@@ -3804,7 +6012,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             if syscall::console_capability_valid(process.console_handle, handle) {
                 frame.rax = 0;
                 process.context = *frame;
-                process.event = ProcessEvent::ConsoleClear;
+                process.event = ProcessEvent::ConsoleClear(handle);
                 1
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -3825,6 +6033,69 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 process.event = ProcessEvent::ReadDirectory {
                     handle,
                     cursor,
+                    address: output_address,
+                    length: output_length,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::ProcessLaunch {
+            supervisor,
+            image,
+            mode,
+        }) => {
+            if syscall::lifecycle_capability_valid(process.lifecycle_handle, supervisor) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ProcessLaunch {
+                    supervisor,
+                    image,
+                    mode,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::ProcessStatus {
+            handle,
+            output_address,
+            output_length,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ProcessStatus {
+                    handle,
+                    address: output_address,
+                    length: output_length,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::ProcessKill { handle }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::ProcessKill { handle };
+            1
+        }
+        Ok(SyscallAction::ProcessReap {
+            handle,
+            output_address,
+            output_length,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ProcessReap {
+                    handle,
                     address: output_address,
                     length: output_length,
                 };
@@ -3952,6 +6223,36 @@ fn copy_user_bytes(process: &UserProcess, address: u64, length: u64) -> Option<F
     Some(data)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn complete_network_exchange(
+    process: &UserProcess,
+    tcp: bool,
+    target: u32,
+    port: u16,
+    input_address: u64,
+    input_length: u64,
+    output_address: u64,
+    output_capacity: u64,
+) -> u64 {
+    let Some(input) = copy_user_bytes(process, input_address, input_length) else {
+        return syscall::error_code(syscall::SyscallError::InvalidArgument);
+    };
+    if !valid_user_data_buffer(process, output_address, output_capacity) {
+        return syscall::error_code(syscall::SyscallError::InvalidArgument);
+    }
+    let mut output = [0u8; USER_FILE_READ_MAX];
+    let capacity = (output_capacity as usize).min(output.len());
+    let result = if tcp {
+        network::tcp_exchange(target, port, input.as_slice(), &mut output[..capacity])
+    } else {
+        network::udp_exchange(target, port, input.as_slice(), &mut output[..capacity])
+    };
+    result
+        .filter(|length| copy_to_user_data(process, output_address, &output[..*length]))
+        .map(|length| length as u64)
+        .unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable))
+}
+
 fn copy_user_path(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
     let path = copy_user_text(process, address, length)?;
     if !path.as_str().starts_with('/')
@@ -3963,6 +6264,20 @@ fn copy_user_path(process: &UserProcess, address: u64, length: u64) -> Option<Fi
         return None;
     }
     Some(path)
+}
+
+fn copy_user_name(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
+    let name = copy_user_text(process, address, length)?;
+    if name.as_str() == "."
+        || name.as_str() == ".."
+        || !name
+            .as_str()
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(name)
 }
 
 fn valid_user_data_buffer(process: &UserProcess, address: u64, length: u64) -> bool {
@@ -4383,5 +6698,26 @@ mod tests {
         // The reissued endpoint carries a fresh generation, so send handles held
         // against the closed one stay unusable even in the same slot.
         assert_eq!(state.published_generation(), Some(2));
+    }
+
+    #[test]
+    fn namespace_children_stay_beneath_the_owned_directory() {
+        let parent = FixedText::from_str("/USER/PROJECTS");
+        assert_eq!(
+            join_child_path(parent, FixedText::from_str("GENOS"))
+                .expect("valid child")
+                .as_str(),
+            "/USER/PROJECTS/GENOS"
+        );
+        assert!(join_child_path(parent, FixedText::from_str("..")).is_none());
+        assert!(join_child_path(parent, FixedText::from_str("nested/name")).is_none());
+        assert!(paths_equal("/USER/NOTE.TXT", "/user/note.txt"));
+        assert!(is_user_writable_path("/user/note.txt"));
+        assert!(is_user_writable_directory("/user"));
+        assert!(join_child_path(
+            FixedText::from_str("/USER/ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRST"),
+            FixedText::from_str("TOO-LONG")
+        )
+        .is_none());
     }
 }

@@ -8,18 +8,14 @@ mod elf;
 use alloc::vec::Vec;
 use core::ptr::{addr_of_mut, copy_nonoverlapping};
 use core::{mem::size_of, panic::PanicInfo, time::Duration};
-use genos_abi::{
-    BootInfo, FramebufferInfo, MemoryRegion, MemoryRegionKind, PixelFormat, BOOTLOADER_VERSION,
-    MAX_MEMORY_REGIONS,
-};
+use genos_abi::{BootInfo, MemoryRegion, MemoryRegionKind, BOOTLOADER_VERSION, MAX_MEMORY_REGIONS};
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
-use uefi::proto::console::gop::{GraphicsOutput, PixelFormat as UefiPixelFormat};
 use uefi::runtime::ResetType;
 use uefi::{prelude::*, CStr16};
 
-const CMDLINE: &str = "root=initrd console=fb";
+const CMDLINE: &str = "root=initrd console=serial ui=off";
 
 type KernelEntry = extern "sysv64" fn(&'static BootInfo) -> !;
 
@@ -60,8 +56,6 @@ fn boot_main() -> Result<(), Status> {
     )
     .unwrap_or_else(Vec::new);
 
-    uefi::println!("Initializing framebuffer");
-    let framebuffer = init_framebuffer()?;
     uefi::println!("Loading kernel ELF");
     let loaded_kernel = elf::load_kernel(&kernel)?;
     uefi::println!("Loading initrd");
@@ -70,7 +64,6 @@ fn boot_main() -> Result<(), Status> {
     let boot_info_ptr = allocate_boot_info()?;
     let mut boot_info = BootInfo::empty();
     boot_info.bootloader_version = BOOTLOADER_VERSION;
-    boot_info.framebuffer = framebuffer;
     boot_info.initrd = initrd_info;
     boot_info.set_cmdline(CMDLINE);
 
@@ -97,30 +90,6 @@ fn read_first(fs: &mut FileSystem, paths: &[&CStr16]) -> Option<Vec<u8>> {
         }
     }
     None
-}
-
-fn init_framebuffer() -> Result<FramebufferInfo, Status> {
-    let gop_handle = boot::get_handle_for_protocol::<GraphicsOutput>().map_err(|e| e.status())?;
-    let mut gop =
-        boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle).map_err(|e| e.status())?;
-    let mode = gop.current_mode_info();
-    let (width, height) = mode.resolution();
-    let stride = mode.stride();
-    let pixel_format = match mode.pixel_format() {
-        UefiPixelFormat::Rgb => PixelFormat::Rgb,
-        UefiPixelFormat::Bgr => PixelFormat::Bgr,
-        UefiPixelFormat::Bitmask => PixelFormat::Bitmask,
-        _ => PixelFormat::Unknown,
-    };
-    let mut fb = gop.frame_buffer();
-    Ok(FramebufferInfo {
-        base: fb.as_mut_ptr() as u64,
-        size: fb.size() as u64,
-        width: width as u32,
-        height: height as u32,
-        stride: stride as u32,
-        pixel_format,
-    })
 }
 
 fn load_initrd(bytes: &[u8]) -> Result<genos_abi::InitrdInfo, Status> {

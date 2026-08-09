@@ -16,8 +16,8 @@ pub const PAGE_SIZE: u64 = 4096;
 pub const USER_BASE: u64 = 0x0000_4000_0000_0000;
 pub const USER_CODE: u64 = USER_BASE + 0x1000;
 pub const USER_DATA: u64 = USER_BASE + 0x2000;
-pub const USER_STACK_GUARD: u64 = USER_BASE + 0x7000;
-pub const USER_STACK_BOTTOM: u64 = USER_BASE + 0x8000;
+pub const USER_STACK_GUARD: u64 = USER_BASE + 0xb000;
+pub const USER_STACK_BOTTOM: u64 = USER_BASE + 0xc000;
 pub const USER_STACK_PAGES: usize = 4;
 pub const USER_STACK_TOP: u64 = USER_STACK_BOTTOM + USER_STACK_PAGES as u64 * PAGE_SIZE;
 const USER_PML4_INDEX: usize = 128;
@@ -43,6 +43,13 @@ pub enum PagingError {
     InvalidAddress,
     AddressInUse,
     ActiveAddressSpace,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddressSpaceSwitchBenchmark {
+    pub samples: u32,
+    pub min_pair_cycles: u64,
+    pub average_pair_cycles: u64,
 }
 
 pub fn init_protected_address_space() -> Result<(), PagingError> {
@@ -149,6 +156,40 @@ pub fn activate_kernel() {
 
 pub fn active_root() -> u64 {
     unsafe { *core::ptr::addr_of!(ACTIVE_ROOT) }
+}
+
+pub fn benchmark_address_space_switch(
+    space: AddressSpace,
+    samples: u32,
+) -> Option<AddressSpaceSwitchBenchmark> {
+    if samples == 0 || unsafe { *core::ptr::addr_of!(KERNEL_ROOT) } == 0 {
+        return None;
+    }
+
+    let interrupts_were_enabled = crate::arch::interrupts_enabled();
+    crate::arch::disable_interrupts();
+    activate_kernel();
+
+    let mut total_cycles = 0u64;
+    let mut min_pair_cycles = u64::MAX;
+    for _ in 0..samples {
+        let started = crate::arch::timestamp_cycles();
+        activate(space);
+        activate_kernel();
+        let elapsed = crate::arch::timestamp_cycles().saturating_sub(started);
+        total_cycles = total_cycles.saturating_add(elapsed);
+        min_pair_cycles = min_pair_cycles.min(elapsed);
+    }
+
+    if interrupts_were_enabled {
+        crate::arch::enable_interrupts();
+    }
+
+    Some(AddressSpaceSwitchBenchmark {
+        samples,
+        min_pair_cycles,
+        average_pair_cycles: total_cycles / u64::from(samples),
+    })
 }
 
 pub fn translate(space: AddressSpace, virtual_address: u64) -> Option<u64> {

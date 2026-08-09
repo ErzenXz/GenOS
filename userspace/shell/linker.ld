@@ -28,7 +28,7 @@ SECTIONS
         *(.rodata .rodata.*)
         *(.lrodata .lrodata.*)
     } :text
-    ASSERT(SIZEOF(.text) <= 16K, "GenOS shell text exceeds four pages")
+    ASSERT(SIZEOF(.text) <= 32K, "GenOS shell text exceeds eight pages")
 
     /DISCARD/ : {
         *(.eh_frame)

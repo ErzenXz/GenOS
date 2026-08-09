@@ -10,7 +10,7 @@ fn boot_info_defaults_are_versioned() {
 #[test]
 fn cmdline_is_bounded() {
     let mut info = BootInfo::empty();
-    info.set_cmdline("root=initrd console=fb");
-    assert_eq!(info.cmdline_len, 22);
+    info.set_cmdline("root=initrd console=serial ui=off");
+    assert_eq!(info.cmdline_len, 33);
     assert_eq!(&info.cmdline[..4], b"root");
 }

@@ -212,6 +212,21 @@ pub fn interrupts_enabled() -> bool {
     flags & (1 << 9) != 0
 }
 
+pub fn timestamp_cycles() -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        asm!(
+            "lfence",
+            "rdtsc",
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
 pub fn halt_loop() -> ! {
     loop {
         unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)) };
@@ -242,10 +257,26 @@ pub unsafe fn inb(port: u16) -> u8 {
     value
 }
 
+pub unsafe fn inw(port: u16) -> u16 {
+    let value: u16;
+    asm!("in ax, dx", out("ax") value, in("dx") port, options(nomem, nostack, preserves_flags));
+    value
+}
+
+pub unsafe fn inl(port: u16) -> u32 {
+    let value: u32;
+    asm!("in eax, dx", out("eax") value, in("dx") port, options(nomem, nostack, preserves_flags));
+    value
+}
+
 pub unsafe fn outb(port: u16, value: u8) {
     asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
 }
 
 pub unsafe fn outw(port: u16, value: u16) {
     asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack, preserves_flags));
+}
+
+pub unsafe fn outl(port: u16, value: u32) {
+    asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags));
 }

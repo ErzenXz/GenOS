@@ -1,25 +1,29 @@
 use genos_abi::{
-    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserProcessHeader,
-    UserSystemInfo, USER_ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE, USER_CONSOLE_LINE_ERROR,
-    USER_CONSOLE_LINE_OUTPUT, USER_CONSOLE_LINE_PROMPT, USER_CONSOLE_LINE_STATUS,
-    USER_CONSOLE_TEXT_MAX, USER_ENDPOINT_HANDLE_CAPACITY, USER_ENDPOINT_QUEUE_CAPACITY,
-    USER_ERROR_INVALID_ARGUMENT, USER_ERROR_UNAVAILABLE, USER_ERROR_UNKNOWN_SYSCALL,
+    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
+    UserProcessHeader, UserProcessStatus, UserSystemInfo, USER_ABI_VERSION,
+    USER_CHANNEL_MESSAGE_SIZE, USER_CONSOLE_LINE_ERROR, USER_CONSOLE_LINE_OUTPUT,
+    USER_CONSOLE_LINE_PROMPT, USER_CONSOLE_LINE_STATUS, USER_CONSOLE_TEXT_MAX,
+    USER_ENDPOINT_HANDLE_CAPACITY, USER_ENDPOINT_QUEUE_CAPACITY, USER_ERROR_INVALID_ARGUMENT,
+    USER_ERROR_UNAVAILABLE, USER_ERROR_UNKNOWN_SYSCALL, USER_EXECUTABLE_PAGE_CAPACITY,
     USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_DIRECTORY, USER_FILE_KIND_REGULAR,
-    USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE,
-    USER_FILE_WRITE_MAX, USER_INPUT_KIND_KEY, USER_INPUT_KIND_POINTER_BUTTON,
-    USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_ALL, USER_INPUT_MASK_KEYBOARD,
-    USER_INPUT_MASK_POINTER, USER_KEY_ARROW_DOWN, USER_KEY_ARROW_UP, USER_KEY_BACKSPACE,
-    USER_KEY_CHAR, USER_KEY_ENTER, USER_KEY_ESCAPE, USER_KEY_TAB, USER_MESSAGE_CAPACITY,
-    USER_PAGE_SIZE, USER_POINTER_BUTTON_LEFT, USER_POINTER_BUTTON_MIDDLE,
+    USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_MANAGE, USER_FILE_RIGHT_READ,
+    USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_IMAGE_LAYOUT_VERSION, USER_INPUT_KIND_KEY,
+    USER_INPUT_KIND_POINTER_BUTTON, USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_ALL,
+    USER_INPUT_MASK_KEYBOARD, USER_INPUT_MASK_POINTER, USER_KEY_ARROW_DOWN, USER_KEY_ARROW_UP,
+    USER_KEY_BACKSPACE, USER_KEY_CHAR, USER_KEY_ENTER, USER_KEY_ESCAPE, USER_KEY_TAB,
+    USER_MESSAGE_CAPACITY, USER_PAGE_SIZE, USER_POINTER_BUTTON_LEFT, USER_POINTER_BUTTON_MIDDLE,
     USER_POINTER_BUTTON_RIGHT, USER_SYSCALL_CLOSE_ENDPOINT, USER_SYSCALL_CONNECT_ENDPOINT,
     USER_SYSCALL_CONSOLE_CLEAR, USER_SYSCALL_CONSOLE_SET_INPUT, USER_SYSCALL_CONSOLE_WRITE,
-    USER_SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_RECEIVE_ENDPOINT, USER_SYSCALL_SEND_ENDPOINT,
-    USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    USER_SYSCALL_CREATE_DIRECTORY, USER_SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_NETWORK_CONFIG,
+    USER_SYSCALL_PROCESS_KILL, USER_SYSCALL_PROCESS_LAUNCH, USER_SYSCALL_PROCESS_REAP,
+    USER_SYSCALL_PROCESS_STATUS, USER_SYSCALL_RECEIVE_ENDPOINT, USER_SYSCALL_REMOVE_PATH,
+    USER_SYSCALL_SEND_ENDPOINT, USER_SYSCALL_TCP_EXCHANGE, USER_SYSCALL_TRUNCATE_HANDLE,
+    USER_SYSCALL_UDP_EXCHANGE, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 
 #[test]
 fn system_info_copy_out_layout_is_stable() {
-    assert_eq!(core::mem::size_of::<UserSystemInfo>(), 104);
+    assert_eq!(core::mem::size_of::<UserSystemInfo>(), 136);
     assert_eq!(core::mem::align_of::<UserSystemInfo>(), 8);
     assert_eq!(core::mem::offset_of!(UserSystemInfo, abi_version), 0);
     assert_eq!(
@@ -46,17 +50,49 @@ fn system_info_copy_out_layout_is_stable() {
         88
     );
     assert_eq!(core::mem::offset_of!(UserSystemInfo, max_path_length), 96);
+    assert_eq!(
+        core::mem::offset_of!(UserSystemInfo, process_status_size),
+        104
+    );
+    assert_eq!(
+        core::mem::offset_of!(UserSystemInfo, process_handle_capacity),
+        112
+    );
+    assert_eq!(
+        core::mem::offset_of!(UserSystemInfo, image_layout_version),
+        120
+    );
+    assert_eq!(
+        core::mem::offset_of!(UserSystemInfo, executable_page_capacity),
+        128
+    );
     assert_eq!(core::mem::size_of::<UserDirectoryEntry>(), 96);
     assert_eq!(core::mem::align_of::<UserDirectoryEntry>(), 8);
     assert_eq!(core::mem::offset_of!(UserDirectoryEntry, name), 32);
     assert_eq!(UserDirectoryEntry::empty().name_length, 0);
-    assert_eq!(USER_ABI_VERSION, 11);
+    assert_eq!(USER_ABI_VERSION, 15);
+    assert_eq!(USER_IMAGE_LAYOUT_VERSION, 2);
+    assert_eq!(USER_EXECUTABLE_PAGE_CAPACITY, 8);
     assert_eq!(USER_MESSAGE_CAPACITY, 4);
     assert_eq!(USER_FILE_READ_MAX, 128);
     assert_eq!(USER_PAGE_SIZE, 4096);
     assert_eq!(USER_TIMER_HZ, 100);
     assert_eq!(USER_FILE_HANDLE_CAPACITY, 4);
     assert_eq!(USER_FILE_WRITE_MAX, 128);
+    assert_eq!(core::mem::size_of::<UserProcessStatus>(), 64);
+    assert_eq!(core::mem::align_of::<UserProcessStatus>(), 8);
+    assert_eq!(core::mem::offset_of!(UserProcessStatus, state), 24);
+    assert_eq!(core::mem::offset_of!(UserProcessStatus, preemptions), 48);
+    assert_eq!(UserProcessStatus::empty().instance_id, 0);
+}
+
+#[test]
+fn network_config_and_exchange_calls_are_stable() {
+    assert_eq!(core::mem::size_of::<UserNetworkConfig>(), 24);
+    assert_eq!(USER_SYSCALL_NETWORK_CONFIG, 35);
+    assert_eq!(USER_SYSCALL_UDP_EXCHANGE, 36);
+    assert_eq!(USER_SYSCALL_TCP_EXCHANGE, 37);
+    assert_eq!(UserNetworkConfig::empty().address, 0);
 }
 
 #[test]
@@ -79,6 +115,13 @@ fn channel_message_layout_and_endpoint_constants_are_stable() {
     assert_eq!(USER_SYSCALL_CONSOLE_SET_INPUT, 25);
     assert_eq!(USER_SYSCALL_CONSOLE_CLEAR, 26);
     assert_eq!(genos_abi::USER_SYSCALL_READ_DIRECTORY, 27);
+    assert_eq!(USER_SYSCALL_TRUNCATE_HANDLE, 28);
+    assert_eq!(USER_SYSCALL_PROCESS_LAUNCH, 29);
+    assert_eq!(USER_SYSCALL_PROCESS_STATUS, 30);
+    assert_eq!(USER_SYSCALL_PROCESS_KILL, 31);
+    assert_eq!(USER_SYSCALL_PROCESS_REAP, 32);
+    assert_eq!(USER_SYSCALL_CREATE_DIRECTORY, 33);
+    assert_eq!(USER_SYSCALL_REMOVE_PATH, 34);
     assert_eq!(USER_CONSOLE_LINE_OUTPUT, 0);
     assert_eq!(USER_CONSOLE_LINE_PROMPT, 1);
     assert_eq!(USER_CONSOLE_LINE_ERROR, 2);
@@ -125,7 +168,8 @@ fn file_stat_and_capability_constants_are_stable() {
     assert_eq!(USER_FILE_KIND_DIRECTORY, 2);
     assert_eq!(USER_FILE_RIGHT_READ, 1);
     assert_eq!(USER_FILE_RIGHT_WRITE, 2);
-    assert_eq!(USER_FILE_RIGHTS_MASK, 3);
+    assert_eq!(USER_FILE_RIGHT_MANAGE, 4);
+    assert_eq!(USER_FILE_RIGHTS_MASK, 7);
     assert_eq!(USER_WRITABLE_PREFIX, "/USER/");
     assert_eq!(USER_ERROR_UNKNOWN_SYSCALL, u64::MAX);
     assert_eq!(USER_ERROR_INVALID_ARGUMENT, u64::MAX - 1);

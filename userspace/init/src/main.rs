@@ -360,6 +360,8 @@ fn file_program() -> Option<u8> {
         || info.channel_message_size != runtime::CHANNEL_MESSAGE_SIZE
         || info.directory_entry_size != core::mem::size_of::<runtime::UserDirectoryEntry>() as u64
         || info.max_path_length != runtime::PATH_MAX as u64
+        || info.process_status_size != core::mem::size_of::<runtime::UserProcessStatus>() as u64
+        || info.process_handle_capacity != runtime::PROCESS_HANDLE_CAPACITY
     {
         return Some(246);
     }

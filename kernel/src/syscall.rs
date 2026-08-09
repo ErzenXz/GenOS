@@ -7,19 +7,29 @@ pub use genos_abi::{
     USER_SYSCALL_CONSOLE_CLEAR as SYSCALL_CONSOLE_CLEAR,
     USER_SYSCALL_CONSOLE_SET_INPUT as SYSCALL_CONSOLE_SET_INPUT,
     USER_SYSCALL_CONSOLE_WRITE as SYSCALL_CONSOLE_WRITE,
+    USER_SYSCALL_CREATE_DIRECTORY as SYSCALL_CREATE_DIRECTORY,
     USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
+    USER_SYSCALL_NETWORK_CONFIG as SYSCALL_NETWORK_CONFIG,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_DIRECTORY as SYSCALL_READ_DIRECTORY,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_PROCESS_KILL as SYSCALL_PROCESS_KILL,
+    USER_SYSCALL_PROCESS_LAUNCH as SYSCALL_PROCESS_LAUNCH,
+    USER_SYSCALL_PROCESS_REAP as SYSCALL_PROCESS_REAP,
+    USER_SYSCALL_PROCESS_STATUS as SYSCALL_PROCESS_STATUS,
+    USER_SYSCALL_READ_DIRECTORY as SYSCALL_READ_DIRECTORY,
     USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE, USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE,
     USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
     USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
-    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
-    USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
-    USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
-    USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
-    USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT, USER_SYSCALL_WRITE as SYSCALL_WRITE,
-    USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
+    USER_SYSCALL_REMOVE_PATH as SYSCALL_REMOVE_PATH, USER_SYSCALL_REPORT as SYSCALL_REPORT,
+    USER_SYSCALL_SEND as SYSCALL_SEND, USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT,
+    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
+    USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO,
+    USER_SYSCALL_TCP_EXCHANGE as SYSCALL_TCP_EXCHANGE,
+    USER_SYSCALL_TRUNCATE_HANDLE as SYSCALL_TRUNCATE_HANDLE,
+    USER_SYSCALL_UDP_EXCHANGE as SYSCALL_UDP_EXCHANGE,
+    USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD, USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT,
+    USER_SYSCALL_WRITE as SYSCALL_WRITE, USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE,
+    USER_SYSCALL_YIELD as SYSCALL_YIELD,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,6 +95,9 @@ pub enum SyscallAction {
         input_address: u64,
         input_length: u64,
     },
+    TruncateHandle {
+        handle: u64,
+    },
     WaitInput {
         output_address: u64,
         output_length: u64,
@@ -126,6 +139,54 @@ pub enum SyscallAction {
         output_address: u64,
         output_length: u64,
     },
+    ProcessLaunch {
+        supervisor: u64,
+        image: u64,
+        mode: u64,
+    },
+    ProcessStatus {
+        handle: u64,
+        output_address: u64,
+        output_length: u64,
+    },
+    ProcessKill {
+        handle: u64,
+    },
+    ProcessReap {
+        handle: u64,
+        output_address: u64,
+        output_length: u64,
+    },
+    CreateDirectory {
+        parent: u64,
+        name_address: u64,
+        name_length: u64,
+    },
+    RemovePath {
+        parent: u64,
+        name_address: u64,
+        name_length: u64,
+    },
+    NetworkConfig {
+        output_address: u64,
+        output_length: u64,
+    },
+    UdpExchange {
+        target: u32,
+        port: u16,
+        input_address: u64,
+        input_length: u64,
+        output_address: u64,
+        output_capacity: u64,
+    },
+    TcpExchange {
+        target: u32,
+        port: u16,
+        input_address: u64,
+        input_length: u64,
+        output_address: u64,
+        output_capacity: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +197,7 @@ pub enum SyscallError {
 }
 
 const CONSOLE_HANDLE_TAG: u64 = 0xc1 << 56;
+const LIFECYCLE_HANDLE_TAG: u64 = 0xc2 << 56;
 
 pub const fn console_handle(pid: u8, generation: u64) -> u64 {
     CONSOLE_HANDLE_TAG | ((pid as u64) << 48) | (generation & 0x0000_ffff_ffff_ffff)
@@ -143,6 +205,14 @@ pub const fn console_handle(pid: u8, generation: u64) -> u64 {
 
 pub const fn console_capability_valid(owned: u64, presented: u64) -> bool {
     owned != 0 && owned == presented && presented & (0xff << 56) == CONSOLE_HANDLE_TAG
+}
+
+pub const fn lifecycle_handle(generation: u64) -> u64 {
+    LIFECYCLE_HANDLE_TAG | (generation & 0x00ff_ffff_ffff_ffff)
+}
+
+pub const fn lifecycle_capability_valid(owned: u64, presented: u64) -> bool {
+    owned != 0 && owned == presented && presented & (0xff << 56) == LIFECYCLE_HANDLE_TAG
 }
 
 pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallError> {
@@ -335,6 +405,114 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 output_length: args[3],
             })
         }
+        SYSCALL_TRUNCATE_HANDLE if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::TruncateHandle { handle: args[0] })
+        }
+        SYSCALL_PROCESS_LAUNCH
+            if args[0] != 0
+                && args[1] == genos_abi::USER_PROCESS_IMAGE_INIT
+                && matches!(
+                    args[2],
+                    genos_abi::USER_PROCESS_MODE_NORMAL | genos_abi::USER_PROCESS_MODE_HOLD
+                )
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::ProcessLaunch {
+                supervisor: args[0],
+                image: args[1],
+                mode: args[2],
+            })
+        }
+        SYSCALL_PROCESS_STATUS
+            if args[0] != 0
+                && args[1] != 0
+                && args[2] == core::mem::size_of::<genos_abi::UserProcessStatus>() as u64
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::ProcessStatus {
+                handle: args[0],
+                output_address: args[1],
+                output_length: args[2],
+            })
+        }
+        SYSCALL_PROCESS_KILL if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::ProcessKill { handle: args[0] })
+        }
+        SYSCALL_PROCESS_REAP
+            if args[0] != 0
+                && args[1] != 0
+                && args[2] == core::mem::size_of::<genos_abi::UserProcessStatus>() as u64
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::ProcessReap {
+                handle: args[0],
+                output_address: args[1],
+                output_length: args[2],
+            })
+        }
+        SYSCALL_CREATE_DIRECTORY
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_DIRECTORY_NAME_MAX as u64).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::CreateDirectory {
+                parent: args[0],
+                name_address: args[1],
+                name_length: args[2],
+            })
+        }
+        SYSCALL_REMOVE_PATH
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_DIRECTORY_NAME_MAX as u64).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::RemovePath {
+                parent: args[0],
+                name_address: args[1],
+                name_length: args[2],
+            })
+        }
+        SYSCALL_NETWORK_CONFIG
+            if args[0] != 0
+                && args[1] == core::mem::size_of::<genos_abi::UserNetworkConfig>() as u64
+                && args[2..] == [0; 4] =>
+        {
+            Ok(SyscallAction::NetworkConfig {
+                output_address: args[0],
+                output_length: args[1],
+            })
+        }
+        SYSCALL_UDP_EXCHANGE | SYSCALL_TCP_EXCHANGE
+            if args[0] <= u32::MAX as u64
+                && (1..=u16::MAX as u64).contains(&args[1])
+                && args[2] != 0
+                && (1..=genos_abi::USER_FILE_WRITE_MAX as u64).contains(&args[3])
+                && args[4] != 0
+                && (1..=genos_abi::USER_FILE_READ_MAX as u64).contains(&args[5]) =>
+        {
+            let action = if number == SYSCALL_UDP_EXCHANGE {
+                SyscallAction::UdpExchange {
+                    target: args[0] as u32,
+                    port: args[1] as u16,
+                    input_address: args[2],
+                    input_length: args[3],
+                    output_address: args[4],
+                    output_capacity: args[5],
+                }
+            } else {
+                SyscallAction::TcpExchange {
+                    target: args[0] as u32,
+                    port: args[1] as u16,
+                    input_address: args[2],
+                    input_length: args[3],
+                    output_address: args[4],
+                    output_capacity: args[5],
+                }
+            };
+            Ok(action)
+        }
         SYSCALL_PING
         | SYSCALL_ABI_VERSION
         | SYSCALL_EXIT
@@ -360,7 +538,17 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_CONSOLE_WRITE
         | SYSCALL_CONSOLE_SET_INPUT
         | SYSCALL_CONSOLE_CLEAR
-        | SYSCALL_READ_DIRECTORY => Err(SyscallError::InvalidArgument),
+        | SYSCALL_READ_DIRECTORY
+        | SYSCALL_TRUNCATE_HANDLE
+        | SYSCALL_PROCESS_LAUNCH
+        | SYSCALL_PROCESS_STATUS
+        | SYSCALL_PROCESS_KILL
+        | SYSCALL_PROCESS_REAP
+        | SYSCALL_CREATE_DIRECTORY
+        | SYSCALL_REMOVE_PATH
+        | SYSCALL_NETWORK_CONFIG
+        | SYSCALL_UDP_EXCHANGE
+        | SYSCALL_TCP_EXCHANGE => Err(SyscallError::InvalidArgument),
         // `SYSCALL_SEND` and `SYSCALL_RECEIVE` stay reserved but unimplemented.
         _ => Err(SyscallError::UnknownNumber),
     }
@@ -402,6 +590,15 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_capabilities_are_tagged_and_exact() {
+        let owned = lifecycle_handle(19);
+        assert!(lifecycle_capability_valid(owned, owned));
+        assert!(!lifecycle_capability_valid(0, 0));
+        assert!(!lifecycle_capability_valid(owned, lifecycle_handle(20)));
+        assert!(!lifecycle_capability_valid(owned, owned & !(0xff << 56)));
+    }
+
+    #[test]
     fn known_calls_have_stable_results() {
         assert_eq!(
             dispatch(SYSCALL_PING, [0; 6]),
@@ -439,10 +636,10 @@ mod tests {
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 104, 0, 0, 0, 0]),
+            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 136, 0, 0, 0, 0]),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 104
+                length: 136
             })
         );
         assert_eq!(
@@ -562,6 +759,54 @@ mod tests {
                 output_length: 96,
             })
         );
+        assert_eq!(
+            dispatch(SYSCALL_TRUNCATE_HANDLE, [0x101, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::TruncateHandle { handle: 0x101 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_PROCESS_LAUNCH, [0xc201, 1, 1, 0, 0, 0]),
+            Ok(SyscallAction::ProcessLaunch {
+                supervisor: 0xc201,
+                image: 1,
+                mode: 1,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_PROCESS_STATUS, [0xd101, 0x6000, 64, 0, 0, 0]),
+            Ok(SyscallAction::ProcessStatus {
+                handle: 0xd101,
+                output_address: 0x6000,
+                output_length: 64,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_PROCESS_KILL, [0xd101, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::ProcessKill { handle: 0xd101 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_PROCESS_REAP, [0xd101, 0x6000, 64, 0, 0, 0]),
+            Ok(SyscallAction::ProcessReap {
+                handle: 0xd101,
+                output_address: 0x6000,
+                output_length: 64,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CREATE_DIRECTORY, [0x101, 0x5000, 5, 0, 0, 0]),
+            Ok(SyscallAction::CreateDirectory {
+                parent: 0x101,
+                name_address: 0x5000,
+                name_length: 5,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_REMOVE_PATH, [0x101, 0x5000, 5, 0, 0, 0]),
+            Ok(SyscallAction::RemovePath {
+                parent: 0x101,
+                name_address: 0x5000,
+                name_length: 5,
+            })
+        );
     }
 
     #[test]
@@ -639,11 +884,23 @@ mod tests {
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(
-            dispatch(SYSCALL_OPEN_FILE_WITH_RIGHTS, [0x5000, 14, 4, 0, 0, 0]),
+            dispatch(SYSCALL_OPEN_FILE_WITH_RIGHTS, [0x5000, 14, 8, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(
             dispatch(SYSCALL_WRITE_HANDLE, [0x101, 0x6000, 129, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_TRUNCATE_HANDLE, [0, 0, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CREATE_DIRECTORY, [0x101, 0, 5, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_REMOVE_PATH, [0x101, 0x5000, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(

@@ -2,7 +2,7 @@ use genos_abi::BootInfo;
 
 use crate::{
     input::MouseState,
-    tasks::TaskRegistry,
+    tasks::TaskSnapshotSet,
     vfs::{NodeKind, RamVfs},
 };
 
@@ -504,7 +504,7 @@ impl DisplayManager {
         }
     }
 
-    pub fn flush(&mut self, tasks: &TaskRegistry) {
+    pub fn flush(&mut self, tasks: &TaskSnapshotSet) {
         if self.dirty_len == 0 && !self.cursor_dirty {
             return;
         }
@@ -530,11 +530,11 @@ impl DisplayManager {
         self.redraw_all(None);
     }
 
-    pub fn redraw_with_tasks(&mut self, tasks: &TaskRegistry) {
+    pub fn redraw_with_tasks(&mut self, tasks: &TaskSnapshotSet) {
         self.redraw_all(Some(tasks));
     }
 
-    fn redraw_all(&mut self, tasks: Option<&TaskRegistry>) {
+    fn redraw_all(&mut self, tasks: Option<&TaskSnapshotSet>) {
         self.fb.desktop_wallpaper();
         let screen = self.fb.bounds();
         if self.cursor == Point::new(0, 0) {
@@ -554,7 +554,7 @@ impl DisplayManager {
         self.cursor_dirty = false;
     }
 
-    fn redraw_region(&mut self, rect: Rect, tasks: &TaskRegistry) {
+    fn redraw_region(&mut self, rect: Rect, tasks: &TaskSnapshotSet) {
         if self.terminal_open
             && self.focus == WindowKind::Terminal
             && !self.input_rect().intersect(rect).is_empty()
@@ -577,7 +577,7 @@ impl DisplayManager {
         }
     }
 
-    fn draw_open_windows(&mut self, tasks: Option<&TaskRegistry>) {
+    fn draw_open_windows(&mut self, tasks: Option<&TaskSnapshotSet>) {
         const WINDOWS: [WindowKind; 5] = [
             WindowKind::Terminal,
             WindowKind::Files,
@@ -595,7 +595,7 @@ impl DisplayManager {
         }
     }
 
-    fn draw_windows_intersecting(&mut self, clip: Rect, tasks: Option<&TaskRegistry>) {
+    fn draw_windows_intersecting(&mut self, clip: Rect, tasks: Option<&TaskSnapshotSet>) {
         const WINDOWS: [WindowKind; 5] = [
             WindowKind::Terminal,
             WindowKind::Files,
@@ -618,7 +618,7 @@ impl DisplayManager {
         }
     }
 
-    fn draw_window(&mut self, kind: WindowKind, tasks: Option<&TaskRegistry>) {
+    fn draw_window(&mut self, kind: WindowKind, tasks: Option<&TaskSnapshotSet>) {
         match kind {
             WindowKind::Terminal => self.draw_terminal_window(self.terminal_window_rect()),
             WindowKind::Files => self.draw_files_window(self.files_window_rect()),
@@ -1123,7 +1123,7 @@ impl DisplayManager {
         }
     }
 
-    fn draw_task_manager_window(&mut self, rect: Rect, tasks: Option<&TaskRegistry>) {
+    fn draw_task_manager_window(&mut self, rect: Rect, tasks: Option<&TaskSnapshotSet>) {
         self.draw_window_frame(rect, "Task Manager / scheduler");
         let body = Rect::new(rect.x + 8, rect.y + 45, rect.width - 16, rect.height - 53);
         self.fb.fill_rect(body, Color::rgb(232, 230, 222));
@@ -1352,7 +1352,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.18",
+            "GenOS 0.42",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1366,7 +1366,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "RING 3 FILE BROWSING  /  DIRECTORY CAPS  /  ABI 11",
+            "RING 3 FILES + JOBS  /  CAPABILITY CONTROL  /  ABI 15",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

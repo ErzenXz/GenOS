@@ -7,9 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-x86__64-565854.svg)](#build-and-run)
 [![Stage](https://img.shields.io/badge/stage-experimental-d6a752.svg)](#project-status)
 
-![GenOS desktop running in QEMU](docs/assets/genos-desktop.png)
-
-GenOS is a from-scratch `x86_64` operating system written in Rust. It boots through its own UEFI loader, enters a `no_std` kernel, initializes memory and interrupts, and opens a native framebuffer desktop with keyboard, mouse, filesystem, task, clock, and window-management support.
+GenOS is a from-scratch `x86_64` operating system written in Rust. It boots through its own UEFI loader, enters a `no_std` kernel, initializes memory and interrupts, mounts durable storage, configures an IPv4 network, and opens a serial terminal backed by an isolated Ring 3 shell. The current build is intentionally server-first and runs without a framebuffer UI.
 
 The long-term goal is ambitious: build an operating system that feels lighter than Windows, more coherent than a typical desktop Linux installation, and simple enough that a curious developer can understand the path from power-on to pixel.
 
@@ -86,37 +84,39 @@ The current GenOS build already contains real operating-system infrastructure:
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 11 userspace coordination, capability-based VFS I/O and messaging, blocking input, console capabilities, and directory enumeration;
-- application output copied from validated user mappings into the desktop shell;
+- ABI 15 userspace coordination, capability-based VFS I/O, namespace mutation, messaging, console access, process lifecycle control, and bounded UDP/TCP exchanges;
+- application output copied from validated user mappings into the serial shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
-- PS/2 keyboard and mouse input with an event queue;
-- Shift, Caps Lock, symbols, and userspace-owned terminal editing;
-- backbuffered framebuffer rendering and dirty-region presentation;
-- native desktop, taskbar, start panel, cursor, and draggable windows;
+- COM1 input/output with userspace-owned terminal editing;
+- host-driven serial command testing through the real Ring 3 input path;
 - bounded kernel-worker lifecycle with PIDs, protected system tasks, and slot reuse;
 - round-robin scheduling with measured CPU slices, sleep/wake deadlines, and context-switch accounting;
 - writable RAM-backed virtual filesystem;
-- Files application backed by live VFS state;
-- Task Manager backed by the kernel task registry;
-- RTC date and clock support;
-- graphics/backbuffer demonstration surface;
-- serial boot diagnostics and long-running QEMU smoke tests.
+- PCI-discovered ATA storage, MBR partitions, write-back caching, dual-generation durable snapshots, repair tooling, and read-only recovery;
+- NE2000, Ethernet, ARP, IPv4/ICMP, UDP/DHCP/DNS, TCP, and ABI 15 Ring 3 network exchanges;
+- serial boot diagnostics and long-running headless QEMU smoke tests.
 
 The build has no host operating-system runtime underneath it. QEMU provides virtual hardware, but the bootloader, kernel, input path, filesystem, task model, drawing, and desktop behavior are GenOS code.
 
-## Desktop controls
+## Serial terminal
 
 | Action | Control |
 | --- | --- |
-| Open or focus an application | Click its desktop or taskbar entry |
-| Move a window | Drag its title bar |
-| Close the active window | Click the close control or press `Escape` |
-| Switch between open applications | Press `Tab` |
+| Start GenOS | Run `cargo xtask run` |
+| Enter a command | Type over the QEMU serial console and press Enter |
+| Edit input | Use printable characters and Backspace |
 | List shell commands | Run `help` |
+| Show network status | Run `net` |
 
-GenOS 0.18 boots `SHELL.ELF` as a long-lived Ring 3 process with its own CR3, guarded stack, task record, and opaque console capability. Keyboard events for the focused terminal wake that process, while `Escape`, `Tab`, the compositor, and the framebuffer remain kernel-owned. The shell maintains the editable command line in private userspace memory and executes `help`, `echo`, `uname`, `clear`, `ls`, and `cat`; filesystem commands accept absolute paths or root-relative names. Directory reads use ABI 11's bounded, cursor-based `read_directory` contract; file content still flows through process-owned read handles. Console and VFS requests block through the desktop coordinator, so Ring 3 never receives a raw kernel pointer or direct filesystem access.
+GenOS 0.42 boots `SHELL.ELF` as a long-lived Ring 3 process with its own CR3, guarded stack, runtime identity, and opaque console, VFS, lifecycle, and network access. COM1 bytes wake that process through the normal input path. The shell owns its eight-command history and executes `help`, `echo`, `uname`, `net`, `clear`, `ls`, `cat`, `stat`, `touch`, `write`, `append`, `mkdir`, `rm`, `run init [hold]`, `ps`, `kill JOB`, and `wait JOB`. ABI 15 preserves the capability-based filesystem and process contracts while adding validated, bounded UDP and TCP exchanges.
 
-This is an incremental shell handoff, not full command parity. Filesystem mutation, process launch/control, history, and system power commands still need capability-backed userspace APIs before their parsers can leave the kernel safely. The old kernel parser remains only as a recovery fallback if the Ring 3 shell is not live.
+Normal filesystem and process-control commands now stay out of Ring 0. If the Ring 3 shell is not live, a separate emergency parser accepts only `help`, `status`, `mem`, `reboot`, and `shutdown`; every normal shell command is rejected at the kernel boundary.
+
+The Stage 3 runtime coordinator now owns task scheduling, process polling, lifecycle launches, VFS completions, and their pending queues independently of the display. `ProcessManager` is the sole userspace lifecycle authority; Task Manager renders immutable snapshots composed from process state and kernel-worker accounting. Every handle and deferred request is bound to its exact caller and operation. Stale, canceled, and replayed work is rejected before external mutation. The shell is the session supervisor: its exit, fault, or kill terminates and reaps every owned child, cancels pending service work, revokes all authority, and removes child task rows before the shell becomes terminal. Boot proofs exercise these boundaries before the framebuffer exists. See [the runtime ownership notes](docs/RUNTIME.md) for the exact policy and remaining cleanup.
+
+Stage 3 closes with transactional failure cleanup, 257 sequential real process launches across PID reuse, and a fresh-QEMU transcript through the actual Ring 3 console path. Stage 4 is complete in GenOS 0.41: PCI discovers the IDE controller, a bounds-checked MBR partition holds alternating 20 KiB `GFS2` snapshots, and an eight-sector write-back cache flushes successful `/USER/` mutations before returning success. The host can inspect or conservatively repair an image, torn generations fall back safely, fully corrupt media is surfaced to Ring 3, explicit read-only recovery preserves files while denying mutation, and `/TMP/SESSION.TXT` remains session-only. See [the storage notes](docs/STORAGE.md) for the exact format and recovery policy.
+
+Stage 5 is complete in GenOS 0.42. The NE2000 path obtains DHCP configuration, resolves next hops with ARP, echoes ICMP, resolves DNS over UDP, and completes a TCP/HTTP exchange from Ring 3. Parsers reject malformed and checksum-invalid packets, and all DHCP, ARP, UDP, and TCP waits have a three-attempt bounded failure policy. See [the networking notes](docs/NETWORKING.md) for the exact protocol and ABI scope.
 
 GenOS 0.16 makes messaging a capability instead of a PID. A process publishes exactly one receive endpoint with `create_endpoint`; every other process must obtain its own send handle with `connect_endpoint` before it can send anything, and holding a raw PID grants nothing. Handles are opaque values that encode a dedicated endpoint tag, the owner PID, a per-process generation, and a slot in a four-entry table, so a guessed, foreign, or stale handle is rejected rather than resolved. The kernel fills in the sender PID of every delivered message, so Ring 3 cannot forge an identity. Each endpoint queue holds four messages and admits at most one per producer, which is what keeps a single noisy producer from starving its peers. A receive on an empty queue leaves the runnable set entirely and is woken by a later send that copies straight into its already-validated buffer. Closing the receive handle unpublishes the endpoint and revokes every remote send handle naming that generation; normal exit, a Ring 3 fault, `kill`, and reap run the same release path.
 
@@ -136,11 +136,12 @@ GenOS kernel
     |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
     |-- userspace               async lifecycle / file I/O / endpoints / Ring 3 shell
+    |-- runtime                 scheduler / process table / VFS service queues
     |-- input                    PS/2 queue / filters / desktop-or-Ring-3 routing
-    |-- storage                  initrd + writable RAM VFS
+    |-- storage                  MBR + ATA cache + durable /USER snapshots + RAM /TMP
     |-- tasks                    registry / state / accounting
     |-- display                  backbuffer / dirty regions / text
-    `-- desktop                  windows / apps / taskbar / console broker
+    `-- desktop                  windows / apps / taskbar / runtime-update renderer
 ```
 
 The system remains intentionally monolithic while its contracts are established, but the hardware-enforced user/kernel boundary now supports a small interactive application lifecycle. It is still an experimental runtime, not a compatibility layer for existing Linux or Windows applications.
@@ -205,7 +206,7 @@ make test
 make clean
 ```
 
-A successful boot writes `GENOS_READY` to the serial console and opens the framebuffer desktop.
+A successful boot writes `SERVER_TERMINAL_READY`, `SERIAL_TERMINAL_READY`, and `GENOS_READY` to the serial console, then presents the `genos>` prompt without opening a graphical display.
 
 ## Repository layout
 
@@ -222,9 +223,10 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, lifecycle, capability-based file, directory, endpoint, and console I/O, plus a persistent Ring 3 shell; mutation and process-control commands move next
-- [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
-- [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
+- [x] **Processes and userspace:** private address spaces, Ring 3, ELF loading, preemption, capability-based file, directory, endpoint, console, and lifecycle I/O, plus a persistent Ring 3 shell with safe `/USER/` file mutation and job control
+- [x] **Runtime cleanup and console-first system:** desktop-independent services, one lifecycle authority, unified handles, and a composable command-line userland
+- [x] **Persistent storage:** PCI-discovered ATA block I/O, MBR partitioning, write-back caching, durable `/USER/` snapshots, conservative repair, and read-only recovery
+- [x] **Networking:** NE2000, packet ownership, Ethernet, ARP, IPv4/ICMP, UDP/DHCP/DNS, TCP, Ring 3 exchanges, and diagnostics
 - [ ] **Security model:** identities, capabilities, isolation, secure update design
 - [ ] **Application platform:** stable SDK, packages, compositor, richer graphics
 - [ ] **Hardware expansion:** ACPI, SMP, USB, NVMe, audio, broader GPU support
@@ -235,7 +237,7 @@ Progress is accepted through working code and measurable criteria, not roadmap l
 
 “Lightweight” needs numbers. As GenOS grows, the project will publish and track:
 
-- boot time to usable desktop;
+- boot time to a usable serial terminal;
 - idle memory footprint;
 - idle wakeups and CPU time;
 - input-to-frame latency;
@@ -244,6 +246,8 @@ Progress is accepted through working code and measurable criteria, not roadmap l
 - regression budgets for every release.
 
 The project will prefer evidence over claims. GenOS should only call itself faster or lighter when repeatable benchmarks demonstrate it.
+
+The boot smoke test now records scheduler evidence directly. `SCHED_DISPATCH_BENCH` reports ready-to-dispatch latency for the round-robin worker policy in ticks, while `SCHED_CONTEXT_BENCH` reports 32 measured kernel-to-process-to-kernel CR3 switch pairs in CPU cycles. These numbers cover scheduler policy and address-space switching only; they are not end-to-end application latency.
 
 ## Contributing
 

@@ -181,45 +181,6 @@ impl Default for ShellBuffer {
 }
 
 #[cfg(test)]
-pub fn classify_command(command: &str) -> LineKind {
-    let command = trim(command);
-    if command.is_empty() {
-        LineKind::Status
-    } else {
-        let name = split_once_space(command).0;
-        match name {
-            "help" | "clear" | "mem" | "pwd" | "cd" | "ls" | "cat" | "touch" | "write"
-            | "append" | "rm" | "mkdir" | "stat" | "tasks" | "ps" | "spawn" | "kill" | "sleep"
-            | "wake" | "sched" | "userabi" | "taskmgr" | "files" | "game" | "demo" | "time"
-            | "apps" | "echo" | "uname" | "reboot" | "shutdown" | "about" | "whoami" | "ui" => {
-                LineKind::Prompt
-            }
-            _ => LineKind::Error,
-        }
-    }
-}
-
-#[cfg(test)]
-fn split_once_space(text: &str) -> (&str, &str) {
-    if let Some(index) = text.find(' ') {
-        (&text[..index], trim(&text[index + 1..]))
-    } else {
-        (text, "")
-    }
-}
-
-#[cfg(test)]
-fn trim(mut text: &str) -> &str {
-    while text.as_bytes().first() == Some(&b' ') {
-        text = &text[1..];
-    }
-    while text.as_bytes().last() == Some(&b' ') {
-        text = &text[..text.len() - 1];
-    }
-    text
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -243,12 +204,5 @@ mod tests {
         assert_eq!(ShellBuffer::wrap_count(0, 12), 1);
         assert_eq!(ShellBuffer::wrap_count(12, 12), 1);
         assert_eq!(ShellBuffer::wrap_count(13, 12), 2);
-    }
-
-    #[test]
-    fn command_classification_marks_unknown_as_error() {
-        assert_eq!(classify_command("help"), LineKind::Prompt);
-        assert_eq!(classify_command("wat"), LineKind::Error);
-        assert_eq!(classify_command("   "), LineKind::Status);
     }
 }

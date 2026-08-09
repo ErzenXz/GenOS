@@ -17,6 +17,7 @@ pub enum VfsError {
     NoSpace,
     IsDirectory,
     NotDirectory,
+    NotEmpty,
     InvalidPath,
     InvalidOffset,
 }
@@ -144,6 +145,15 @@ impl RamVfs {
         Ok(data.len())
     }
 
+    pub fn truncate(&mut self, path: &str) -> Result<(), VfsError> {
+        let index = self.find_index(path).ok_or(VfsError::NotFound)?;
+        if self.nodes[index].kind == NodeKind::Directory {
+            return Err(VfsError::IsDirectory);
+        }
+        self.nodes[index].len = 0;
+        Ok(())
+    }
+
     pub fn read(&self, path: &str) -> Result<&[u8], VfsError> {
         let node = self.find(path).ok_or(VfsError::NotFound)?;
         if node.kind == NodeKind::Directory {
@@ -156,6 +166,15 @@ impl RamVfs {
         let index = self.find_index(path).ok_or(VfsError::NotFound)?;
         if path == "/" {
             return Err(VfsError::InvalidPath);
+        }
+        if self.nodes[index].kind == NodeKind::Directory
+            && self
+                .nodes
+                .iter()
+                .take(self.len)
+                .any(|node| direct_child(self.nodes[index].path(), node.path()))
+        {
+            return Err(VfsError::NotEmpty);
         }
         let mut i = index + 1;
         while i < self.len {
@@ -228,6 +247,15 @@ impl RamVfs {
         }
         if self.find(path).is_some() {
             return Err(VfsError::Exists);
+        }
+        if path != "/" {
+            let slash = path.rfind('/').ok_or(VfsError::InvalidPath)?;
+            let parent_path = if slash == 0 { "/" } else { &path[..slash] };
+            match self.find(parent_path) {
+                Some(parent) if parent.kind == NodeKind::Directory => {}
+                Some(_) => return Err(VfsError::NotDirectory),
+                None => return Err(VfsError::NotFound),
+            }
         }
         if self.len >= MAX_NODES {
             return Err(VfsError::NoSpace);
@@ -334,6 +362,7 @@ mod tests {
             .contains("bytes=11"));
         vfs.remove("/hello.txt").unwrap();
         assert_eq!(vfs.read("/hello.txt"), Err(VfsError::NotFound));
+        assert_eq!(vfs.touch("/missing/file.txt"), Err(VfsError::NotFound));
     }
 
     #[test]
@@ -369,6 +398,21 @@ mod tests {
     }
 
     #[test]
+    fn remove_rejects_non_empty_directories() {
+        let mut vfs = RamVfs::new();
+        vfs.init_root();
+        vfs.mkdir("/USER").unwrap();
+        vfs.mkdir("/USER/DOCS").unwrap();
+        vfs.write("/USER/DOCS/NOTE.TXT", b"hello").unwrap();
+
+        assert_eq!(vfs.remove("/USER/DOCS"), Err(VfsError::NotEmpty));
+        assert_eq!(vfs.read("/USER/DOCS/NOTE.TXT"), Ok(&b"hello"[..]));
+        vfs.remove("/USER/DOCS/NOTE.TXT").unwrap();
+        vfs.remove("/USER/DOCS").unwrap();
+        assert!(vfs.find("/USER/DOCS").is_none());
+    }
+
+    #[test]
     fn offset_writes_overwrite_extend_and_reject_holes() {
         let mut vfs = RamVfs::new();
         vfs.init_root();
@@ -380,5 +424,9 @@ mod tests {
             vfs.write_at("/note.txt", 7, b"gap"),
             Err(VfsError::InvalidOffset)
         );
+        vfs.truncate("/note.txt").unwrap();
+        assert_eq!(vfs.read("/note.txt"), Ok(&b""[..]));
+        assert_eq!(vfs.write_at("/note.txt", 0, b"new"), Ok(3));
+        assert_eq!(vfs.read("/note.txt"), Ok(&b"new"[..]));
     }
 }

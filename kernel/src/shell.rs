@@ -1,47 +1,124 @@
-use core::str;
-
 use genos_abi::BootInfo;
 use kernel::{
     display::{DisplayManager, FixedText, LineKind},
     input::{InputEvent, KeyEvent},
-    tasks::{TaskClass, TaskError, TaskRegistry, TaskState},
-    vfs::{NodeKind, RamVfs, VfsError},
+    recovery::{self, RecoveryCommand},
 };
 
-use crate::{arch, input_hw, interrupts, memory, rtc, serial, userspace};
+use crate::{
+    arch, input_hw, interrupts, memory, rtc,
+    runtime::{RuntimeCoordinator, RuntimeEvent},
+    serial, userspace,
+};
 
-#[derive(Clone, Copy)]
-pub struct TaskIds {
-    pub desktop: u32,
-    pub shell: u32,
-    pub input: u32,
-    pub vfs: u32,
-    pub taskmgr: u32,
-    pub idle: u32,
+pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinator) -> ! {
+    let mut last_tick = interrupts::ticks();
+    let mut irq_tick_marker_sent = false;
+    let mut terminal_idle_marker_sent = false;
+    let mut awaiting_command_completion = false;
+    let mut last_was_cr = false;
+    let mut serial_rx_marker_sent = false;
+    serial::println("");
+    serial::print("genos> ");
+
+    loop {
+        let tick = interrupts::poll_fallback_tick();
+        let mut handled_event = false;
+
+        if runtime.console_process_active() && runtime.console_input_ready() {
+            for _ in 0..16 {
+                let Some(byte) = serial::read_byte() else {
+                    break;
+                };
+                if !serial_rx_marker_sent {
+                    serial::println("SERIAL_RX_OK");
+                    serial_rx_marker_sent = true;
+                }
+                if byte == b'\n' && last_was_cr {
+                    last_was_cr = false;
+                    continue;
+                }
+                last_was_cr = byte == b'\r';
+                let event = match byte {
+                    b'\r' | b'\n' => {
+                        serial::println("");
+                        awaiting_command_completion = true;
+                        InputEvent::Key(KeyEvent::Enter)
+                    }
+                    8 | 0x7f => {
+                        serial::print("\x08 \x08");
+                        InputEvent::Key(KeyEvent::Backspace)
+                    }
+                    b'\t' => InputEvent::Key(KeyEvent::Tab),
+                    0x1b => InputEvent::Key(KeyEvent::Escape),
+                    byte if (0x20..=0x7e).contains(&byte) => {
+                        serial::echo_byte(byte);
+                        InputEvent::Key(KeyEvent::Char(byte))
+                    }
+                    _ => continue,
+                };
+                handled_event = true;
+                runtime.record_input_activity(tick);
+                match runtime.deliver_input(event) {
+                    Ok(Some(update)) => write_terminal_update(update),
+                    Ok(None) => {}
+                    Err(_) => serial::println("terminal input delivery failed"),
+                }
+                break;
+            }
+        }
+
+        if tick != last_tick {
+            let batch = runtime.advance(tick);
+            for event in batch.iter() {
+                match event {
+                    RuntimeEvent::Process(update) => write_terminal_update(update),
+                    RuntimeEvent::Error(_) => serial::println("userspace lifecycle error"),
+                }
+            }
+            last_tick = tick;
+        }
+
+        if awaiting_command_completion && runtime.console_input_ready() {
+            serial::print("genos> ");
+            awaiting_command_completion = false;
+        }
+        if !irq_tick_marker_sent && tick >= 100 {
+            serial::println("IRQ_TICK_OK");
+            irq_tick_marker_sent = true;
+        }
+        if !terminal_idle_marker_sent && tick >= 140 {
+            serial::println("TERMINAL_IDLE_OK");
+            terminal_idle_marker_sent = true;
+        }
+        if !runtime.console_process_active() {
+            serial::println("RECOVERY_CONSOLE_READY");
+            serial::println("recovery commands require the later serial recovery parser");
+            let _ = boot_info;
+            arch::halt_loop();
+        }
+
+        runtime.finish_iteration(handled_event, tick);
+        core::hint::spin_loop();
+    }
 }
 
-struct UserRuntime<'a> {
-    tasks: &'a mut TaskRegistry,
-    processes: &'a mut userspace::ProcessManager,
+fn write_terminal_update(update: userspace::ProcessUpdate) {
+    if let Some(userspace::ConsoleUpdate::Write { text, .. }) = update.console {
+        serial::println(text.as_str());
+    }
 }
 
 pub fn run(
     mut display: DisplayManager,
-    mut vfs: RamVfs,
     boot_info: &'static BootInfo,
-    mut tasks: TaskRegistry,
-    ids: TaskIds,
-    mut processes: userspace::ProcessManager,
+    mut runtime: RuntimeCoordinator,
 ) -> ! {
-    let mut cwd = FixedText::from_str("/");
-    let mut history = [FixedText::empty(); 8];
-    let mut history_len = 0usize;
-    let mut history_cursor = 0usize;
     let mut last_tick = interrupts::ticks();
     let mut last_clock_second = 255u8;
     let mut irq_tick_marker_sent = false;
     let mut display_idle_marker_sent = false;
-    let mut pending_vfs_request: Option<userspace::UserVfsRequest> = None;
+    let mut recovery_announced = false;
 
     loop {
         input_hw::poll();
@@ -52,11 +129,25 @@ pub fn run(
         display.sync_stats(
             input_hw::mouse_state(),
             input_hw::event_depth(),
-            vfs.count(),
+            runtime.vfs().count(),
             irq_stats.ticks,
         );
         display.refresh_stats_if_due(tick);
         display.animate_if_due(tick);
+
+        if !runtime.console_process_active() && !recovery_announced {
+            display.push_line(
+                LineKind::Error,
+                "SHELL.ELF is not live; emergency recovery console active",
+            );
+            display.push_line(
+                LineKind::Status,
+                "Recovery is limited to help, status, mem, reboot, and shutdown",
+            );
+            display.set_status("emergency recovery console");
+            serial::println("RECOVERY_CONSOLE_READY");
+            recovery_announced = true;
+        }
 
         if tick.is_multiple_of(25) {
             let now = rtc::read();
@@ -76,8 +167,7 @@ pub fn run(
         }
 
         while let Some(next_event) = input_hw::peek_event() {
-            let console_busy =
-                processes.console_process_active() && !processes.console_input_ready();
+            let console_busy = runtime.console_process_active() && !runtime.console_input_ready();
             if console_busy
                 && matches!(
                     next_event,
@@ -96,7 +186,7 @@ pub fn run(
                 break;
             };
             handled_event = true;
-            tasks.mark_running(ids.input, tick);
+            runtime.record_input_activity(tick);
             match event {
                 InputEvent::Key(KeyEvent::Escape) => {
                     display.dismiss_focused();
@@ -108,9 +198,9 @@ pub fn run(
                 }
                 _ => {}
             }
-            match processes.deliver_input(event) {
+            match runtime.deliver_input(event) {
                 Ok(Some(update)) => {
-                    apply_process_update(&mut display, &mut tasks, update, tick);
+                    apply_process_update(&mut display, update);
                     break;
                 }
                 Ok(None) => {}
@@ -124,79 +214,41 @@ pub fn run(
                     if !display.shell_input_active() {
                         continue;
                     }
-                    tasks.mark_running(ids.shell, tick);
+                    runtime.record_shell_activity(tick);
                     let input = display.take_input();
                     let command = input.as_str();
                     if !command.is_empty() {
-                        if history_len < history.len() {
-                            history[history_len] = input;
-                            history_len += 1;
-                        } else {
-                            let mut index = 1;
-                            while index < history.len() {
-                                history[index - 1] = history[index];
-                                index += 1;
-                            }
-                            history[history.len() - 1] = input;
-                        }
-                        history_cursor = history_len;
-                        let mut prompt = FixedText::empty();
-                        prompt.push_str(cwd.as_str());
-                        prompt.push_str("> ");
+                        let mut prompt = FixedText::from_str("recovery> ");
                         prompt.push_str(command);
                         display.push_fixed(LineKind::Prompt, prompt);
                     }
-                    let mut runtime = UserRuntime {
-                        tasks: &mut tasks,
-                        processes: &mut processes,
-                    };
-                    execute(
-                        command,
-                        &mut display,
-                        &mut vfs,
-                        &mut cwd,
-                        boot_info,
-                        ids,
-                        &mut runtime,
-                    );
-                    display.sync_vfs(&vfs);
+                    execute_recovery(command, &mut display, boot_info);
                 }
                 InputEvent::Key(KeyEvent::Backspace) => {
                     if !display.shell_input_active() {
                         continue;
                     }
-                    tasks.mark_running(ids.shell, tick);
+                    runtime.record_shell_activity(tick);
                     let _ = display.input_backspace();
                 }
                 InputEvent::Key(KeyEvent::Char(byte)) => {
                     if !display.shell_input_active() {
                         continue;
                     }
-                    tasks.mark_running(ids.shell, tick);
+                    runtime.record_shell_activity(tick);
                     let _ = display.input_push(byte);
                 }
                 InputEvent::Key(KeyEvent::ArrowUp) => {
                     if !display.shell_input_active() {
                         continue;
                     }
-                    tasks.mark_running(ids.shell, tick);
-                    if history_len > 0 {
-                        history_cursor = history_cursor.saturating_sub(1);
-                        display.set_input(history[history_cursor]);
-                    }
+                    runtime.record_shell_activity(tick);
                 }
                 InputEvent::Key(KeyEvent::ArrowDown) => {
                     if !display.shell_input_active() {
                         continue;
                     }
-                    tasks.mark_running(ids.shell, tick);
-                    if history_cursor + 1 < history_len {
-                        history_cursor += 1;
-                        display.set_input(history[history_cursor]);
-                    } else {
-                        history_cursor = history_len;
-                        display.set_input(FixedText::empty());
-                    }
+                    runtime.record_shell_activity(tick);
                 }
                 InputEvent::Key(KeyEvent::Escape) => display.dismiss_focused(),
                 InputEvent::Key(KeyEvent::Tab) => display.cycle_focus(),
@@ -205,7 +257,7 @@ pub fn run(
                 }
                 InputEvent::MouseButton { buttons, .. } => {
                     if buttons.left {
-                        tasks.mark_running(ids.desktop, tick);
+                        runtime.record_desktop_activity(tick);
                         display.handle_mouse_down(input_hw::mouse_state().position);
                     } else {
                         display.end_drag();
@@ -215,758 +267,91 @@ pub fn run(
         }
 
         if tick != last_tick {
-            if let Some(request) = pending_vfs_request.take() {
-                tasks.mark_running(ids.vfs, tick);
-                let completion = match request {
-                    userspace::UserVfsRequest::Open(request) => {
-                        let writable = request.rights & genos_abi::USER_FILE_RIGHT_WRITE != 0;
-                        let allowed =
-                            !writable || userspace::is_user_writable_path(request.path.as_str());
-                        if allowed && writable && vfs.find(request.path.as_str()).is_none() {
-                            let _ = vfs.touch(request.path.as_str());
-                        }
-                        let info = allowed
-                            .then(|| vfs.find(request.path.as_str()))
-                            .flatten()
-                            .and_then(|node| match node.kind() {
-                                NodeKind::File => Some(userspace::FileOpenInfo {
-                                    size: node.len() as u64,
-                                    kind: genos_abi::USER_FILE_KIND_REGULAR,
-                                }),
-                                NodeKind::Directory if !writable => Some(userspace::FileOpenInfo {
-                                    size: 0,
-                                    kind: genos_abi::USER_FILE_KIND_DIRECTORY,
-                                }),
-                                NodeKind::Directory => None,
-                            });
-                        processes.complete_file_open(request, info)
-                    }
-                    userspace::UserVfsRequest::Read(request) => {
-                        let bytes = vfs.read(request.path.as_str()).ok().map(|data| {
-                            let start = (request.offset as usize).min(data.len());
-                            &data[start..]
-                        });
-                        processes.complete_file_read(request, bytes)
-                    }
-                    userspace::UserVfsRequest::Write(request) => {
-                        let written = vfs
-                            .write_at(
-                                request.path.as_str(),
-                                request.offset as usize,
-                                request.data.as_slice(),
-                            )
-                            .ok()
-                            .map(|count| count as u64);
-                        processes.complete_file_write(request, written)
-                    }
-                    userspace::UserVfsRequest::ReadDirectory(request) => {
-                        let result = match vfs.read_dir_at(
-                            request.path.as_str(),
-                            request.cursor.min(usize::MAX as u64) as usize,
-                        ) {
-                            Ok(Some(node)) => {
-                                let name = node.path().rsplit('/').next().unwrap_or("");
-                                let kind = match node.kind() {
-                                    NodeKind::File => genos_abi::USER_FILE_KIND_REGULAR,
-                                    NodeKind::Directory => genos_abi::USER_FILE_KIND_DIRECTORY,
-                                };
-                                userspace::DirectoryReadResult::Entry(
-                                    userspace::DirectoryEntryInfo {
-                                        name: FixedText::from_str(name),
-                                        kind,
-                                        size: node.len() as u64,
-                                    },
-                                )
-                            }
-                            Ok(None) => userspace::DirectoryReadResult::End,
-                            Err(_) => userspace::DirectoryReadResult::Unavailable,
-                        };
-                        processes.complete_directory_read(request, result)
-                    }
-                };
-                display.sync_vfs(&vfs);
-                match completion {
-                    Ok(update) => apply_process_update(&mut display, &mut tasks, update, tick),
-                    Err(error) => push_launch_error(&mut display, error),
+            let batch = runtime.advance(tick);
+            if batch.vfs_changed {
+                display.sync_vfs(runtime.vfs());
+            }
+            for event in batch.iter() {
+                match event {
+                    RuntimeEvent::Process(update) => apply_process_update(&mut display, update),
+                    RuntimeEvent::Error(error) => push_launch_error(&mut display, error),
                 }
             }
-            if let Some(update) = processes.poll(tick) {
-                if let Some(request) = update.vfs_request {
-                    pending_vfs_request = Some(request);
-                }
-                apply_process_update(&mut display, &mut tasks, update, tick);
-            }
-            tasks.scheduler_tick(tick);
-            tasks.mark_running(ids.desktop, tick);
-            tasks.set_state(ids.input, TaskState::Waiting, tick);
             last_tick = tick;
         }
 
-        if handled_event {
-            tasks.set_state(ids.shell, TaskState::Ready, tick);
-            tasks.set_state(ids.input, TaskState::Waiting, tick);
-            tasks.set_state(ids.idle, TaskState::Sleeping, tick);
-        } else {
-            tasks.set_state(ids.idle, TaskState::Running, tick);
-            tasks.tick_idle(tick);
-        }
-
-        display.flush(&tasks);
+        runtime.finish_iteration(handled_event, tick);
+        display.flush(runtime.task_snapshot());
         core::hint::spin_loop();
     }
 }
 
-fn execute(
-    command: &str,
-    display: &mut DisplayManager,
-    vfs: &mut RamVfs,
-    cwd: &mut FixedText,
-    boot_info: &BootInfo,
-    ids: TaskIds,
-    runtime: &mut UserRuntime<'_>,
-) {
-    let tasks = &mut *runtime.tasks;
-    let processes = &mut *runtime.processes;
-    serial::print("shell: ");
+fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &BootInfo) {
+    serial::print("recovery: ");
     serial::println(command);
 
-    let trimmed = trim(command);
-    if trimmed.is_empty() {
-        display.set_status("idle");
-        return;
-    }
+    match recovery::parse(command) {
+        RecoveryCommand::Help => {
+            display.push_line(
+                LineKind::Output,
+                "recovery commands: help status mem reboot shutdown",
+            );
+            display.push_line(
+                LineKind::Status,
+                "Normal commands require the isolated SHELL.ELF process",
+            );
+            display.set_status("recovery help printed");
+        }
+        RecoveryCommand::Status => {
+            let mut line = FixedText::from_str("GenOS v0.42 recovery bootabi=");
+            line.push_u64(boot_info.version as u64);
+            line.push_str(" userabi=");
+            line.push_u64(kernel::syscall::USER_ABI_VERSION);
+            display.push_fixed(LineKind::Output, line);
 
-    let tick = interrupts::ticks();
-    let (cmd, args) = split_once_space(trimmed);
-    match cmd {
-        "help" => {
-            display.push_line(
-                LineKind::Output,
-                "help clear mem pwd cd ls cat touch write append rm mkdir stat ps run wait spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
-            );
-            display.push_line(
-                LineKind::Output,
-                "run grammar: run init [hold|sleep|file|write|input] | run pair | run fanin",
-            );
-            display.set_status("help printed");
-        }
-        "clear" => {
-            display.clear_shell();
-            display.push_line(LineKind::Status, "Shell cleared");
-            display.set_status("clear");
-        }
-        "mem" => {
-            let mut line = FixedText::from_str("usable memory: ");
-            line.push_u64(memory::usable_bytes());
-            line.push_str(" bytes");
-            display.push_fixed(LineKind::Output, line);
-            let mut frame_line = FixedText::from_str("frames allocated=");
-            frame_line.push_u64(memory::allocated_frames());
-            frame_line.push_str(" recycled=");
-            frame_line.push_u64(memory::recycled_frames() as u64);
-            display.push_fixed(LineKind::Status, frame_line);
-            display.set_status("memory sampled");
-        }
-        "pwd" => {
-            display.push_fixed(LineKind::Output, *cwd);
-            display.set_status("cwd");
-        }
-        "cd" => {
-            let target = resolve_path(cwd.as_str(), trim(args));
-            match vfs.find(target.as_str()) {
-                Some(node) if node.kind() == NodeKind::Directory => {
-                    *cwd = target;
-                    display.set_status("directory changed");
-                }
-                Some(_) => {
-                    display.push_line(LineKind::Error, "not a directory");
-                    display.set_status("cd failed");
-                }
-                None => {
-                    display.push_line(LineKind::Error, "directory not found");
-                    display.set_status("cd failed");
-                }
-            }
-        }
-        "ls" => {
-            let mut found = false;
-            for node in vfs.list_root() {
-                found = true;
-                let mut line = FixedText::empty();
-                line.push_str(match node.kind() {
-                    NodeKind::File => "file ",
-                    NodeKind::Directory => "dir  ",
-                });
-                line.push_str(node.path());
-                line.push_str(" ");
-                line.push_u64(node.len() as u64);
-                line.push_str("b");
-                display.push_fixed(LineKind::Output, line);
-            }
-            if !found {
-                display.push_line(LineKind::Output, "(empty)");
-            }
-            display.set_status("vfs listed");
-        }
-        "cat" => {
-            let path = resolve_path(cwd.as_str(), trim(args));
-            if trim(args).is_empty() {
-                display.push_line(LineKind::Error, "usage: cat FILE");
-            } else {
-                match vfs.read(path.as_str()) {
-                    Ok(bytes) => match str::from_utf8(bytes) {
-                        Ok(text) => push_multiline(display, LineKind::Output, text),
-                        Err(_) => display.push_line(LineKind::Error, "binary file"),
-                    },
-                    Err(error) => push_vfs_error(display, error),
-                }
-                display.set_status("file opened");
-            }
-        }
-        "touch" => {
-            let path = resolve_path(cwd.as_str(), trim(args));
-            if trim(args).is_empty() {
-                display.push_line(LineKind::Error, "usage: touch FILE");
-            } else {
-                tasks.mark_running(ids.vfs, tick);
-                report_vfs_result(display, vfs.touch(path.as_str()), "file touched");
-            }
-        }
-        "write" => {
-            let (path_arg, text) = split_once_space(args);
-            let path = resolve_path(cwd.as_str(), path_arg);
-            if path_arg.is_empty() {
-                display.push_line(LineKind::Error, "usage: write FILE TEXT");
-            } else {
-                tasks.mark_running(ids.vfs, tick);
-                report_vfs_result(
-                    display,
-                    vfs.write(path.as_str(), text.as_bytes()),
-                    "file written",
-                );
-            }
-        }
-        "append" => {
-            let (path_arg, text) = split_once_space(args);
-            let path = resolve_path(cwd.as_str(), path_arg);
-            if path_arg.is_empty() {
-                display.push_line(LineKind::Error, "usage: append FILE TEXT");
-            } else {
-                tasks.mark_running(ids.vfs, tick);
-                report_vfs_result(
-                    display,
-                    vfs.append(path.as_str(), text.as_bytes()),
-                    "file appended",
-                );
-            }
-        }
-        "rm" => {
-            let path = resolve_path(cwd.as_str(), trim(args));
-            if trim(args).is_empty() {
-                display.push_line(LineKind::Error, "usage: rm PATH");
-            } else {
-                tasks.mark_running(ids.vfs, tick);
-                report_vfs_result(display, vfs.remove(path.as_str()), "path removed");
-            }
-        }
-        "mkdir" => {
-            let path = resolve_path(cwd.as_str(), trim(args));
-            if trim(args).is_empty() {
-                display.push_line(LineKind::Error, "usage: mkdir DIR");
-            } else {
-                tasks.mark_running(ids.vfs, tick);
-                report_vfs_result(display, vfs.mkdir(path.as_str()), "directory created");
-            }
-        }
-        "stat" => {
-            let path = resolve_path(cwd.as_str(), trim(args));
-            if trim(args).is_empty() {
-                display.push_line(LineKind::Error, "usage: stat PATH");
-            } else {
-                match vfs.stat(path.as_str()) {
-                    Ok(line) => display.push_fixed(LineKind::Output, line),
-                    Err(error) => push_vfs_error(display, error),
-                }
-                display.set_status("stat");
-            }
-        }
-        "tasks" | "ps" => {
-            let mut index = 0;
-            while index < tasks.len() {
-                if let Some(row) = tasks.format_row(index) {
-                    display.push_fixed(LineKind::Output, row);
-                }
-                index += 1;
-            }
-            display.set_status("processes listed");
-        }
-        "run" => {
-            let program = trim(args);
-            let hold = program == "init hold" || program == "INIT.ELF hold";
-            let sleep = program == "init sleep" || program == "INIT.ELF sleep";
-            let file = program == "init file" || program == "INIT.ELF file";
-            let write = program == "init write" || program == "INIT.ELF write";
-            let input = program == "init input" || program == "INIT.ELF input";
-            if program == "pair" {
-                launch_coordination_pair(display, tasks, processes, tick);
-            } else if program == "fanin" {
-                launch_endpoint_fan_in(display, tasks, processes, tick);
-            } else if program != "init"
-                && program != "INIT.ELF"
-                && !hold
-                && !sleep
-                && !file
-                && !write
-                && !input
-            {
-                display.push_line(
-                    LineKind::Error,
-                    "usage: run init [hold|sleep|file|write|input] | run pair | run fanin",
-                );
-                display.set_status("ELF launch failed");
-            } else {
-                match tasks.reserve_user("init-elf", tick) {
-                    Ok(task_pid) => match if sleep {
-                        processes.spawn_sleep_init(task_pid)
-                    } else if file {
-                        processes.spawn_file_init(task_pid)
-                    } else if write {
-                        processes.spawn_write_init(task_pid)
-                    } else if input {
-                        processes.spawn_input_init(task_pid)
-                    } else {
-                        processes.spawn_init(task_pid, hold)
-                    } {
-                        Ok(ring_pid) => {
-                            if tasks.bind_user_runtime(task_pid, ring_pid).is_err() {
-                                let _ = processes.kill(task_pid);
-                                display
-                                    .push_line(LineKind::Error, "failed to bind process identity");
-                            } else {
-                                let mut line = FixedText::from_str("ELF started task-pid=");
-                                line.push_u64(task_pid as u64);
-                                line.push_str(" ring-pid=");
-                                line.push_u64(ring_pid as u64);
-                                line.push_str(if hold {
-                                    " mode=hold"
-                                } else if sleep {
-                                    " mode=sleep"
-                                } else if file {
-                                    " mode=file"
-                                } else if write {
-                                    " mode=write"
-                                } else if input {
-                                    " mode=input"
-                                } else {
-                                    " mode=normal"
-                                });
-                                display.push_fixed(LineKind::Status, line);
-                                display.set_status("INIT.ELF running asynchronously");
-                            }
-                        }
-                        Err(error) => {
-                            let _ = tasks.update_user(task_pid, TaskState::Faulted, 126, tick);
-                            push_launch_error(display, error);
-                        }
-                    },
-                    Err(error) => push_task_error(display, error),
-                }
-            }
-            display.refresh_task_manager();
-        }
-        "wait" => {
-            match parse_u32(trim(args)) {
-                Some(task_pid) => match processes.wait(task_pid) {
-                    Ok(result) => {
-                        let mut line = FixedText::from_str("reaped task-pid=");
-                        line.push_u64(task_pid as u64);
-                        line.push_str(" ring-pid=");
-                        line.push_u64(result.pid as u64);
-                        line.push_str(" state=");
-                        line.push_str(managed_state_text(result.state));
-                        line.push_str(" exit=");
-                        line.push_u64(result.exit_code as u64);
-                        line.push_str(" preempt=");
-                        line.push_u64(result.preemptions);
-                        display.push_fixed(LineKind::Status, line);
-                        display.set_status("userspace process reaped");
-                    }
-                    Err(userspace::LaunchError::InvalidResult) => {
-                        display.push_line(LineKind::Output, "process is still running");
-                        display.set_status("wait pending");
-                    }
-                    Err(error) => push_launch_error(display, error),
-                },
-                None => display.push_line(LineKind::Error, "usage: wait PID"),
-            }
-            display.refresh_task_manager();
-        }
-        "spawn" => {
-            let name = trim(args);
-            if name.is_empty() {
-                display.push_line(LineKind::Error, "usage: spawn NAME");
-            } else {
-                match tasks.spawn_worker(name, 24, tick) {
-                    Ok(pid) => {
-                        let mut line = FixedText::from_str("worker started pid=");
-                        line.push_u64(pid as u64);
-                        line.push_str(" name=");
-                        line.push_str(name);
-                        display.push_fixed(LineKind::Status, line);
-                        display.set_status("worker started");
-                    }
-                    Err(error) => push_task_error(display, error),
-                }
-            }
-            display.refresh_task_manager();
-        }
-        "kill" => {
-            match parse_u32(trim(args)) {
-                Some(pid) => {
-                    let class = tasks.find(pid).map(|task| task.class);
-                    if class == Some(TaskClass::User) && tasks.runtime_pid(pid).is_some() {
-                        match processes.kill(pid) {
-                            Ok(update) => {
-                                apply_process_update(display, tasks, update, tick);
-                                display.set_status("userspace process killed");
-                            }
-                            Err(error) => push_launch_error(display, error),
-                        }
-                    } else {
-                        match tasks.terminate(pid, 0, tick) {
-                            Ok(()) => {
-                                display.push_line(LineKind::Status, "worker terminated");
-                                display.set_status("worker terminated");
-                            }
-                            Err(error) => push_task_error(display, error),
-                        }
-                    }
-                }
-                None => display.push_line(LineKind::Error, "usage: kill PID"),
-            }
-            display.refresh_task_manager();
-        }
-        "sleep" => {
-            let (pid_text, ticks_text) = split_once_space(args);
-            match (parse_u32(pid_text), parse_u64(ticks_text)) {
-                (Some(pid), Some(duration)) => match tasks.sleep(pid, duration, tick) {
-                    Ok(()) => {
-                        let mut line = FixedText::from_str("worker sleeping for ");
-                        line.push_u64(duration);
-                        line.push_str(" ticks");
-                        display.push_fixed(LineKind::Status, line);
-                        display.set_status("worker sleeping");
-                    }
-                    Err(error) => push_task_error(display, error),
-                },
-                _ => display.push_line(LineKind::Error, "usage: sleep PID TICKS"),
-            }
-            display.refresh_task_manager();
-        }
-        "wake" => {
-            match parse_u32(trim(args)) {
-                Some(pid) => match tasks.wake(pid, tick) {
-                    Ok(()) => {
-                        display.push_line(LineKind::Status, "worker ready");
-                        display.set_status("worker woken");
-                    }
-                    Err(error) => push_task_error(display, error),
-                },
-                None => display.push_line(LineKind::Error, "usage: wake PID"),
-            }
-            display.refresh_task_manager();
-        }
-        "sched" => {
-            let mut line = FixedText::from_str("workers=");
-            line.push_u64(tasks.worker_len() as u64);
-            line.push_str(" current=");
-            match tasks.current_worker_id() {
-                Some(pid) => line.push_u64(pid as u64),
-                None => line.push_str("none"),
-            }
-            line.push_str(" quantum=");
-            line.push_u64(tasks.quantum_ticks() as u64);
-            line.push_str(" switches=");
-            line.push_u64(tasks.total_switches());
-            display.push_fixed(LineKind::Output, line);
-            display.set_status("scheduler sampled");
-        }
-        "userabi" => {
-            let mut line = FixedText::from_str("ring3=");
-            line.push_str(if crate::userspace::probe_passed() {
+            let mut state = FixedText::from_str("ring3-probe=");
+            state.push_str(if userspace::probe_passed() {
                 "passed"
             } else {
                 "failed"
             });
-            line.push_str(" abi=");
-            line.push_u64(kernel::syscall::USER_ABI_VERSION);
-            line.push_str(" elf=");
-            line.push_str(if crate::userspace::elf_ready() {
-                "ready"
-            } else {
-                "missing"
-            });
-            line.push_str(" proc=");
-            line.push_u64(crate::userspace::process_count() as u64);
-            line.push_str(" live=");
-            line.push_u64(crate::userspace::active_process_count() as u64);
+            state.push_str(" live-processes=");
+            state.push_u64(userspace::active_process_count() as u64);
+            display.push_fixed(LineKind::Status, state);
+
+            let irq = interrupts::stats();
+            let mut irq_line = FixedText::from_str("irq-ticks=");
+            irq_line.push_u64(irq.ticks);
+            irq_line.push_str(" keyboard=");
+            irq_line.push_u64(irq.keyboard_irqs);
+            irq_line.push_str(" mouse=");
+            irq_line.push_u64(irq.mouse_irqs);
+            display.push_fixed(LineKind::Status, irq_line);
+            display.push_fixed(LineKind::Status, rtc::read().format_date_time());
+            display.set_status("recovery status sampled");
+        }
+        RecoveryCommand::Memory => {
+            let mut line = FixedText::from_str("usable-bytes=");
+            line.push_u64(memory::usable_bytes());
+            line.push_str(" allocated-frames=");
+            line.push_u64(memory::allocated_frames());
+            line.push_str(" recycled-frames=");
+            line.push_u64(memory::recycled_frames() as u64);
             display.push_fixed(LineKind::Output, line);
-            let mut lifecycle = FixedText::from_str("spaces=");
-            lifecycle.push_u64(crate::userspace::address_space_count() as u64);
-            lifecycle.push_str(" reclaimed=");
-            lifecycle.push_u64(crate::userspace::reclaimed_space_count() as u64);
-            lifecycle.push_str(" yields=");
-            lifecycle.push_u64(crate::userspace::yield_count() as u64);
-            lifecycle.push_str(" preempt=");
-            lifecycle.push_u64(crate::userspace::preemption_count());
-            lifecycle.push_str(" faults=");
-            lifecycle.push_u64(crate::userspace::local_fault_count() as u64);
-            display.push_fixed(LineKind::Output, lifecycle);
-            let mut frames = FixedText::from_str("userframes reclaimed=");
-            frames.push_u64(crate::userspace::reclaimed_frame_count());
-            frames.push_str(" allocator-recycled=");
-            frames.push_u64(memory::recycled_frames() as u64);
-            display.push_fixed(LineKind::Output, frames);
-            let mut io = FixedText::from_str("copyout=");
-            io.push_str(if crate::userspace::copy_out_passed() {
-                "passed"
-            } else {
-                "pending"
-            });
-            io.push_str(" vfs-reads=");
-            io.push_u64(crate::userspace::completed_file_read_count());
-            io.push_str(" writes=");
-            io.push_u64(crate::userspace::completed_file_write_count());
-            io.push_str(" inputs=");
-            io.push_u64(crate::userspace::completed_input_wait_count());
-            display.push_fixed(LineKind::Output, io);
-            let mut handles = FixedText::from_str("handles opened=");
-            handles.push_u64(crate::userspace::opened_file_handle_count());
-            handles.push_str(" closed=");
-            handles.push_u64(crate::userspace::closed_file_handle_count());
-            handles.push_str(" capacity=");
-            handles.push_u64(genos_abi::USER_FILE_HANDLE_CAPACITY);
-            display.push_fixed(LineKind::Output, handles);
-            display.set_status("userspace ABI sampled");
+            display.set_status("recovery memory sampled");
         }
-        "taskmgr" => {
-            tasks.mark_running(ids.taskmgr, tick);
-            display.open_task_manager();
-            display.set_status("task manager opened");
-        }
-        "game" | "demo" => {
-            display.open_game();
+        RecoveryCommand::Reboot => arch::reboot(),
+        RecoveryCommand::Shutdown => arch::shutdown(),
+        RecoveryCommand::Unknown => {
             display.push_line(
-                LineKind::Status,
-                "Game surface opened: backbuffer blits + dirty app frames",
+                LineKind::Error,
+                "Unavailable in Ring 0; normal commands require SHELL.ELF",
             );
-            display.set_status("game opened");
-        }
-        "files" => {
-            display.open_files();
-            display.set_status("files opened");
-        }
-        "apps" => {
-            display.open_files();
-            display.open_task_manager();
-            display.open_about();
-            display.open_game();
-            display.set_status("apps opened");
-        }
-        "echo" => {
-            display.push_line(LineKind::Output, args);
-            display.set_status("echo");
-        }
-        "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.18 desktop-kernel bootabi=");
-            line.push_u64(boot_info.version as u64);
-            line.push_str(" arch=x86_64");
-            display.push_fixed(LineKind::Output, line);
-            display.set_status("system identified");
-        }
-        "about" => {
-            display.open_about();
-            display.push_line(
-                LineKind::Output,
-                "GenOS 0.18 adds Ring 3 directory browsing and file display through ABI 11.",
-            );
-            display.set_status("about");
-        }
-        "whoami" => {
-            display.push_line(LineKind::Output, "genos");
-            display.set_status("session user");
-        }
-        "time" => {
-            let now = rtc::read();
-            display.push_fixed(LineKind::Output, now.format_date_time());
-            display.set_clock(now.format_clock());
-            display.set_status("time read");
-        }
-        "ui" => {
-            display.push_line(
-                LineKind::Status,
-                "display: backbuffered dirty-region desktop manager",
-            );
-            display.push_line(
-                LineKind::Status,
-                "input: ps/2 keyboard and mouse event queue",
-            );
-            display.push_line(LineKind::Status, "storage: writable session RAM VFS");
-            let stats = interrupts::stats();
-            let mut line = FixedText::from_str("irq: ticks=");
-            line.push_u64(stats.ticks);
-            line.push_str(" kbd=");
-            line.push_u64(stats.keyboard_irqs);
-            line.push_str(" mouse=");
-            line.push_u64(stats.mouse_irqs);
-            display.push_fixed(LineKind::Status, line);
-            display.set_status("ui diagnostics");
-        }
-        "reboot" => arch::reboot(),
-        "shutdown" => arch::shutdown(),
-        _ => {
-            display.push_line(LineKind::Error, "unknown command");
-            display.set_status("command error");
+            display.set_status("recovery command rejected");
         }
     }
 }
-
-fn launch_coordination_pair(
-    display: &mut DisplayManager,
-    tasks: &mut TaskRegistry,
-    processes: &mut userspace::ProcessManager,
-    tick: u64,
-) {
-    let parent_task = match tasks.reserve_user("coord-parent", tick) {
-        Ok(pid) => pid,
-        Err(error) => {
-            push_task_error(display, error);
-            return;
-        }
-    };
-    let child_task = match tasks.reserve_user("coord-child", tick) {
-        Ok(pid) => pid,
-        Err(error) => {
-            let _ = tasks.update_user(parent_task, TaskState::Faulted, 126, tick);
-            push_task_error(display, error);
-            return;
-        }
-    };
-    match processes.spawn_coordination_pair(parent_task, child_task) {
-        Ok((parent_pid, child_pid)) => {
-            if tasks.bind_user_runtime(parent_task, parent_pid).is_err()
-                || tasks.bind_user_runtime(child_task, child_pid).is_err()
-            {
-                let _ = processes.kill(parent_task);
-                let _ = processes.kill(child_task);
-                display.push_line(LineKind::Error, "failed to bind process identities");
-                return;
-            }
-            let mut line = FixedText::from_str("pair started parent-task=");
-            line.push_u64(parent_task as u64);
-            line.push_str(" parent-ring=");
-            line.push_u64(parent_pid as u64);
-            line.push_str(" child-task=");
-            line.push_u64(child_task as u64);
-            line.push_str(" child-ring=");
-            line.push_u64(child_pid as u64);
-            display.push_fixed(LineKind::Status, line);
-            display.set_status("parent-child IPC pair running");
-        }
-        Err(error) => {
-            let _ = tasks.update_user(parent_task, TaskState::Faulted, 126, tick);
-            let _ = tasks.update_user(child_task, TaskState::Faulted, 126, tick);
-            push_launch_error(display, error);
-        }
-    }
-}
-
-/// Launches the three-process endpoint fan-in: one receiver plus the two
-/// producers that queue behind it. Every reservation, the spawn, and every
-/// identity bind is rolled back on failure so no task record is left claiming a
-/// process that does not exist.
-fn launch_endpoint_fan_in(
-    display: &mut DisplayManager,
-    tasks: &mut TaskRegistry,
-    processes: &mut userspace::ProcessManager,
-    tick: u64,
-) {
-    let receiver_task = match tasks.reserve_user("fanin-recv", tick) {
-        Ok(pid) => pid,
-        Err(error) => {
-            push_task_error(display, error);
-            return;
-        }
-    };
-    let a_task = match tasks.reserve_user("fanin-prod-a", tick) {
-        Ok(pid) => pid,
-        Err(error) => {
-            let _ = tasks.update_user(receiver_task, TaskState::Faulted, 126, tick);
-            push_task_error(display, error);
-            return;
-        }
-    };
-    let b_task = match tasks.reserve_user("fanin-prod-b", tick) {
-        Ok(pid) => pid,
-        Err(error) => {
-            let _ = tasks.update_user(receiver_task, TaskState::Faulted, 126, tick);
-            let _ = tasks.update_user(a_task, TaskState::Faulted, 126, tick);
-            push_task_error(display, error);
-            return;
-        }
-    };
-    match processes.spawn_endpoint_fan_in(receiver_task, a_task, b_task) {
-        Ok((receiver_pid, a_pid, b_pid)) => {
-            if tasks
-                .bind_user_runtime(receiver_task, receiver_pid)
-                .is_err()
-                || tasks.bind_user_runtime(a_task, a_pid).is_err()
-                || tasks.bind_user_runtime(b_task, b_pid).is_err()
-            {
-                let _ = processes.kill(receiver_task);
-                let _ = processes.kill(a_task);
-                let _ = processes.kill(b_task);
-                display.push_line(LineKind::Error, "failed to bind process identities");
-                return;
-            }
-            let mut line = FixedText::from_str("fanin started recv-task=");
-            line.push_u64(receiver_task as u64);
-            line.push_str(" recv-ring=");
-            line.push_u64(receiver_pid as u64);
-            line.push_str(" a-task=");
-            line.push_u64(a_task as u64);
-            line.push_str(" a-ring=");
-            line.push_u64(a_pid as u64);
-            line.push_str(" b-task=");
-            line.push_u64(b_task as u64);
-            line.push_str(" b-ring=");
-            line.push_u64(b_pid as u64);
-            display.push_fixed(LineKind::Status, line);
-            display.set_status("endpoint fan-in running");
-        }
-        Err(error) => {
-            let _ = tasks.update_user(receiver_task, TaskState::Faulted, 126, tick);
-            let _ = tasks.update_user(a_task, TaskState::Faulted, 126, tick);
-            let _ = tasks.update_user(b_task, TaskState::Faulted, 126, tick);
-            push_launch_error(display, error);
-        }
-    }
-}
-
-fn apply_process_update(
-    display: &mut DisplayManager,
-    tasks: &mut TaskRegistry,
-    update: userspace::ProcessUpdate,
-    tick: u64,
-) {
-    let task_state = match update.state {
-        userspace::ManagedState::Ready => TaskState::Ready,
-        userspace::ManagedState::Sleeping => TaskState::Sleeping,
-        userspace::ManagedState::Waiting => TaskState::Waiting,
-        userspace::ManagedState::Exited | userspace::ManagedState::Killed => TaskState::Exited,
-        userspace::ManagedState::Faulted => TaskState::Faulted,
-    };
-    let _ = tasks.update_user(update.task_id, task_state, update.exit_code, tick);
+fn apply_process_update(display: &mut DisplayManager, update: userspace::ProcessUpdate) {
     if !update.output.is_empty() {
         let mut line = FixedText::from_str("app[");
         line.push_u64(update.pid as u64);
@@ -1023,111 +408,4 @@ fn push_launch_error(display: &mut DisplayManager, error: userspace::LaunchError
     };
     display.push_line(LineKind::Error, text);
     display.set_status("userspace lifecycle error");
-}
-
-fn report_vfs_result(display: &mut DisplayManager, result: Result<(), VfsError>, ok: &str) {
-    match result {
-        Ok(()) => {
-            display.push_line(LineKind::Status, ok);
-            display.set_status(ok);
-        }
-        Err(error) => {
-            push_vfs_error(display, error);
-            display.set_status("vfs error");
-        }
-    }
-}
-
-fn push_vfs_error(display: &mut DisplayManager, error: VfsError) {
-    let text = match error {
-        VfsError::Exists => "path already exists",
-        VfsError::NotFound => "path not found",
-        VfsError::NoSpace => "vfs has no space",
-        VfsError::IsDirectory => "path is a directory",
-        VfsError::NotDirectory => "path is not a directory",
-        VfsError::InvalidPath => "invalid path",
-        VfsError::InvalidOffset => "invalid file offset",
-    };
-    display.push_line(LineKind::Error, text);
-}
-
-fn push_task_error(display: &mut DisplayManager, error: TaskError) {
-    let text = match error {
-        TaskError::TableFull => "process table is full",
-        TaskError::NotFound => "pid not found",
-        TaskError::Protected => "system task is protected",
-        TaskError::InvalidState => "invalid task state or worker name",
-    };
-    display.push_line(LineKind::Error, text);
-    display.set_status("task error");
-}
-
-fn parse_u32(text: &str) -> Option<u32> {
-    let value = parse_u64(text)?;
-    (value <= u32::MAX as u64).then_some(value as u32)
-}
-
-fn parse_u64(text: &str) -> Option<u64> {
-    let text = trim(text);
-    if text.is_empty() {
-        return None;
-    }
-    let mut value = 0u64;
-    for byte in text.bytes() {
-        if !byte.is_ascii_digit() {
-            return None;
-        }
-        value = value.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
-    }
-    Some(value)
-}
-
-fn resolve_path(cwd: &str, arg: &str) -> FixedText {
-    let arg = trim(arg);
-    if arg.is_empty() {
-        return FixedText::from_str(cwd);
-    }
-    if arg.starts_with('/') {
-        return FixedText::from_str(arg);
-    }
-    let mut path = FixedText::from_str(cwd);
-    if path.as_str() != "/" {
-        path.push_str("/");
-    }
-    path.push_str(arg);
-    path
-}
-
-fn push_multiline(display: &mut DisplayManager, kind: LineKind, text: &str) {
-    let bytes = text.as_bytes();
-    let mut start = 0usize;
-    for (index, byte) in bytes.iter().enumerate() {
-        if *byte == b'\n' {
-            let line = str::from_utf8(&bytes[start..index]).unwrap_or("");
-            display.push_line(kind, line);
-            start = index + 1;
-        }
-    }
-    if start < bytes.len() {
-        let line = str::from_utf8(&bytes[start..]).unwrap_or("");
-        display.push_line(kind, line);
-    }
-}
-
-fn split_once_space(text: &str) -> (&str, &str) {
-    if let Some(index) = text.find(' ') {
-        (&text[..index], trim(&text[index + 1..]))
-    } else {
-        (text, "")
-    }
-}
-
-fn trim(mut text: &str) -> &str {
-    while text.as_bytes().first() == Some(&b' ') {
-        text = &text[1..];
-    }
-    while text.as_bytes().last() == Some(&b' ') {
-        text = &text[..text.len() - 1];
-    }
-    text
 }

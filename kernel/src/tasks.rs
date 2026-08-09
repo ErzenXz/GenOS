@@ -1,6 +1,7 @@
 use crate::display::FixedText;
 
 pub const MAX_TASKS: usize = 16;
+pub const MAX_TASK_SNAPSHOTS: usize = MAX_TASKS + 4;
 pub const DEFAULT_QUANTUM_TICKS: u8 = 5;
 const WORK_UNITS_PER_SLICE: u64 = 64;
 
@@ -29,6 +30,7 @@ pub enum TaskState {
     Waiting,
     Exited,
     Faulted,
+    Killed,
 }
 
 impl TaskState {
@@ -40,11 +42,12 @@ impl TaskState {
             Self::Waiting => "waiting",
             Self::Exited => "exited",
             Self::Faulted => "fault",
+            Self::Killed => "killed",
         }
     }
 
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Exited | Self::Faulted)
+        matches!(self, Self::Exited | Self::Faulted | Self::Killed)
     }
 }
 
@@ -71,7 +74,7 @@ pub struct TaskRecord {
     pub work_units: u64,
     pub checksum: u64,
     pub exit_code: i32,
-    pub runtime_pid: u8,
+    pub ready_since: u64,
 }
 
 impl TaskRecord {
@@ -90,12 +93,117 @@ impl TaskRecord {
             work_units: 0,
             checksum: 0,
             exit_code: 0,
-            runtime_pid: 0,
+            ready_since: 0,
         }
     }
 
     pub fn is_live(&self) -> bool {
         self.id != 0 && !self.state.is_terminal()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TaskSnapshot {
+    pub id: u32,
+    pub name: FixedText,
+    pub class: TaskClass,
+    pub state: TaskState,
+    pub memory_kib: u32,
+}
+
+impl TaskSnapshot {
+    pub const fn empty() -> Self {
+        Self {
+            id: 0,
+            name: FixedText::empty(),
+            class: TaskClass::System,
+            state: TaskState::Exited,
+            memory_kib: 0,
+        }
+    }
+}
+
+pub struct TaskSnapshotSet {
+    tasks: [TaskSnapshot; MAX_TASK_SNAPSHOTS],
+    len: usize,
+    worker_len: usize,
+    current_worker_id: Option<u32>,
+    total_switches: u64,
+}
+
+impl TaskSnapshotSet {
+    pub const fn new() -> Self {
+        Self {
+            tasks: [TaskSnapshot::empty(); MAX_TASK_SNAPSHOTS],
+            len: 0,
+            worker_len: 0,
+            current_worker_id: None,
+            total_switches: 0,
+        }
+    }
+
+    pub fn push(&mut self, task: TaskSnapshot) -> bool {
+        if self.len >= self.tasks.len() {
+            return false;
+        }
+        self.tasks[self.len] = task;
+        self.len += 1;
+        true
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn task(&self, index: usize) -> Option<&TaskSnapshot> {
+        self.tasks.get(index).filter(|_| index < self.len)
+    }
+
+    pub fn find(&self, id: u32) -> Option<&TaskSnapshot> {
+        self.tasks.iter().take(self.len).find(|task| task.id == id)
+    }
+
+    pub fn class_len(&self, class: TaskClass) -> usize {
+        self.tasks
+            .iter()
+            .take(self.len)
+            .filter(|task| task.class == class)
+            .count()
+    }
+
+    pub const fn worker_len(&self) -> usize {
+        self.worker_len
+    }
+
+    pub const fn current_worker_id(&self) -> Option<u32> {
+        self.current_worker_id
+    }
+
+    pub const fn total_switches(&self) -> u64 {
+        self.total_switches
+    }
+}
+
+impl Default for TaskSnapshotSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchedulerMetrics {
+    pub dispatches: u64,
+    pub total_dispatch_latency_ticks: u64,
+    pub max_dispatch_latency_ticks: u64,
+}
+
+impl SchedulerMetrics {
+    pub const fn average_latency_milliticks(self) -> u64 {
+        if self.dispatches == 0 {
+            0
+        } else {
+            self.total_dispatch_latency_ticks.saturating_mul(1_000) / self.dispatches
+        }
     }
 }
 
@@ -108,6 +216,8 @@ pub struct TaskRegistry {
     quantum_ticks: u8,
     quantum_used: u8,
     total_switches: u64,
+    total_dispatch_latency_ticks: u64,
+    max_dispatch_latency_ticks: u64,
 }
 
 impl TaskRegistry {
@@ -121,6 +231,8 @@ impl TaskRegistry {
             quantum_ticks: DEFAULT_QUANTUM_TICKS,
             quantum_used: 0,
             total_switches: 0,
+            total_dispatch_latency_ticks: 0,
+            max_dispatch_latency_ticks: 0,
         }
     }
 
@@ -151,81 +263,6 @@ impl TaskRegistry {
             tick,
             true,
         )
-    }
-
-    pub fn record_user_exit(
-        &mut self,
-        name: &str,
-        exit_code: u8,
-        tick: u64,
-    ) -> Result<u32, TaskError> {
-        let pid = self.insert(name, TaskClass::User, TaskState::Exited, 20, tick, false)?;
-        if let Some(task) = self.get_mut(pid) {
-            task.exit_code = exit_code as i32;
-        }
-        Ok(pid)
-    }
-
-    pub fn record_user_fault(
-        &mut self,
-        name: &str,
-        exit_code: u8,
-        tick: u64,
-    ) -> Result<u32, TaskError> {
-        let pid = self.insert(name, TaskClass::User, TaskState::Faulted, 20, tick, false)?;
-        if let Some(task) = self.get_mut(pid) {
-            task.exit_code = exit_code as i32;
-        }
-        Ok(pid)
-    }
-
-    pub fn spawn_user(&mut self, name: &str, runtime_pid: u8, tick: u64) -> Result<u32, TaskError> {
-        if runtime_pid == 0 {
-            return Err(TaskError::InvalidState);
-        }
-        let pid = self.reserve_user(name, tick)?;
-        self.bind_user_runtime(pid, runtime_pid)?;
-        Ok(pid)
-    }
-
-    pub fn reserve_user(&mut self, name: &str, tick: u64) -> Result<u32, TaskError> {
-        let reuse_terminal = self.len >= MAX_TASKS;
-        self.insert(
-            name,
-            TaskClass::User,
-            TaskState::Ready,
-            40,
-            tick,
-            reuse_terminal,
-        )
-    }
-
-    pub fn bind_user_runtime(&mut self, id: u32, runtime_pid: u8) -> Result<(), TaskError> {
-        let task = self.get_mut(id).ok_or(TaskError::NotFound)?;
-        if task.class != TaskClass::User || runtime_pid == 0 {
-            return Err(TaskError::InvalidState);
-        }
-        task.runtime_pid = runtime_pid;
-        Ok(())
-    }
-
-    pub fn update_user(
-        &mut self,
-        id: u32,
-        state: TaskState,
-        exit_code: u8,
-        tick: u64,
-    ) -> Result<(), TaskError> {
-        let task = self.get_mut(id).ok_or(TaskError::NotFound)?;
-        if task.class != TaskClass::User {
-            return Err(TaskError::InvalidState);
-        }
-        task.state = state;
-        task.exit_code = exit_code as i32;
-        task.last_activity = tick;
-        task.context_switches = task.context_switches.saturating_add(1);
-        task.ticks = task.ticks.saturating_add(1);
-        Ok(())
     }
 
     fn insert(
@@ -265,7 +302,7 @@ impl TaskRegistry {
             work_units: 0,
             checksum: id as u64 ^ 0x4745_4e4f_5357_4f52,
             exit_code: 0,
-            runtime_pid: 0,
+            ready_since: tick,
         };
         if slot == self.len {
             self.len += 1;
@@ -284,6 +321,9 @@ impl TaskRegistry {
 
     pub fn set_state(&mut self, id: u32, state: TaskState, tick: u64) {
         if let Some(task) = self.get_mut(id) {
+            if task.class == TaskClass::Worker && state == TaskState::Ready {
+                task.ready_since = tick;
+            }
             task.state = state;
             task.last_activity = tick;
         }
@@ -313,6 +353,7 @@ impl TaskRegistry {
                 }
                 self.tasks[index].state = TaskState::Ready;
                 self.tasks[index].last_activity = tick;
+                self.tasks[index].ready_since = tick;
                 self.scheduler_cursor = index;
             }
             self.current_worker = None;
@@ -323,6 +364,7 @@ impl TaskRegistry {
             return;
         };
         let task = &mut self.tasks[index];
+        let dispatch_latency = tick.saturating_sub(task.ready_since);
         task.state = TaskState::Running;
         task.context_switches += 1;
         task.last_activity = tick;
@@ -330,6 +372,10 @@ impl TaskRegistry {
         self.scheduler_cursor = index;
         self.quantum_used = 0;
         self.total_switches += 1;
+        self.total_dispatch_latency_ticks = self
+            .total_dispatch_latency_ticks
+            .saturating_add(dispatch_latency);
+        self.max_dispatch_latency_ticks = self.max_dispatch_latency_ticks.max(dispatch_latency);
     }
 
     pub fn terminate(&mut self, id: u32, exit_code: i32, tick: u64) -> Result<(), TaskError> {
@@ -387,6 +433,7 @@ impl TaskRegistry {
             return Err(TaskError::InvalidState);
         }
         task.state = TaskState::Ready;
+        task.ready_since = tick;
         task.wake_at = 0;
         task.wake_count += 1;
         task.last_activity = tick;
@@ -401,6 +448,7 @@ impl TaskRegistry {
                 && tick >= task.wake_at
             {
                 task.state = TaskState::Ready;
+                task.ready_since = tick;
                 task.wake_at = 0;
                 task.wake_count += 1;
                 task.last_activity = tick;
@@ -458,6 +506,14 @@ impl TaskRegistry {
         self.total_switches
     }
 
+    pub const fn scheduler_metrics(&self) -> SchedulerMetrics {
+        SchedulerMetrics {
+            dispatches: self.total_switches,
+            total_dispatch_latency_ticks: self.total_dispatch_latency_ticks,
+            max_dispatch_latency_ticks: self.max_dispatch_latency_ticks,
+        }
+    }
+
     pub fn task(&self, index: usize) -> Option<&TaskRecord> {
         self.tasks.get(index).filter(|_| index < self.len)
     }
@@ -466,9 +522,21 @@ impl TaskRegistry {
         self.index_of(id).map(|index| &self.tasks[index])
     }
 
-    pub fn runtime_pid(&self, id: u32) -> Option<u8> {
-        let task = self.find(id)?;
-        (task.class == TaskClass::User && task.runtime_pid != 0).then_some(task.runtime_pid)
+    pub fn snapshot(&self) -> TaskSnapshotSet {
+        let mut snapshot = TaskSnapshotSet::new();
+        snapshot.worker_len = self.worker_len();
+        snapshot.current_worker_id = self.current_worker_id();
+        snapshot.total_switches = self.total_switches();
+        for task in self.tasks.iter().take(self.len) {
+            let _ = snapshot.push(TaskSnapshot {
+                id: task.id,
+                name: task.name,
+                class: task.class,
+                state: task.state,
+                memory_kib: task.memory_kib,
+            });
+        }
+        snapshot
     }
 
     pub fn format_row(&self, index: usize) -> Option<FixedText> {
@@ -499,6 +567,17 @@ impl TaskRegistry {
     fn get_mut(&mut self, id: u32) -> Option<&mut TaskRecord> {
         self.index_of(id).map(|index| &mut self.tasks[index])
     }
+}
+
+pub fn benchmark_scheduler_policy() -> SchedulerMetrics {
+    let mut registry = TaskRegistry::new();
+    let _ = registry.spawn_worker("bench-a", 8, 0);
+    let _ = registry.spawn_worker("bench-b", 8, 0);
+    let _ = registry.spawn_worker("bench-c", 8, 0);
+    for tick in 1..=64 {
+        registry.scheduler_tick(tick);
+    }
+    registry.scheduler_metrics()
 }
 
 fn run_worker_slice(task: &mut TaskRecord, tick: u64) {
@@ -548,6 +627,16 @@ mod tests {
         assert_eq!(registry.current_worker_id(), Some(first));
         assert_eq!(registry.total_switches(), 2);
         assert_eq!(registry.find(second).unwrap().work_units, 320);
+        assert_eq!(registry.scheduler_metrics().max_dispatch_latency_ticks, 6);
+    }
+
+    #[test]
+    fn scheduler_benchmark_records_bounded_ready_to_dispatch_latency() {
+        let metrics = benchmark_scheduler_policy();
+        assert!(metrics.dispatches >= 12);
+        assert!(metrics.total_dispatch_latency_ticks > 0);
+        assert_eq!(metrics.max_dispatch_latency_ticks, 11);
+        assert!(metrics.average_latency_milliticks() > 0);
     }
 
     #[test]
@@ -595,46 +684,14 @@ mod tests {
     }
 
     #[test]
-    fn completed_userspace_probe_keeps_exit_status() {
+    fn task_snapshots_are_immutable_copies_of_registry_state() {
         let mut registry = TaskRegistry::new();
-        registry.register("desktop", TaskState::Running, 32);
-        let fault = registry.record_user_fault("user-crash", 142, 11).unwrap();
-        let first = registry.record_user_exit("user-a", 7, 12).unwrap();
-        let second = registry.record_user_exit("user-b", 0, 13).unwrap();
-        let task = registry.find(first).unwrap();
+        let desktop = registry.register("desktop", TaskState::Ready, 32);
+        let snapshot = registry.snapshot();
+        registry.mark_running(desktop, 1);
 
-        assert_eq!(registry.find(fault).unwrap().state, TaskState::Faulted);
-        assert_eq!(registry.find(fault).unwrap().exit_code, 142);
-        assert_eq!(task.class, TaskClass::User);
-        assert_eq!(task.state, TaskState::Exited);
-        assert_eq!(task.exit_code, 7);
-        assert_eq!(registry.find(second).unwrap().name.as_str(), "user-b");
-        assert_eq!(registry.len(), 4);
-    }
-
-    #[test]
-    fn live_userspace_tasks_track_runtime_identity_and_exit() {
-        let mut registry = TaskRegistry::new();
-        let task = registry.spawn_user("init-elf", 9, 3).unwrap();
-        assert_eq!(registry.runtime_pid(task), Some(9));
-        assert_eq!(registry.find(task).unwrap().state, TaskState::Ready);
-
-        registry
-            .update_user(task, TaskState::Running, 0, 4)
-            .unwrap();
-        registry.update_user(task, TaskState::Exited, 7, 5).unwrap();
-        let record = registry.find(task).unwrap();
-        assert_eq!(record.exit_code, 7);
-        assert_eq!(record.context_switches, 2);
-    }
-
-    #[test]
-    fn worker_controls_cannot_desynchronize_userspace_tasks() {
-        let mut registry = TaskRegistry::new();
-        let task = registry.spawn_user("init-elf", 9, 3).unwrap();
-        assert_eq!(registry.terminate(task, 0, 4), Err(TaskError::InvalidState));
-        assert_eq!(registry.sleep(task, 10, 4), Err(TaskError::InvalidState));
-        assert_eq!(registry.wake(task, 4), Err(TaskError::InvalidState));
-        assert_eq!(registry.find(task).unwrap().state, TaskState::Ready);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot.task(0).unwrap().state, TaskState::Ready);
+        assert_eq!(registry.find(desktop).unwrap().state, TaskState::Running);
     }
 }
