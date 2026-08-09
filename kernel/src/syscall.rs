@@ -10,8 +10,9 @@ pub use genos_abi::{
     USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
-    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE,
-    USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
+    USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_DIRECTORY as SYSCALL_READ_DIRECTORY,
+    USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE, USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE,
+    USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
     USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
     USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
     USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
@@ -118,6 +119,12 @@ pub enum SyscallAction {
     },
     ConsoleClear {
         handle: u64,
+    },
+    ReadDirectory {
+        handle: u64,
+        cursor: u64,
+        output_address: u64,
+        output_length: u64,
     },
 }
 
@@ -315,6 +322,19 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         SYSCALL_CONSOLE_CLEAR if args[0] != 0 && args[1..] == [0; 5] => {
             Ok(SyscallAction::ConsoleClear { handle: args[0] })
         }
+        SYSCALL_READ_DIRECTORY
+            if args[0] != 0
+                && args[2] != 0
+                && args[3] == core::mem::size_of::<genos_abi::UserDirectoryEntry>() as u64
+                && args[4..] == [0; 2] =>
+        {
+            Ok(SyscallAction::ReadDirectory {
+                handle: args[0],
+                cursor: args[1],
+                output_address: args[2],
+                output_length: args[3],
+            })
+        }
         SYSCALL_PING
         | SYSCALL_ABI_VERSION
         | SYSCALL_EXIT
@@ -339,7 +359,8 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_CLOSE_ENDPOINT
         | SYSCALL_CONSOLE_WRITE
         | SYSCALL_CONSOLE_SET_INPUT
-        | SYSCALL_CONSOLE_CLEAR => Err(SyscallError::InvalidArgument),
+        | SYSCALL_CONSOLE_CLEAR
+        | SYSCALL_READ_DIRECTORY => Err(SyscallError::InvalidArgument),
         // `SYSCALL_SEND` and `SYSCALL_RECEIVE` stay reserved but unimplemented.
         _ => Err(SyscallError::UnknownNumber),
     }
@@ -418,10 +439,10 @@ mod tests {
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 88, 0, 0, 0, 0]),
+            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 104, 0, 0, 0, 0]),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 88
+                length: 104
             })
         );
         assert_eq!(
@@ -531,6 +552,15 @@ mod tests {
         assert_eq!(
             dispatch(SYSCALL_CONSOLE_CLEAR, [0xc1, 0, 0, 0, 0, 0]),
             Ok(SyscallAction::ConsoleClear { handle: 0xc1 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_READ_DIRECTORY, [0x101, 3, 0x6000, 96, 0, 0]),
+            Ok(SyscallAction::ReadDirectory {
+                handle: 0x101,
+                cursor: 3,
+                output_address: 0x6000,
+                output_length: 96,
+            })
         );
     }
 

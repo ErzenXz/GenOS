@@ -228,11 +228,16 @@ pub fn run(
                         let info = allowed
                             .then(|| vfs.find(request.path.as_str()))
                             .flatten()
-                            .and_then(|node| {
-                                (node.kind() == NodeKind::File).then_some(userspace::FileOpenInfo {
+                            .and_then(|node| match node.kind() {
+                                NodeKind::File => Some(userspace::FileOpenInfo {
                                     size: node.len() as u64,
                                     kind: genos_abi::USER_FILE_KIND_REGULAR,
-                                })
+                                }),
+                                NodeKind::Directory if !writable => Some(userspace::FileOpenInfo {
+                                    size: 0,
+                                    kind: genos_abi::USER_FILE_KIND_DIRECTORY,
+                                }),
+                                NodeKind::Directory => None,
                             });
                         processes.complete_file_open(request, info)
                     }
@@ -253,6 +258,30 @@ pub fn run(
                             .ok()
                             .map(|count| count as u64);
                         processes.complete_file_write(request, written)
+                    }
+                    userspace::UserVfsRequest::ReadDirectory(request) => {
+                        let result = match vfs.read_dir_at(
+                            request.path.as_str(),
+                            request.cursor.min(usize::MAX as u64) as usize,
+                        ) {
+                            Ok(Some(node)) => {
+                                let name = node.path().rsplit('/').next().unwrap_or("");
+                                let kind = match node.kind() {
+                                    NodeKind::File => genos_abi::USER_FILE_KIND_REGULAR,
+                                    NodeKind::Directory => genos_abi::USER_FILE_KIND_DIRECTORY,
+                                };
+                                userspace::DirectoryReadResult::Entry(
+                                    userspace::DirectoryEntryInfo {
+                                        name: FixedText::from_str(name),
+                                        kind,
+                                        size: node.len() as u64,
+                                    },
+                                )
+                            }
+                            Ok(None) => userspace::DirectoryReadResult::End,
+                            Err(_) => userspace::DirectoryReadResult::Unavailable,
+                        };
+                        processes.complete_directory_read(request, result)
                     }
                 };
                 display.sync_vfs(&vfs);
@@ -749,7 +778,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.17 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.18 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -759,7 +788,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.17 boots the interactive command shell as an isolated Ring 3 process.",
+                "GenOS 0.18 adds Ring 3 directory browsing and file display through ABI 11.",
             );
             display.set_status("about");
         }

@@ -1,6 +1,6 @@
 # GenOS userspace boundary
 
-GenOS 0.17 boots the interactive command shell as a separately linked Ring 3 process and gives it an opaque console capability. Endpoint messaging from 0.16 remains part of the boundary. This document states exactly what the milestone proves and what it does not.
+GenOS 0.18 boots the interactive command shell as a separately linked Ring 3 process and gives it opaque console and VFS capabilities. ABI 11 adds bounded directory enumeration so browsing commands no longer depend on the Ring 0 recovery parser. Endpoint messaging from 0.16 remains part of the boundary. This document states exactly what the milestone proves and what it does not.
 
 ## Build and packaging pipeline
 
@@ -32,7 +32,7 @@ Every accepted page receives a newly allocated zeroed physical frame. File bytes
 
 At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
 
-1. all instances query ABI version 10 and become eligible for timer scheduling;
+1. all instances query ABI version 11 and become eligible for timer scheduling;
 2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
 3. the first instance writes to its guard page and is terminated with page-fault status 142 before performing output work;
 4. the two healthy instances resume afterward, write greetings through the validated output syscall, report private values through validated copy-in, and exit with status 0.
@@ -43,7 +43,7 @@ The probe then creates an owned parent-child pair. Each has its own CR3 root. Th
 
 The fan-in probe then launches three processes: a receiver and its two producer children. Second-scale deadlines are intentionally wide enough to remain deterministic in both the headless smoke harness and the graphical desktop. Producer A sends `A1`; its immediate second send is refused with `USER_ERROR_UNAVAILABLE` while that message remains queued. Producer B independently sends `B1`. The receiver drains `A1` then `B1`, parks on its empty third receive, and is woken directly by producer A's later `A2`. The proof requires exactly three completed messages, one fairness denial, one direct wake, exact output, and reclamation of all three address spaces.
 
-After the probes, GenOS launches `SHELL.ELF` persistently in a fresh address space and passes an opaque tagged console handle in its entry register. The shell prints `USER_SHELL_READY`, blocks for focused keyboard events, maintains its editable line in private memory, and executes `help`, `echo`, `uname`, and `clear`. `Escape` and `Tab` remain compositor shortcuts. Hardware input stays queued while the shell is between one-shot waits, so a burst is not diverted into the recovery parser or silently consumed. Each console request yields to the desktop coordinator as its own process event, preserving consecutive lines in order.
+After the probes, GenOS launches `SHELL.ELF` persistently in a fresh address space and passes an opaque tagged console handle in its entry register. Before announcing `USER_SHELL_READY`, the shell opens `/` as a read-only directory capability, completes an ABI 11 directory read, closes the handle, and the kernel emits `USER_DIRECTORY_READ_OK`. It then blocks for focused keyboard events, maintains its editable line in private memory, and executes `help`, `echo`, `uname`, `clear`, `ls`, and `cat`. `ls` opens the requested directory and advances an ordinal cursor through one fixed-size direct-child record at a time; `cat` opens a regular-file read capability and streams bounded 128-byte chunks. `Escape` and `Tab` remain compositor shortcuts. Hardware input stays queued while the shell is between one-shot waits, so a burst is not diverted into the recovery parser or silently consumed.
 
 Finally, a file-mode process requests `UserSystemInfo` through structured copy-out and opens `/README.TXT`. The open request blocks while the desktop VFS resolves a regular file; completion installs an opaque, read-only capability in the calling process's four-slot handle table. Ring 3 copies out `UserFileStat`, reads 17 bytes, confirms that `stat_handle` now reports offset 17, then reads the remaining 37 bytes through the same handle. The kernel derives the path and offset from the capability rather than trusting userspace. Each read blocks, and a scheduler poll confirms that no userspace slice runs while the request is outstanding.
 
@@ -57,7 +57,7 @@ The probe next starts an input-mode process. After two bounded output calls it i
 
 While the first process still owns the one-shot input channel, a second input-mode process attempts the same wait. It receives `USER_ERROR_UNAVAILABLE`, reports that the channel is busy, exits normally, and releases its address space. The kernel then converts key `G` into the stable 32-byte `UserInputEvent`, revalidates the first process's private writable range, copies the event, writes `32` into saved `rax`, and returns that process to `Ready`. Ring 3 verifies the kind, code, printable value, and reserved field before reporting the exact key and exiting. Both task records are reaped and both ten-frame address spaces are reclaimed.
 
-The QEMU smoke test requires markers for structured copy-out, file block/wake, exact content verification, input block/filter/ownership/wake, sleep/block/wake, owned child wait/wake, message send/receive, endpoint capability, channel fairness, endpoint wake, fan-in ordering, frame reclamation, fault containment, and the long-lived desktop. Recycled roots are visibly reused by later processes in the serial proof.
+The QEMU smoke test requires markers for structured copy-out, file block/wake, exact content verification, directory copy-out, input block/filter/ownership/wake, sleep/block/wake, owned child wait/wake, message send/receive, endpoint capability, channel fairness, endpoint wake, fan-in ordering, frame reclamation, fault containment, and the long-lived desktop. Recycled roots are visibly reused by later processes in the serial proof.
 
 ## Desktop lifecycle
 
@@ -77,14 +77,14 @@ Completed task history remains in the task registry even after the heavier proce
 
 The shell's `wait PID` remains an observational reap command for operators. ABI `wait_child` is the blocking primitive used by a Ring 3 parent; the two operations intentionally serve different callers.
 
-## ABI version 10
+## ABI version 11
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
 | Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
-| 1 | `abi_version` | all zero | ABI version `10` |
+| 1 | `abi_version` | all zero | ABI version `11` |
 | 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
 | 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
 | 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
@@ -93,7 +93,7 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 7 | — | — | reserved: the legacy direct-PID `send`, removed in ABI 9 and never reassigned |
 | 8 | — | — | reserved: the legacy inbox `receive`, removed in ABI 9 and never reassigned |
 | 9 | `wait_child` | child PID `1..255` | child exit status; blocks while an owned child remains live |
-| 10 | `system_info` | writable address and exact structure size `88` | copies `UserSystemInfo` and returns `88` |
+| 10 | `system_info` | writable address and exact structure size `104` | copies `UserSystemInfo` and returns `104` |
 | 11 | `read_file` | path address/length and writable output address/capacity | ABI 5 compatibility read; blocks and returns a byte count |
 | 12 | `open_file` | path address/length | blocks, then returns an opaque read-only handle or a bounded error |
 | 13 | `read_handle` | handle and writable output address/capacity | blocks, copies from the kernel-owned offset, advances it, and returns a byte count |
@@ -110,6 +110,7 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 24 | `console_write` | console handle, mapped text address, length `1..80`, line kind `0..3` | appends one sanitized output, prompt, error, or status line and returns its length |
 | 25 | `console_set_input` | console handle, mapped text address, length `0..80` | replaces the editable terminal line; zero length clears it |
 | 26 | `console_clear` | console handle; remaining arguments zero | clears terminal scrollback and returns `0` |
+| 27 | `read_directory` | directory handle, ordinal cursor, writable entry address, exact size `96` | blocks; returns `96` for one direct child, `0` at end, or a bounded error |
 
 The output path validates the whole range against the userspace window, translates every byte through the owning address space, rejects unmapped holes, and replaces control or non-ASCII bytes before the shell sees them. The application uses runtime functions instead of handwritten assembly. Cooperative yield remains available for ABI compatibility, but the execution proof relies on timer preemption.
 
@@ -131,7 +132,7 @@ Revocation happens on every path that ends a capability. `close_endpoint` on a s
 
 `wait_child` accepts only a live or retained process whose recorded parent PID matches the caller.
 
-`UserSystemInfo` is a `repr(C)` structure of eleven `u64` fields: ABI version, page size, timer frequency, message capacity, maximum file-read size, file-handle capacity, maximum file-write size, input-event size, supported input masks, endpoint-handle capacity, and channel-message size. `message_capacity` keeps its number and now reports the depth of one endpoint queue. `UserChannelMessage` is a `repr(C)` structure of two `u64` fields, `sender_pid` at offset 0 and `value` at offset 8, for a total of sixteen bytes with eight-byte alignment; `receive_endpoint` accepts only that exact length. `UserFileStat` has four `u64` fields: size, current offset, node kind, and rights. `UserInputEvent` contains `kind`, `code`, signed `value0`, and signed `value1`, each eight bytes. Their sizes, alignments, field offsets, rights, limits, errors, masks, and codes are tested. `UserProcessHeader` fixes the kernel-owned token and preemption words at offsets 0 and 8; those offsets are also tested so adding application data cannot silently break preemption again.
+`UserSystemInfo` is a `repr(C)` structure of thirteen `u64` fields. ABI 11 appends the directory-entry size and maximum path length while preserving every older field offset. `UserDirectoryEntry` is 96 bytes: kind, size, name length, a reserved word, and a zero-filled 64-byte name buffer. The cursor is an insertion-order ordinal, not a kernel address, and each successful request returns only a direct child. The kernel resolves the path from a live, process-owned directory handle; a regular-file, stale, foreign, or closed handle is rejected before any VFS request. `UserChannelMessage` is a 16-byte sender/value structure, `UserFileStat` is a 32-byte capability snapshot, and `UserInputEvent` is a 32-byte input record. Their sizes, alignments, field offsets, rights, limits, errors, masks, and codes are tested. `UserProcessHeader` fixes the kernel-owned token and preemption words at offsets 0 and 8.
 
 Input mask `1` selects keyboard events and mask `2` selects pointer events; callers may combine them. Keyboard events use kind `1`; printable characters place ASCII in `value0`, while Enter, Backspace, Escape, Tab, Arrow Up, and Arrow Down have stable codes and zero values. Pointer movement uses kind `2`, signed deltas in `value0`/`value1`, and the active button mask in `code`. Pointer button events use kind `3`, cursor position in the signed values, and left/right/middle bits `1`, `2`, and `4` in `code`.
 
@@ -196,7 +197,7 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - `SHELL.ELF` is independently linked, mapped W^X, preempted, and kept as a persistent userspace task.
 - Only the exact console handle granted at shell launch can append lines, replace the editor, or clear scrollback.
 - Focused keyboard bursts remain queued until the Ring 3 shell rearms its one-shot input wait.
-- `help`, `echo`, `uname`, and `clear` are parsed and executed outside Ring 0.
+- `help`, `echo`, `uname`, `clear`, `ls`, and `cat` are parsed and executed outside Ring 0.
 
 ## Current limitations
 

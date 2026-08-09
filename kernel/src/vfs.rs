@@ -193,6 +193,31 @@ impl RamVfs {
         }
     }
 
+    /// Returns one direct child of `directory` by stable insertion-order cursor.
+    /// Descendants are deliberately excluded so userspace cannot mistake a
+    /// recursive listing for the contents of one directory capability.
+    pub fn read_dir_at(
+        &self,
+        directory: &str,
+        cursor: usize,
+    ) -> Result<Option<&VfsNode>, VfsError> {
+        let parent = self.find(directory).ok_or(VfsError::NotFound)?;
+        if parent.kind() != NodeKind::Directory {
+            return Err(VfsError::NotDirectory);
+        }
+        let mut ordinal = 0usize;
+        for node in self.nodes.iter().take(self.len) {
+            if node.path() == "/" || !direct_child(directory, node.path()) {
+                continue;
+            }
+            if ordinal == cursor {
+                return Ok(Some(node));
+            }
+            ordinal += 1;
+        }
+        Ok(None)
+    }
+
     pub fn count(&self) -> usize {
         self.len
     }
@@ -275,6 +300,22 @@ fn eq_ignore_ascii_case(a: &str, b: &str) -> bool {
         .all(|(left, right)| left.eq_ignore_ascii_case(&right))
 }
 
+fn direct_child(directory: &str, candidate: &str) -> bool {
+    let remainder = if directory == "/" {
+        candidate.strip_prefix('/')
+    } else {
+        candidate
+            .get(directory.len()..)
+            .filter(|_| {
+                candidate
+                    .get(..directory.len())
+                    .is_some_and(|prefix| eq_ignore_ascii_case(prefix, directory))
+            })
+            .and_then(|suffix| suffix.strip_prefix('/'))
+    };
+    remainder.is_some_and(|name| !name.is_empty() && !name.contains('/'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +342,30 @@ mod tests {
         vfs.init_root();
         vfs.seed_file("README.TXT", b"ok");
         assert_eq!(vfs.list_root().count(), 1);
+    }
+
+    #[test]
+    fn directory_cursor_lists_only_direct_children() {
+        let mut vfs = RamVfs::new();
+        vfs.init_root();
+        vfs.seed_file("README.TXT", b"ok");
+        vfs.mkdir("/USER").unwrap();
+        vfs.write("/USER/NOTE.TXT", b"hello").unwrap();
+
+        assert_eq!(
+            vfs.read_dir_at("/", 0).unwrap().unwrap().path(),
+            "/README.TXT"
+        );
+        assert_eq!(vfs.read_dir_at("/", 1).unwrap().unwrap().path(), "/USER");
+        assert!(vfs.read_dir_at("/", 2).unwrap().is_none());
+        assert_eq!(
+            vfs.read_dir_at("/user", 0).unwrap().unwrap().path(),
+            "/USER/NOTE.TXT"
+        );
+        assert!(matches!(
+            vfs.read_dir_at("/README.TXT", 0),
+            Err(VfsError::NotDirectory)
+        ));
     }
 
     #[test]

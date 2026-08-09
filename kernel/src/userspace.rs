@@ -2,11 +2,11 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
-    UserChannelMessage, UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo,
-    USER_ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY,
+    UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserProcessHeader,
+    UserSystemInfo, USER_ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY,
     USER_ENDPOINT_QUEUE_CAPACITY, USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_REGULAR,
     USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE,
-    USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL, USER_PATH_MAX, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
     display::{FixedText, LineKind},
@@ -149,6 +149,12 @@ enum ProcessEvent {
         path: FixedText,
         address: u64,
         capacity: u64,
+    },
+    ReadDirectory {
+        handle: u64,
+        cursor: u64,
+        address: u64,
+        length: u64,
     },
     OpenFile {
         path: FixedText,
@@ -297,6 +303,30 @@ pub enum UserVfsRequest {
     Open(FileOpenRequest),
     Read(FileReadRequest),
     Write(FileWriteRequest),
+    ReadDirectory(DirectoryReadRequest),
+}
+
+#[derive(Clone, Copy)]
+pub struct DirectoryReadRequest {
+    pub task_id: u32,
+    pub pid: u8,
+    pub path: FixedText,
+    pub handle: u64,
+    pub cursor: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct DirectoryEntryInfo {
+    pub name: FixedText,
+    pub kind: u64,
+    pub size: u64,
+}
+
+#[derive(Clone, Copy)]
+pub enum DirectoryReadResult {
+    Entry(DirectoryEntryInfo),
+    End,
+    Unavailable,
 }
 
 #[derive(Clone, Copy)]
@@ -380,6 +410,7 @@ struct ManagedProcess {
     pending_file_open: Option<PendingFileOpen>,
     pending_file_read: Option<PendingFileRead>,
     pending_file_write: Option<PendingFileWrite>,
+    pending_directory_read: Option<PendingDirectoryRead>,
     pending_input: Option<PendingInput>,
     process: UserProcess,
 }
@@ -405,6 +436,15 @@ struct PendingFileWrite {
     path: FixedText,
     offset: u64,
     data: FileWriteBuffer,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct PendingDirectoryRead {
+    path: FixedText,
+    handle: u64,
+    cursor: u64,
+    address: u64,
+    length: u64,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -645,6 +685,7 @@ enum BlockReason {
     FileOpen,
     FileRead,
     FileWrite,
+    DirectoryRead,
     Input,
 }
 
@@ -663,6 +704,7 @@ impl ManagedProcess {
             pending_file_open: None,
             pending_file_read: None,
             pending_file_write: None,
+            pending_directory_read: None,
             pending_input: None,
             process,
         }
@@ -724,6 +766,7 @@ impl ManagedProcess {
         self.pending_file_open = None;
         self.pending_file_read = None;
         self.pending_file_write = None;
+        self.pending_directory_read = None;
         self.pending_input = None;
     }
 }
@@ -954,6 +997,16 @@ impl ProcessManager {
                         self.block_file_read(index, path, address, capacity),
                     ));
                 }
+                ProcessEvent::ReadDirectory {
+                    handle,
+                    cursor,
+                    address,
+                    length,
+                } => {
+                    vfs_request = self
+                        .block_directory_read(index, handle, cursor, address, length)
+                        .map(UserVfsRequest::ReadDirectory);
+                }
                 ProcessEvent::OpenFile { path, rights } => {
                     vfs_request = self
                         .block_file_open(index, path, rights)
@@ -1061,6 +1114,139 @@ impl ProcessManager {
                 crate::serial::println("");
             }
         }
+    }
+
+    fn block_directory_read(
+        &mut self,
+        index: usize,
+        handle: u64,
+        cursor: u64,
+        address: u64,
+        length: u64,
+    ) -> Option<DirectoryReadRequest> {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
+            capability.kind == genos_abi::USER_FILE_KIND_DIRECTORY
+                && capability.rights & USER_FILE_RIGHT_READ != 0
+        }) else {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            return None;
+        };
+        managed.state = ManagedState::Waiting;
+        managed.blocked_on = BlockReason::DirectoryRead;
+        managed.pending_directory_read = Some(PendingDirectoryRead {
+            path: capability.path,
+            handle,
+            cursor,
+            address,
+            length,
+        });
+        crate::serial::print("USER_DIRECTORY_READ_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" path=");
+        crate::serial::print(capability.path.as_str());
+        crate::serial::print(" cursor=");
+        crate::serial::print_u64(cursor);
+        crate::serial::println("");
+        Some(DirectoryReadRequest {
+            task_id: managed.task_id,
+            pid: managed.process.pid,
+            path: capability.path,
+            handle,
+            cursor,
+        })
+    }
+
+    pub fn complete_directory_read(
+        &mut self,
+        request: DirectoryReadRequest,
+        result: DirectoryReadResult,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| {
+                managed.task_id == request.task_id && managed.process.pid == request.pid
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if managed.state != ManagedState::Waiting
+            || managed.blocked_on != BlockReason::DirectoryRead
+            || managed.process.completed
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        let pending = managed
+            .pending_directory_read
+            .as_ref()
+            .ok_or(LaunchError::InvalidResult)?;
+        if pending.path != request.path
+            || pending.handle != request.handle
+            || pending.cursor != request.cursor
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        if !managed
+            .file_handle(request.handle)
+            .is_some_and(|capability| {
+                capability.path == request.path
+                    && capability.kind == genos_abi::USER_FILE_KIND_DIRECTORY
+                    && capability.rights & USER_FILE_RIGHT_READ != 0
+            })
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        let pending = managed
+            .pending_directory_read
+            .take()
+            .ok_or(LaunchError::InvalidResult)?;
+        let return_value = match result {
+            DirectoryReadResult::Entry(info) => {
+                let name = info.name.as_str().as_bytes();
+                if name.is_empty()
+                    || name.len() > genos_abi::USER_DIRECTORY_NAME_MAX
+                    || !matches!(
+                        info.kind,
+                        genos_abi::USER_FILE_KIND_REGULAR | genos_abi::USER_FILE_KIND_DIRECTORY
+                    )
+                {
+                    syscall::error_code(syscall::SyscallError::Unavailable)
+                } else {
+                    let mut entry = UserDirectoryEntry::empty();
+                    entry.kind = info.kind;
+                    entry.size = info.size;
+                    entry.name_length = name.len() as u64;
+                    entry.name[..name.len()].copy_from_slice(name);
+                    let bytes = unsafe {
+                        core::slice::from_raw_parts(
+                            core::ptr::addr_of!(entry).cast::<u8>(),
+                            core::mem::size_of::<UserDirectoryEntry>(),
+                        )
+                    };
+                    if pending.length as usize == bytes.len()
+                        && copy_to_user_data(&managed.process, pending.address, bytes)
+                    {
+                        crate::serial::println("USER_DIRECTORY_READ_OK");
+                        pending.length
+                    } else {
+                        syscall::error_code(syscall::SyscallError::InvalidArgument)
+                    }
+                }
+            }
+            DirectoryReadResult::End => 0,
+            DirectoryReadResult::Unavailable => {
+                syscall::error_code(syscall::SyscallError::Unavailable)
+            }
+        };
+        managed.process.context.rax = return_value;
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print("USER_DIRECTORY_READ_WAKE pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::println("");
+        Ok(process_update(managed))
     }
 
     fn block_sleep(&mut self, index: usize, tick: u64, ticks: u64) {
@@ -1582,7 +1768,13 @@ impl ProcessManager {
         }
         managed.pending_file_open = None;
         let handle = info
-            .filter(|metadata| metadata.kind == USER_FILE_KIND_REGULAR)
+            .filter(|metadata| {
+                matches!(
+                    metadata.kind,
+                    USER_FILE_KIND_REGULAR | genos_abi::USER_FILE_KIND_DIRECTORY
+                ) && (metadata.kind == USER_FILE_KIND_REGULAR
+                    || request.rights == USER_FILE_RIGHT_READ)
+            })
             .and_then(|metadata| {
                 managed.allocate_file_handle(request.path, metadata, request.rights)
             });
@@ -1609,11 +1801,10 @@ impl ProcessManager {
         capacity: u64,
     ) -> Option<FileReadRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        let Some(capability) = managed
-            .file_handle(handle)
-            .copied()
-            .filter(|capability| capability.rights & USER_FILE_RIGHT_READ != 0)
-        else {
+        let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
+            capability.kind == USER_FILE_KIND_REGULAR
+                && capability.rights & USER_FILE_RIGHT_READ != 0
+        }) else {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
@@ -1698,7 +1889,8 @@ impl ProcessManager {
     ) -> Option<FileWriteRequest> {
         let managed = self.slots[index].as_mut().expect("selected process exists");
         let Some(capability) = managed.file_handle(handle).copied().filter(|capability| {
-            capability.rights & USER_FILE_RIGHT_WRITE != 0
+            capability.kind == USER_FILE_KIND_REGULAR
+                && capability.rights & USER_FILE_RIGHT_WRITE != 0
                 && is_user_writable_path(capability.path.as_str())
                 && !data.is_empty()
         }) else {
@@ -2237,6 +2429,7 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 ProcessEvent::Sleep(_)
                 | ProcessEvent::WaitChild(_)
                 | ProcessEvent::ReadFile { .. }
+                | ProcessEvent::ReadDirectory { .. }
                 | ProcessEvent::OpenFile { .. }
                 | ProcessEvent::ReadHandle { .. }
                 | ProcessEvent::StatHandle { .. }
@@ -2759,6 +2952,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                     }
                 }
                 UserVfsRequest::Write(_) => fail("USER_UNEXPECTED_FILE_WRITE"),
+                UserVfsRequest::ReadDirectory(_) => fail("USER_UNEXPECTED_DIRECTORY_READ"),
             }
         }
         if update.state == ManagedState::Exited && update.exit_code == 0 {
@@ -2865,6 +3059,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                         fail("USER_FILE_WRITE_READBACK_FAILED");
                     }
                 }
+                UserVfsRequest::ReadDirectory(_) => fail("USER_UNEXPECTED_DIRECTORY_READ"),
             }
         }
         if update.state == ManagedState::Exited && update.exit_code == 0 {
@@ -3365,6 +3560,8 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 input_mask: USER_INPUT_MASK_ALL,
                 endpoint_handle_capacity: USER_ENDPOINT_HANDLE_CAPACITY,
                 channel_message_size: USER_CHANNEL_MESSAGE_SIZE,
+                directory_entry_size: core::mem::size_of::<UserDirectoryEntry>() as u64,
+                max_path_length: USER_PATH_MAX as u64,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -3608,6 +3805,29 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 frame.rax = 0;
                 process.context = *frame;
                 process.event = ProcessEvent::ConsoleClear;
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::ReadDirectory {
+            handle,
+            cursor,
+            output_address,
+            output_length,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_length)
+                && output_length as usize == core::mem::size_of::<UserDirectoryEntry>()
+            {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ReadDirectory {
+                    handle,
+                    cursor,
+                    address: output_address,
+                    length: output_length,
+                };
                 1
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);

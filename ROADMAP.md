@@ -127,10 +127,13 @@ Delivered so far:
 - focused keyboard delivery to the shell while compositor-owned `Escape` and `Tab` remain in Ring 0;
 - queue-preserving input handoff while the one-shot shell waiter rearms, including burst input from QEMU;
 - userspace parsing and execution of `help`, `echo`, `uname`, and `clear` through an opaque process-owned console capability.
+- ABI 11 bounded directory-entry copy-out with cursor-based, direct-child enumeration;
+- blocking directory requests resolved by the desktop VFS service without exposing kernel pointers;
+- Ring 3 `ls` for `/` and named directories, plus handle-backed `cat` with bounded chunk reads;
+- boot-time `USER_DIRECTORY_READ_OK` proof before `SHELL.ELF` announces readiness.
 
 Remaining work:
 
-- add capability-backed directory enumeration and migrate `ls` and `cat`;
 - add userspace file mutation commands for `/USER/`;
 - add process lifecycle capabilities and migrate launch, status, kill, and reap;
 - migrate history and remaining safe commands, then remove the kernel parser fallback.
@@ -177,6 +180,8 @@ Acceptance criteria:
 - [x] Console mutation requires an exact process-owned capability; zero, guessed, and foreign handles are rejected.
 - [x] Rapid keyboard input remains queued while the shell processes and rearms its one-shot input wait.
 - [x] `help`, `echo`, `uname`, and `clear` execute in `SHELL.ELF` without the kernel command parser.
+- [x] `ls` and `cat` execute in `SHELL.ELF` through blocking ABI 11 directory and file-capability calls.
+- [x] Directory enumeration returns only direct children, has an explicit end cursor, and rejects missing or non-directory paths.
 - [ ] Filesystem and process-control commands execute in userspace through capability-backed APIs.
 - [ ] The recovery-only kernel command parser is removed.
 - [ ] Scheduler latency and context-switch cost are benchmarked.

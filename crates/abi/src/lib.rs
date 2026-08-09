@@ -5,7 +5,7 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 10;
+pub const USER_ABI_VERSION: u64 = 11;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
@@ -35,6 +35,7 @@ pub const USER_SYSCALL_CLOSE_ENDPOINT: u64 = 23;
 pub const USER_SYSCALL_CONSOLE_WRITE: u64 = 24;
 pub const USER_SYSCALL_CONSOLE_SET_INPUT: u64 = 25;
 pub const USER_SYSCALL_CONSOLE_CLEAR: u64 = 26;
+pub const USER_SYSCALL_READ_DIRECTORY: u64 = 27;
 pub const USER_CONSOLE_LINE_OUTPUT: u64 = 0;
 pub const USER_CONSOLE_LINE_PROMPT: u64 = 1;
 pub const USER_CONSOLE_LINE_ERROR: u64 = 2;
@@ -47,6 +48,8 @@ pub const USER_ENDPOINT_QUEUE_CAPACITY: usize = 4;
 pub const USER_FILE_READ_MAX: usize = 128;
 pub const USER_FILE_WRITE_MAX: usize = 128;
 pub const USER_FILE_HANDLE_CAPACITY: u64 = 4;
+pub const USER_PATH_MAX: usize = 64;
+pub const USER_DIRECTORY_NAME_MAX: usize = 64;
 pub const USER_FILE_KIND_REGULAR: u64 = 1;
 pub const USER_FILE_KIND_DIRECTORY: u64 = 2;
 pub const USER_FILE_RIGHT_READ: u64 = 1;
@@ -106,6 +109,8 @@ pub struct UserSystemInfo {
     pub input_mask: u64,
     pub endpoint_handle_capacity: u64,
     pub channel_message_size: u64,
+    pub directory_entry_size: u64,
+    pub max_path_length: u64,
 }
 
 impl UserSystemInfo {
@@ -122,6 +127,30 @@ impl UserSystemInfo {
             input_mask: 0,
             endpoint_handle_capacity: 0,
             channel_message_size: 0,
+            directory_entry_size: 0,
+            max_path_length: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserDirectoryEntry {
+    pub kind: u64,
+    pub size: u64,
+    pub name_length: u64,
+    pub reserved: u64,
+    pub name: [u8; USER_DIRECTORY_NAME_MAX],
+}
+
+impl UserDirectoryEntry {
+    pub const fn empty() -> Self {
+        Self {
+            kind: 0,
+            size: 0,
+            name_length: 0,
+            reserved: 0,
+            name: [0; USER_DIRECTORY_NAME_MAX],
         }
     }
 }

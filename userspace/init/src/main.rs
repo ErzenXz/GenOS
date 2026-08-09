@@ -358,6 +358,8 @@ fn file_program() -> Option<u8> {
         || info.input_mask != runtime::INPUT_MASK_ALL
         || info.endpoint_handle_capacity != runtime::ENDPOINT_HANDLE_CAPACITY
         || info.channel_message_size != runtime::CHANNEL_MESSAGE_SIZE
+        || info.directory_entry_size != core::mem::size_of::<runtime::UserDirectoryEntry>() as u64
+        || info.max_path_length != runtime::PATH_MAX as u64
     {
         return Some(246);
     }
