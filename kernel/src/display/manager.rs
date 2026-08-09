@@ -1352,7 +1352,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 92, body.y + 23),
-            "GenOS 0.15",
+            "GenOS 0.16",
             TextStyle::bold(16, Color::TEXT_INVERTED),
         );
         TextRenderer::draw_text(
@@ -1366,7 +1366,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "RING 3  /  BLOCKING INPUT  /  EVENT FILTERS  /  ABI 8",
+            "ENDPOINT CAPS  /  FAIR FAN-IN  /  ABI 9",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(

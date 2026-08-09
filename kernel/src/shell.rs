@@ -285,6 +285,10 @@ fn execute(
                 LineKind::Output,
                 "help clear mem pwd cd ls cat touch write append rm mkdir stat ps run wait spawn kill sleep wake sched userabi taskmgr files game time apps echo uname about ui reboot shutdown",
             );
+            display.push_line(
+                LineKind::Output,
+                "run grammar: run init [hold|sleep|file|write|input] | run pair | run fanin",
+            );
             display.set_status("help printed");
         }
         "clear" => {
@@ -446,6 +450,8 @@ fn execute(
             let input = program == "init input" || program == "INIT.ELF input";
             if program == "pair" {
                 launch_coordination_pair(display, tasks, processes, tick);
+            } else if program == "fanin" {
+                launch_endpoint_fan_in(display, tasks, processes, tick);
             } else if program != "init"
                 && program != "INIT.ELF"
                 && !hold
@@ -456,7 +462,7 @@ fn execute(
             {
                 display.push_line(
                     LineKind::Error,
-                    "usage: run init [hold|sleep|file|write|input] | run pair",
+                    "usage: run init [hold|sleep|file|write|input] | run pair | run fanin",
                 );
                 display.set_status("ELF launch failed");
             } else {
@@ -713,7 +719,7 @@ fn execute(
             display.set_status("echo");
         }
         "uname" => {
-            let mut line = FixedText::from_str("GenOS v0.15 desktop-kernel bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.16 desktop-kernel bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" arch=x86_64");
             display.push_fixed(LineKind::Output, line);
@@ -723,7 +729,7 @@ fn execute(
             display.open_about();
             display.push_line(
                 LineKind::Output,
-                "GenOS 0.15 adds blocking keyboard and pointer events for Ring 3 applications.",
+                "GenOS 0.16 adds endpoint capabilities and fair fan-in for Ring 3 applications.",
             );
             display.set_status("about");
         }
@@ -811,6 +817,78 @@ fn launch_coordination_pair(
         Err(error) => {
             let _ = tasks.update_user(parent_task, TaskState::Faulted, 126, tick);
             let _ = tasks.update_user(child_task, TaskState::Faulted, 126, tick);
+            push_launch_error(display, error);
+        }
+    }
+}
+
+/// Launches the three-process endpoint fan-in: one receiver plus the two
+/// producers that queue behind it. Every reservation, the spawn, and every
+/// identity bind is rolled back on failure so no task record is left claiming a
+/// process that does not exist.
+fn launch_endpoint_fan_in(
+    display: &mut DisplayManager,
+    tasks: &mut TaskRegistry,
+    processes: &mut userspace::ProcessManager,
+    tick: u64,
+) {
+    let receiver_task = match tasks.reserve_user("fanin-recv", tick) {
+        Ok(pid) => pid,
+        Err(error) => {
+            push_task_error(display, error);
+            return;
+        }
+    };
+    let a_task = match tasks.reserve_user("fanin-prod-a", tick) {
+        Ok(pid) => pid,
+        Err(error) => {
+            let _ = tasks.update_user(receiver_task, TaskState::Faulted, 126, tick);
+            push_task_error(display, error);
+            return;
+        }
+    };
+    let b_task = match tasks.reserve_user("fanin-prod-b", tick) {
+        Ok(pid) => pid,
+        Err(error) => {
+            let _ = tasks.update_user(receiver_task, TaskState::Faulted, 126, tick);
+            let _ = tasks.update_user(a_task, TaskState::Faulted, 126, tick);
+            push_task_error(display, error);
+            return;
+        }
+    };
+    match processes.spawn_endpoint_fan_in(receiver_task, a_task, b_task) {
+        Ok((receiver_pid, a_pid, b_pid)) => {
+            if tasks
+                .bind_user_runtime(receiver_task, receiver_pid)
+                .is_err()
+                || tasks.bind_user_runtime(a_task, a_pid).is_err()
+                || tasks.bind_user_runtime(b_task, b_pid).is_err()
+            {
+                let _ = processes.kill(receiver_task);
+                let _ = processes.kill(a_task);
+                let _ = processes.kill(b_task);
+                display.push_line(LineKind::Error, "failed to bind process identities");
+                return;
+            }
+            let mut line = FixedText::from_str("fanin started recv-task=");
+            line.push_u64(receiver_task as u64);
+            line.push_str(" recv-ring=");
+            line.push_u64(receiver_pid as u64);
+            line.push_str(" a-task=");
+            line.push_u64(a_task as u64);
+            line.push_str(" a-ring=");
+            line.push_u64(a_pid as u64);
+            line.push_str(" b-task=");
+            line.push_u64(b_task as u64);
+            line.push_str(" b-ring=");
+            line.push_u64(b_pid as u64);
+            display.push_fixed(LineKind::Status, line);
+            display.set_status("endpoint fan-in running");
+        }
+        Err(error) => {
+            let _ = tasks.update_user(receiver_task, TaskState::Faulted, 126, tick);
+            let _ = tasks.update_user(a_task, TaskState::Faulted, 126, tick);
+            let _ = tasks.update_user(b_task, TaskState::Faulted, 126, tick);
             push_launch_error(display, error);
         }
     }

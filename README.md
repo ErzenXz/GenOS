@@ -86,7 +86,7 @@ The current GenOS build already contains real operating-system infrastructure:
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 8 userspace coordination, capability-based VFS I/O, and blocking input events;
+- ABI 9 userspace coordination, capability-based VFS I/O, blocking input events, and endpoint-capability messaging;
 - application output copied from validated user mappings into the desktop shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - PS/2 keyboard and mouse input with an event queue;
@@ -115,9 +115,11 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | Recall terminal commands | Press `Up` or `Down` |
 | List shell commands | Run `help` |
 
-The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run init write`, `run init input`, `run pair`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, handle, file-I/O, and input-wakeup state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
+The shell includes filesystem commands such as `ls`, `cat`, `touch`, `write`, `append`, `mkdir`, `rm`, and `stat`. Process controls include `ps`, `run init`, `run init hold`, `run init sleep`, `run init file`, `run init write`, `run init input`, `run pair`, `run fanin`, `wait PID`, `kill PID`, `spawn NAME`, `sleep PID TICKS`, `wake PID`, and `sched`; `userabi` reports live ELF, ABI, process, preemption, fault, reclaimed-frame, copy-out, handle, file-I/O, and input-wakeup state. Worker names accept 1–12 letters, numbers, hyphens, or underscores.
 
-GenOS 0.15 lets isolated applications wait for real keyboard and pointer events without polling or consuming scheduler slices. `run init input` announces a one-shot keyboard wait, transitions to `waiting`, and receives the next matching event in a fixed 32-byte structure copied into its private data page. A keyboard-only waiter does not steal pointer movement from the desktop. Input ownership is explicit and deterministic: one process may wait at a time, a contender receives `USER_ERROR_UNAVAILABLE`, and the accepted event is consumed once before the saved context wakes. ABI 8 exposes keyboard and pointer masks, stable key/button codes, signed motion or position values, and the `wait_input` syscall. The boot proof covers filtering, competing waiters, exact key delivery, exit, and frame reclamation. See [the userspace boundary notes](docs/USERSPACE.md) for exact guarantees and limitations.
+GenOS 0.16 makes messaging a capability instead of a PID. A process publishes exactly one receive endpoint with `create_endpoint`; every other process must obtain its own send handle with `connect_endpoint` before it can send anything, and holding a raw PID grants nothing. Handles are opaque values that encode a dedicated endpoint tag, the owner PID, a per-process generation, and a slot in a four-entry table, so a guessed, foreign, or stale handle is rejected rather than resolved. The kernel fills in the sender PID of every delivered message, so Ring 3 cannot forge an identity. Each endpoint queue holds four messages and admits at most one per producer, which is what keeps a single noisy producer from starving its peers. A receive on an empty queue leaves the runnable set entirely and is woken by a later send that copies straight into its already-validated buffer. Closing the receive handle unpublishes the endpoint and revokes every remote send handle naming that generation; normal exit, a Ring 3 fault, `kill`, and reap run the same release path.
+
+`run fanin` is the real three-process proof. A receiver publishes an endpoint and sleeps while two independent producer children connect to it. Producer A sends `A1` and its immediate second send is refused with `USER_ERROR_UNAVAILABLE` because `A1` is still queued; producer B then sends `B1`. The receiver drains `A1` and `B1` in arrival order, parks on an empty queue for its third receive, and is woken directly by producer A's retried `A2` — output `INIT.ELF fan-in A1 B1 A2`. The boot proof requires exactly three delivered messages, exactly one fairness denial, exactly one direct wake, and reclamation of all three address spaces. See [the userspace boundary notes](docs/USERSPACE.md) for the exact syscall contract, guarantees, and limitations.
 
 ## Architecture
 
@@ -132,7 +134,7 @@ GenOS kernel
     |-- architecture setup       GDT / TSS / IDT / IRQ
     |-- memory                   gap-safe + recycled frames / protected page tables
     |-- ELF loader              bounded parser / W^X segment mapping
-    |-- userspace               async lifecycle / file I/O / blocking input
+    |-- userspace               async lifecycle / file I/O / blocking input / endpoints
     |-- input                    PS/2 queue / filters / desktop-or-Ring-3 routing
     |-- storage                  initrd + writable RAM VFS
     |-- tasks                    registry / state / accounting
@@ -219,7 +221,7 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 
 - [x] **Foundation:** UEFI boot, kernel entry, framebuffer, serial diagnostics
 - [x] **Interactive desktop:** input, windows, shell, RAM filesystem, live task UI
-- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, local faults, asynchronous lifecycle, deadline sleep, child wait, bounded IPC, structured copy-out, blocking VFS read, and reclamation; file handles and input I/O come next
+- [ ] **Processes and userspace (in progress):** private address spaces, Ring 3, ELF loading, preemption, local faults, asynchronous lifecycle, deadline sleep, child wait, structured copy-out, capability-based file I/O, blocking input events, and endpoint-capability messaging with multi-producer fairness; moving the shell into userspace comes next
 - [ ] **Persistent storage:** block drivers, partition discovery, durable filesystem
 - [ ] **Networking:** device driver, Ethernet, ARP, IPv4, UDP, TCP, DNS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design

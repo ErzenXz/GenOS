@@ -1,13 +1,18 @@
 pub use genos_abi::{
     USER_ABI_VERSION, USER_PING_REPLY as PING_REPLY,
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION,
-    USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE, USER_SYSCALL_EXIT as SYSCALL_EXIT,
+    USER_SYSCALL_CLOSE_ENDPOINT as SYSCALL_CLOSE_ENDPOINT,
+    USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE,
+    USER_SYSCALL_CONNECT_ENDPOINT as SYSCALL_CONNECT_ENDPOINT,
+    USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
     USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE,
     USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
+    USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
     USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
-    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
+    USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
+    USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
     USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT, USER_SYSCALL_WRITE as SYSCALL_WRITE,
     USER_SYSCALL_WRITE_HANDLE as SYSCALL_WRITE_HANDLE, USER_SYSCALL_YIELD as SYSCALL_YIELD,
@@ -29,10 +34,12 @@ pub enum SyscallAction {
     Sleep {
         ticks: u64,
     },
+    /// Legacy direct-PID send, unreachable from ABI 9 onwards.
     Send {
         pid: u8,
         value: u64,
     },
+    /// Legacy inbox receive, unreachable from ABI 9 onwards.
     Receive,
     WaitChild {
         pid: u8,
@@ -79,6 +86,22 @@ pub enum SyscallAction {
         output_length: u64,
         mask: u64,
     },
+    CreateEndpoint,
+    ConnectEndpoint {
+        pid: u8,
+    },
+    SendEndpoint {
+        handle: u64,
+        value: u64,
+    },
+    ReceiveEndpoint {
+        handle: u64,
+        output_address: u64,
+        output_length: u64,
+    },
+    CloseEndpoint {
+        handle: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,13 +134,6 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         SYSCALL_SLEEP if (1..=10_000).contains(&args[0]) && args[1..] == [0; 5] => {
             Ok(SyscallAction::Sleep { ticks: args[0] })
         }
-        SYSCALL_SEND if (1..=u8::MAX as u64).contains(&args[0]) && args[2..] == [0; 4] => {
-            Ok(SyscallAction::Send {
-                pid: args[0] as u8,
-                value: args[1],
-            })
-        }
-        SYSCALL_RECEIVE if args == [0; 6] => Ok(SyscallAction::Receive),
         SYSCALL_WAIT_CHILD if (1..=u8::MAX as u64).contains(&args[0]) && args[1..] == [0; 5] => {
             Ok(SyscallAction::WaitChild { pid: args[0] as u8 })
         }
@@ -216,6 +232,33 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 mask: args[2],
             })
         }
+        SYSCALL_CREATE_ENDPOINT if args == [0; 6] => Ok(SyscallAction::CreateEndpoint),
+        SYSCALL_CONNECT_ENDPOINT
+            if (1..=u8::MAX as u64).contains(&args[0]) && args[1..] == [0; 5] =>
+        {
+            Ok(SyscallAction::ConnectEndpoint { pid: args[0] as u8 })
+        }
+        SYSCALL_SEND_ENDPOINT if args[0] != 0 && args[2..] == [0; 4] => {
+            Ok(SyscallAction::SendEndpoint {
+                handle: args[0],
+                value: args[1],
+            })
+        }
+        SYSCALL_RECEIVE_ENDPOINT
+            if args[0] != 0
+                && args[1] != 0
+                && args[2] == core::mem::size_of::<genos_abi::UserChannelMessage>() as u64
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::ReceiveEndpoint {
+                handle: args[0],
+                output_address: args[1],
+                output_length: args[2],
+            })
+        }
+        SYSCALL_CLOSE_ENDPOINT if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::CloseEndpoint { handle: args[0] })
+        }
         SYSCALL_PING
         | SYSCALL_ABI_VERSION
         | SYSCALL_EXIT
@@ -223,8 +266,6 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_REPORT
         | SYSCALL_WRITE
         | SYSCALL_SLEEP
-        | SYSCALL_SEND
-        | SYSCALL_RECEIVE
         | SYSCALL_WAIT_CHILD
         | SYSCALL_SYSTEM_INFO
         | SYSCALL_READ_FILE
@@ -234,7 +275,13 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_CLOSE_HANDLE
         | SYSCALL_OPEN_FILE_WITH_RIGHTS
         | SYSCALL_WRITE_HANDLE
-        | SYSCALL_WAIT_INPUT => Err(SyscallError::InvalidArgument),
+        | SYSCALL_WAIT_INPUT
+        | SYSCALL_CREATE_ENDPOINT
+        | SYSCALL_CONNECT_ENDPOINT
+        | SYSCALL_SEND_ENDPOINT
+        | SYSCALL_RECEIVE_ENDPOINT
+        | SYSCALL_CLOSE_ENDPOINT => Err(SyscallError::InvalidArgument),
+        // `SYSCALL_SEND` and `SYSCALL_RECEIVE` stay reserved but unimplemented.
         _ => Err(SyscallError::UnknownNumber),
     }
 }
@@ -298,25 +345,14 @@ mod tests {
             Ok(SyscallAction::Sleep { ticks: 25 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SEND, [7, 0xfeed, 0, 0, 0, 0]),
-            Ok(SyscallAction::Send {
-                pid: 7,
-                value: 0xfeed
-            })
-        );
-        assert_eq!(
-            dispatch(SYSCALL_RECEIVE, [0; 6]),
-            Ok(SyscallAction::Receive)
-        );
-        assert_eq!(
             dispatch(SYSCALL_WAIT_CHILD, [8, 0, 0, 0, 0, 0]),
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 72, 0, 0, 0, 0]),
+            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 88, 0, 0, 0, 0]),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 72
+                length: 88
             })
         );
         assert_eq!(
@@ -379,6 +415,49 @@ mod tests {
                 mask: 1,
             })
         );
+        assert_eq!(
+            dispatch(SYSCALL_CREATE_ENDPOINT, [0; 6]),
+            Ok(SyscallAction::CreateEndpoint)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CONNECT_ENDPOINT, [3, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::ConnectEndpoint { pid: 3 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SEND_ENDPOINT, [0x201, 0xfeed, 0, 0, 0, 0]),
+            Ok(SyscallAction::SendEndpoint {
+                handle: 0x201,
+                value: 0xfeed,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_RECEIVE_ENDPOINT, [0x201, 0x6000, 16, 0, 0, 0]),
+            Ok(SyscallAction::ReceiveEndpoint {
+                handle: 0x201,
+                output_address: 0x6000,
+                output_length: 16,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_CLOSE_ENDPOINT, [0x201, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::CloseEndpoint { handle: 0x201 })
+        );
+    }
+
+    #[test]
+    fn legacy_message_calls_are_reserved_and_unimplemented() {
+        assert_eq!(
+            dispatch(SYSCALL_SEND, [7, 0xfeed, 0, 0, 0, 0]),
+            Err(SyscallError::UnknownNumber)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SEND, [0; 6]),
+            Err(SyscallError::UnknownNumber)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_RECEIVE, [0; 6]),
+            Err(SyscallError::UnknownNumber)
+        );
     }
 
     #[test]
@@ -409,7 +488,7 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_SEND, [0, 1, 0, 0, 0, 0]),
-            Err(SyscallError::InvalidArgument)
+            Err(SyscallError::UnknownNumber)
         );
         assert_eq!(
             dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 39, 0, 0, 0, 0]),

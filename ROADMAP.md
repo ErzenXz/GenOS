@@ -94,7 +94,7 @@ Delivered so far:
 - ABI 3 validated application output from mapped userspace memory;
 - ABI 4 blocking sleep with scheduler tick deadlines and saved-context wakeup;
 - explicit parent ownership and blocking wait on a specific child PID;
-- bounded four-message per-process inboxes with blocking receive and direct wakeup;
+- bounded four-message per-process inboxes with blocking receive and direct wakeup, superseded by ABI 9 endpoints;
 - `run init sleep` and `run pair` desktop proofs for coordination across isolated ELF instances;
 - ABI 5 stable `UserProcessHeader` and typed `UserSystemInfo` copy-out contracts;
 - mapped-range and physical-ownership validation before kernel-to-user copies;
@@ -113,10 +113,17 @@ Delivered so far:
 - matching-event routing that leaves non-matching input available to the desktop;
 - deterministic single-waiter ownership with explicit `USER_ERROR_UNAVAILABLE` contention behavior;
 - `run init input` and boot proofs for wait, filter, contention, exact key wakeup, exit, and reclamation.
+- ABI 9 endpoint capabilities replacing direct-PID messaging, with syscalls 19–23 and reserved-but-unassigned numbers 7 and 8;
+- one published receive endpoint per process, process-owned send handles, and tagged generation-checked handles in a four-slot table;
+- `connect_endpoint` discovery by live PID only, with no name service and no handle delegation;
+- fixed-layout 16-byte `UserChannelMessage` carrying a kernel-supplied sender PID that Ring 3 cannot forge;
+- four-message endpoint queues that admit at most one message per producer, so no producer starves its peers;
+- blocking `receive_endpoint` with pre-validated buffers and direct sender-to-waiter copy-out that bypasses the queue;
+- stale-handle rejection plus total revocation on close, exit, fault, kill, and reap;
+- `run fanin` and the boot proof of a real three-process `A1`, `B1`, `A2` fan-in with one fairness denial and one direct wake.
 
 Remaining work:
 
-- multi-producer channel policy and endpoint handles;
 - move the shell into userspace.
 
 Acceptance criteria:
@@ -140,7 +147,7 @@ Acceptance criteria:
 - [x] A userspace application can write bounded validated text to the desktop shell.
 - [x] A sleeping userspace process leaves the runnable set and resumes at its deadline with preserved context.
 - [x] A parent can block only on its own child and receive the child's exit status on wake.
-- [x] Isolated processes can exchange fixed-width values through bounded per-process inboxes.
+- [x] Isolated processes can exchange fixed-width values through bounded kernel-owned message queues.
 - [x] The kernel can copy a versioned structure into a validated process-owned writable mapping.
 - [x] A userspace file read blocks without consuming slices and resumes with copied VFS bytes.
 - [x] Cross-layer request identity and the kernel-owned process-header offsets are covered by checks.
@@ -150,6 +157,13 @@ Acceptance criteria:
 - [x] Protected paths and read-only handles reject writes, while successful data survives close/reopen inside the session VFS.
 - [x] A userspace application can block on filtered keyboard or pointer input without polling or consuming slices.
 - [x] Non-matching events remain available to the desktop, competing waiters fail explicitly, and one accepted event wakes exactly one process.
+- [x] Messaging authority is a capability: a process must publish an endpoint to receive, and hold a process-owned send handle to send.
+- [x] Handles are opaque, tagged, and generation-checked, so guessed, foreign, and stale values are rejected without granting access.
+- [x] Every delivered message carries a kernel-supplied sender PID that Ring 3 cannot forge.
+- [x] Two independent producers fan into one receiver, which drains them in arrival order with at most one queued message per producer.
+- [x] A producer's second send is refused while its first message is still queued, and is admitted again after the receiver drains it.
+- [x] A blocking receive leaves the runnable set and is woken directly by a later send that copies into its pre-validated buffer.
+- [x] Close, exit, fault, kill, and reap revoke the endpoint and every remote send handle naming its generation.
 - [ ] Scheduler latency and context-switch cost are benchmarked.
 
 ## Stage 3 — Persistent storage

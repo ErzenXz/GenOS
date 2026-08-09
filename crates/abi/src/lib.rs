@@ -5,7 +5,7 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 8;
+pub const USER_ABI_VERSION: u64 = 9;
 pub const USER_SYSCALL_PING: u64 = 0;
 pub const USER_SYSCALL_ABI_VERSION: u64 = 1;
 pub const USER_SYSCALL_EXIT: u64 = 2;
@@ -13,7 +13,9 @@ pub const USER_SYSCALL_YIELD: u64 = 3;
 pub const USER_SYSCALL_REPORT: u64 = 4;
 pub const USER_SYSCALL_WRITE: u64 = 5;
 pub const USER_SYSCALL_SLEEP: u64 = 6;
+/// Reserved: legacy direct-PID send, removed in ABI 9 and never reassigned.
 pub const USER_SYSCALL_SEND: u64 = 7;
+/// Reserved: legacy inbox receive, removed in ABI 9 and never reassigned.
 pub const USER_SYSCALL_RECEIVE: u64 = 8;
 pub const USER_SYSCALL_WAIT_CHILD: u64 = 9;
 pub const USER_SYSCALL_SYSTEM_INFO: u64 = 10;
@@ -25,7 +27,15 @@ pub const USER_SYSCALL_CLOSE_HANDLE: u64 = 15;
 pub const USER_SYSCALL_OPEN_FILE_WITH_RIGHTS: u64 = 16;
 pub const USER_SYSCALL_WRITE_HANDLE: u64 = 17;
 pub const USER_SYSCALL_WAIT_INPUT: u64 = 18;
+pub const USER_SYSCALL_CREATE_ENDPOINT: u64 = 19;
+pub const USER_SYSCALL_CONNECT_ENDPOINT: u64 = 20;
+pub const USER_SYSCALL_SEND_ENDPOINT: u64 = 21;
+pub const USER_SYSCALL_RECEIVE_ENDPOINT: u64 = 22;
+pub const USER_SYSCALL_CLOSE_ENDPOINT: u64 = 23;
 pub const USER_MESSAGE_CAPACITY: u64 = 4;
+pub const USER_CHANNEL_MESSAGE_SIZE: u64 = core::mem::size_of::<UserChannelMessage>() as u64;
+pub const USER_ENDPOINT_HANDLE_CAPACITY: u64 = 4;
+pub const USER_ENDPOINT_QUEUE_CAPACITY: usize = 4;
 pub const USER_FILE_READ_MAX: usize = 128;
 pub const USER_FILE_WRITE_MAX: usize = 128;
 pub const USER_FILE_HANDLE_CAPACITY: u64 = 4;
@@ -86,6 +96,8 @@ pub struct UserSystemInfo {
     pub max_file_write: u64,
     pub input_event_size: u64,
     pub input_mask: u64,
+    pub endpoint_handle_capacity: u64,
+    pub channel_message_size: u64,
 }
 
 impl UserSystemInfo {
@@ -100,6 +112,24 @@ impl UserSystemInfo {
             max_file_write: 0,
             input_event_size: 0,
             input_mask: 0,
+            endpoint_handle_capacity: 0,
+            channel_message_size: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserChannelMessage {
+    pub sender_pid: u64,
+    pub value: u64,
+}
+
+impl UserChannelMessage {
+    pub const fn empty() -> Self {
+        Self {
+            sender_pid: 0,
+            value: 0,
         }
     }
 }

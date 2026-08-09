@@ -2,16 +2,17 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
-    UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo, USER_ABI_VERSION,
-    USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK,
-    USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL,
-    USER_MESSAGE_CAPACITY, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    UserChannelMessage, UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo,
+    USER_ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY,
+    USER_ENDPOINT_QUEUE_CAPACITY, USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_REGULAR,
+    USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE,
+    USER_FILE_WRITE_MAX, USER_INPUT_MASK_ALL, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
     display::FixedText,
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     input::{InputEvent, KeyEvent, MouseButtons},
-    ipc::MessageQueue,
+    ipc::ChannelQueue,
     syscall::{self, SyscallAction},
     vfs::{NodeKind, RamVfs},
 };
@@ -33,8 +34,22 @@ const TOKEN_PARENT_MODE: u64 = 0x6000_0000_0000_0000;
 const TOKEN_FILE_MODE: u64 = 0x7000_0000_0000_0000;
 const TOKEN_INPUT_MODE: u64 = 0x9000_0000_0000_0000;
 const TOKEN_WRITE_MODE: u64 = 0xa000_0000_0000_0000;
-const MESSAGE_CAPACITY: usize = 4;
+/// Fan-in trio. The receiver token carries both producer pids, one per byte;
+/// each producer token carries the receiver pid it must connect to.
+const TOKEN_FANIN_RECEIVER_MODE: u64 = 0xc000_0000_0000_0000;
+const TOKEN_FANIN_PRODUCER_A_MODE: u64 = 0xd000_0000_0000_0000;
+const TOKEN_FANIN_PRODUCER_B_MODE: u64 = 0xe000_0000_0000_0000;
 const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
+const ENDPOINT_HANDLE_CAPACITY: usize = USER_ENDPOINT_HANDLE_CAPACITY as usize;
+const ENDPOINT_QUEUE_CAPACITY: usize = USER_ENDPOINT_QUEUE_CAPACITY;
+/// Endpoint handles carry a dedicated tag byte in the position file handles use
+/// for their owner pid, so endpoint authority can never be spent on the file
+/// tables and file authority can never be spent on an endpoint.
+const ENDPOINT_HANDLE_TAG: u64 = 0xe9 << 56;
+const ENDPOINT_HANDLE_TAG_MASK: u64 = 0xff << 56;
+/// Generations stay inside 32 bits so the owner pid, generation and slot fields
+/// of a handle never overlap.
+const ENDPOINT_GENERATION_MAX: u64 = u32::MAX as u64;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
@@ -60,6 +75,9 @@ static COMPLETED_FILE_WRITES: AtomicU64 = AtomicU64::new(0);
 static COMPLETED_INPUT_WAITS: AtomicU64 = AtomicU64::new(0);
 static OPENED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
 static CLOSED_FILE_HANDLES: AtomicU64 = AtomicU64::new(0);
+static COMPLETED_ENDPOINT_MESSAGES: AtomicU64 = AtomicU64::new(0);
+static ENDPOINT_FAIRNESS_DENIALS: AtomicU64 = AtomicU64::new(0);
+static ENDPOINT_WAKES: AtomicU64 = AtomicU64::new(0);
 static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
 static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
@@ -123,11 +141,6 @@ enum ProcessEvent {
     Yield,
     Preempt,
     Sleep(u64),
-    Send {
-        pid: u8,
-        value: u64,
-    },
-    Receive,
     WaitChild(u8),
     ReadFile {
         path: FixedText,
@@ -158,6 +171,18 @@ enum ProcessEvent {
         length: u64,
         mask: u64,
     },
+    CreateEndpoint,
+    ConnectEndpoint(u8),
+    SendEndpoint {
+        handle: u64,
+        value: u64,
+    },
+    ReceiveEndpoint {
+        handle: u64,
+        address: u64,
+        length: u64,
+    },
+    CloseEndpoint(u64),
     Exit,
     Fault,
 }
@@ -330,9 +355,9 @@ struct ManagedProcess {
     state: ManagedState,
     wake_at: u64,
     blocked_on: BlockReason,
-    inbox: MessageQueue<MESSAGE_CAPACITY>,
     file_handles: [Option<FileCapability>; FILE_HANDLE_CAPACITY],
     next_file_generation: u64,
+    endpoints: EndpointState,
     pending_file_open: Option<PendingFileOpen>,
     pending_file_read: Option<PendingFileRead>,
     pending_file_write: Option<PendingFileWrite>,
@@ -370,6 +395,211 @@ struct PendingInput {
     mask: u64,
 }
 
+/// Metadata of a receive that already validated its output buffer and is now
+/// parked on the published endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingReceive {
+    handle: u64,
+    generation: u64,
+    address: u64,
+    length: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EndpointRole {
+    /// Names the generation of the endpoint this process publishes itself.
+    Receive { generation: u64 },
+    /// Names one remote endpoint: a pid plus the generation it published.
+    Send {
+        target_pid: u8,
+        target_generation: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EndpointCapability {
+    handle: u64,
+    owner_pid: u8,
+    generation: u64,
+    slot: u8,
+    role: EndpointRole,
+}
+
+struct PublishedEndpoint {
+    generation: u64,
+    queue: ChannelQueue<ENDPOINT_QUEUE_CAPACITY>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EndpointDelivery {
+    /// Copied straight into a parked receiver's validated buffer.
+    Woken,
+    /// Admitted to the endpoint queue, which now holds this many messages.
+    Queued(usize),
+    /// The sender already has a message queued on this endpoint.
+    DuplicateProducer,
+    QueueFull,
+    CopyFailed,
+    /// No live process publishes the generation this handle names.
+    Stale,
+}
+
+/// Per-process endpoint authority: a small capability table, the single
+/// endpoint this process publishes, and the receive it is parked on.
+struct EndpointState {
+    owner_pid: u8,
+    handles: [Option<EndpointCapability>; ENDPOINT_HANDLE_CAPACITY],
+    next_generation: u64,
+    published: Option<PublishedEndpoint>,
+    pending_receive: Option<PendingReceive>,
+}
+
+const fn endpoint_handle(owner_pid: u8, generation: u64, slot: usize) -> u64 {
+    ENDPOINT_HANDLE_TAG | ((owner_pid as u64) << 40) | (generation << 8) | (slot as u64 + 1)
+}
+
+fn endpoint_handle_slot(handle: u64) -> Option<usize> {
+    if handle & ENDPOINT_HANDLE_TAG_MASK != ENDPOINT_HANDLE_TAG {
+        return None;
+    }
+    let slot = (handle & 0xff) as usize;
+    (1..=ENDPOINT_HANDLE_CAPACITY)
+        .contains(&slot)
+        .then_some(slot - 1)
+}
+
+impl EndpointState {
+    const fn new(owner_pid: u8) -> Self {
+        Self {
+            owner_pid,
+            handles: [None; ENDPOINT_HANDLE_CAPACITY],
+            next_generation: 1,
+            published: None,
+            pending_receive: None,
+        }
+    }
+
+    fn published_generation(&self) -> Option<u64> {
+        self.published.as_ref().map(|endpoint| endpoint.generation)
+    }
+
+    fn queue_depth(&self) -> usize {
+        self.published
+            .as_ref()
+            .map_or(0, |endpoint| endpoint.queue.len())
+    }
+
+    fn next_generation(&mut self) -> Option<u64> {
+        let generation = self.next_generation;
+        if generation > ENDPOINT_GENERATION_MAX {
+            return None;
+        }
+        self.next_generation = generation + 1;
+        Some(generation)
+    }
+
+    fn allocate(&mut self, role: EndpointRole) -> Option<u64> {
+        let slot = self.handles.iter().position(Option::is_none)?;
+        let generation = self.next_generation()?;
+        let handle = endpoint_handle(self.owner_pid, generation, slot);
+        self.handles[slot] = Some(EndpointCapability {
+            handle,
+            owner_pid: self.owner_pid,
+            generation,
+            slot: slot as u8,
+            role,
+        });
+        Some(handle)
+    }
+
+    /// Resolves a handle this process owns. The tag, decoded slot, owner pid and
+    /// generation must reproduce the handle exactly, so neither a guessed value
+    /// nor another process' handle nor a stale local handle can ever resolve.
+    fn capability(&self, handle: u64) -> Option<EndpointCapability> {
+        let slot = endpoint_handle_slot(handle)?;
+        let capability = self.handles[slot]?;
+        (capability.handle == handle
+            && capability.owner_pid == self.owner_pid
+            && capability.slot as usize == slot
+            && endpoint_handle(capability.owner_pid, capability.generation, slot) == handle)
+            .then_some(capability)
+    }
+
+    fn send_capability(&self, handle: u64) -> Option<(u8, u64)> {
+        match self.capability(handle)?.role {
+            EndpointRole::Send {
+                target_pid,
+                target_generation,
+            } => Some((target_pid, target_generation)),
+            EndpointRole::Receive { .. } => None,
+        }
+    }
+
+    /// A receive capability is only usable while it still names the exact
+    /// endpoint generation this process publishes right now.
+    fn receive_generation(&self, handle: u64) -> Option<u64> {
+        let EndpointRole::Receive { generation } = self.capability(handle)?.role else {
+            return None;
+        };
+        (self.published_generation() == Some(generation)).then_some(generation)
+    }
+
+    /// Publishes an empty endpoint and returns its owned receive handle. Fails
+    /// when an endpoint is already published or the handle table is full.
+    fn create(&mut self) -> Option<u64> {
+        if self.published.is_some() || !self.handles.iter().any(Option::is_none) {
+            return None;
+        }
+        let generation = self.next_generation()?;
+        let handle = self.allocate(EndpointRole::Receive { generation })?;
+        self.published = Some(PublishedEndpoint {
+            generation,
+            queue: ChannelQueue::new(),
+        });
+        Some(handle)
+    }
+
+    /// Closing a send capability revokes only that handle; closing the receive
+    /// capability also drops the queue and unpublishes the endpoint.
+    fn close(&mut self, handle: u64) -> Option<EndpointRole> {
+        let capability = self.capability(handle)?;
+        if let EndpointRole::Receive { generation } = capability.role {
+            if self.published_generation() != Some(generation) {
+                return None;
+            }
+            self.published = None;
+            self.pending_receive = None;
+        }
+        self.handles[capability.slot as usize] = None;
+        Some(capability.role)
+    }
+
+    /// Drops every send capability naming one remote endpoint generation.
+    fn revoke_send_handles(&mut self, target_pid: u8, target_generation: u64) -> usize {
+        let mut revoked = 0;
+        for entry in self.handles.iter_mut() {
+            let names_target = matches!(
+                entry.map(|capability| capability.role),
+                Some(EndpointRole::Send {
+                    target_pid: pid,
+                    target_generation: generation,
+                }) if pid == target_pid && generation == target_generation
+            );
+            if names_target {
+                *entry = None;
+                revoked += 1;
+            }
+        }
+        revoked
+    }
+
+    fn clear(&mut self) {
+        self.handles = [None; ENDPOINT_HANDLE_CAPACITY];
+        self.published = None;
+        self.pending_receive = None;
+    }
+}
+
 #[derive(Clone, Copy)]
 struct FileCapability {
     handle: u64,
@@ -383,7 +613,7 @@ struct FileCapability {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum BlockReason {
     None,
-    Receive,
+    Endpoint,
     Child(u8),
     FileOpen,
     FileRead,
@@ -393,29 +623,22 @@ enum BlockReason {
 
 impl ManagedProcess {
     fn new(task_id: u32, parent_pid: u8, process: UserProcess) -> Self {
+        let endpoints = EndpointState::new(process.pid);
         Self {
             task_id,
             parent_pid,
             state: ManagedState::Ready,
             wake_at: 0,
             blocked_on: BlockReason::None,
-            inbox: MessageQueue::new(),
             file_handles: [None; FILE_HANDLE_CAPACITY],
             next_file_generation: 1,
+            endpoints,
             pending_file_open: None,
             pending_file_read: None,
             pending_file_write: None,
             pending_input: None,
             process,
         }
-    }
-
-    fn push_message(&mut self, value: u64) -> bool {
-        self.inbox.push(value)
-    }
-
-    fn pop_message(&mut self) -> Option<u64> {
-        self.inbox.pop()
     }
 
     fn allocate_file_handle(
@@ -470,6 +693,7 @@ impl ManagedProcess {
 
     fn revoke_resources(&mut self) {
         self.file_handles = [None; FILE_HANDLE_CAPACITY];
+        self.endpoints.clear();
         self.pending_file_open = None;
         self.pending_file_read = None;
         self.pending_file_write = None;
@@ -583,6 +807,67 @@ impl ProcessManager {
         Ok((parent_pid, child_pid))
     }
 
+    /// Launches a receiver and the two producers that fan into it. Both
+    /// producers are children of the receiver, so the receiver owns their
+    /// terminal states and can reap them itself.
+    pub fn spawn_endpoint_fan_in(
+        &mut self,
+        receiver_task_id: u32,
+        a_task_id: u32,
+        b_task_id: u32,
+    ) -> Result<(u8, u8, u8), LaunchError> {
+        let mut free = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.is_none().then_some(index));
+        let receiver_slot = free.next().ok_or(LaunchError::ProcessTableFull)?;
+        let a_slot = free.next().ok_or(LaunchError::ProcessTableFull)?;
+        let b_slot = free.next().ok_or(LaunchError::ProcessTableFull)?;
+        let elf_bytes = user_elf()?;
+        let receiver_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let a_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let b_pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+        let receiver_token = TOKEN_FANIN_RECEIVER_MODE | ((a_pid as u64) << 8) | b_pid as u64;
+        let mut receiver = build_process(receiver_pid, receiver_token, elf_bytes)
+            .map_err(|_| LaunchError::ProcessBuildFailed)?;
+        let mut producer_a = match build_process(
+            a_pid,
+            TOKEN_FANIN_PRODUCER_A_MODE | receiver_pid as u64,
+            elf_bytes,
+        ) {
+            Ok(process) => process,
+            Err(_) => {
+                let _ = reclaim_process(&mut receiver);
+                return Err(LaunchError::ProcessBuildFailed);
+            }
+        };
+        let producer_b = match build_process(
+            b_pid,
+            TOKEN_FANIN_PRODUCER_B_MODE | receiver_pid as u64,
+            elf_bytes,
+        ) {
+            Ok(process) => process,
+            Err(_) => {
+                let _ = reclaim_process(&mut producer_a);
+                let _ = reclaim_process(&mut receiver);
+                return Err(LaunchError::ProcessBuildFailed);
+            }
+        };
+        self.slots[receiver_slot] = Some(ManagedProcess::new(receiver_task_id, 0, receiver));
+        self.slots[a_slot] = Some(ManagedProcess::new(a_task_id, receiver_pid, producer_a));
+        self.slots[b_slot] = Some(ManagedProcess::new(b_task_id, receiver_pid, producer_b));
+        DYNAMIC_PROCESSES.fetch_add(3, Ordering::AcqRel);
+        crate::serial::print("USER_FANIN_SPAWN receiver=");
+        crate::serial::print_u64(receiver_pid as u64);
+        crate::serial::print(" a=");
+        crate::serial::print_u64(a_pid as u64);
+        crate::serial::print(" b=");
+        crate::serial::print_u64(b_pid as u64);
+        crate::serial::println("");
+        Ok((receiver_pid, a_pid, b_pid))
+    }
+
     pub fn poll(&mut self, tick: u64) -> Option<ProcessUpdate> {
         self.wake_sleepers(tick);
         for offset in 1..=MAX_ASYNC_PROCESSES {
@@ -608,8 +893,6 @@ impl ProcessManager {
                     TOTAL_PREEMPTIONS.fetch_add(1, Ordering::AcqRel);
                 }
                 ProcessEvent::Sleep(ticks) => self.block_sleep(index, tick, ticks),
-                ProcessEvent::Send { pid, value } => self.complete_send(index, pid, value),
-                ProcessEvent::Receive => self.complete_receive(index),
                 ProcessEvent::WaitChild(pid) => self.complete_child_wait(index, pid),
                 ProcessEvent::ReadFile {
                     path,
@@ -650,6 +933,17 @@ impl ProcessManager {
                     length,
                     mask,
                 } => self.block_input(index, address, length, mask),
+                ProcessEvent::CreateEndpoint => self.complete_endpoint_create(index),
+                ProcessEvent::ConnectEndpoint(pid) => self.complete_endpoint_connect(index, pid),
+                ProcessEvent::SendEndpoint { handle, value } => {
+                    self.complete_endpoint_send(index, handle, value)
+                }
+                ProcessEvent::ReceiveEndpoint {
+                    handle,
+                    address,
+                    length,
+                } => self.complete_endpoint_receive(index, handle, address, length),
+                ProcessEvent::CloseEndpoint(handle) => self.complete_endpoint_close(index, handle),
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
@@ -698,52 +992,325 @@ impl ProcessManager {
         crate::serial::println("");
     }
 
-    fn complete_send(&mut self, sender_index: usize, target_pid: u8, value: u64) {
-        let target_index = self.slots.iter().position(|slot| {
-            slot.as_ref().is_some_and(|managed| {
-                managed.process.pid == target_pid && !managed.process.completed
-            })
-        });
-        let delivered = target_index.is_some_and(|index| {
-            let target = self.slots[index].as_mut().expect("target process exists");
-            if target.state == ManagedState::Waiting && target.blocked_on == BlockReason::Receive {
-                target.process.context.rax = value;
-                target.state = ManagedState::Ready;
-                target.blocked_on = BlockReason::None;
-                true
-            } else {
-                target.push_message(value)
+    fn complete_endpoint_create(&mut self, index: usize) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let handle = managed.endpoints.create();
+        managed.process.context.rax =
+            handle.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+        managed.state = ManagedState::Ready;
+        match handle {
+            Some(handle) => {
+                crate::serial::print("USER_ENDPOINT_CREATED pid=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::print(" handle=0x");
+                crate::serial::print_hex(handle);
+                crate::serial::print(" generation=");
+                crate::serial::print_u64(managed.endpoints.published_generation().unwrap_or(0));
+                crate::serial::println("");
             }
-        });
-        let sender = self.slots[sender_index]
-            .as_mut()
-            .expect("selected process exists");
-        sender.process.context.rax = if delivered {
-            0
-        } else {
-            syscall::error_code(syscall::SyscallError::Unavailable)
-        };
-        sender.state = ManagedState::Ready;
-        if delivered {
-            crate::serial::print("USER_MESSAGE_SENT from=");
-            crate::serial::print_u64(sender.process.pid as u64);
-            crate::serial::print(" to=");
-            crate::serial::print_u64(target_pid as u64);
-            crate::serial::println("");
+            None => {
+                crate::serial::print("USER_ENDPOINT_CREATE_DENIED pid=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::println("");
+            }
         }
     }
 
-    fn complete_receive(&mut self, index: usize) {
+    fn complete_endpoint_connect(&mut self, index: usize, target_pid: u8) {
+        let target_generation = self.slots.iter().flatten().find_map(|managed| {
+            (managed.process.pid == target_pid && !managed.process.completed)
+                .then(|| managed.endpoints.published_generation())
+                .flatten()
+        });
         let managed = self.slots[index].as_mut().expect("selected process exists");
-        if let Some(value) = managed.pop_message() {
-            managed.process.context.rax = value;
+        let handle = target_generation.and_then(|target_generation| {
+            managed.endpoints.allocate(EndpointRole::Send {
+                target_pid,
+                target_generation,
+            })
+        });
+        managed.process.context.rax =
+            handle.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
+        managed.state = ManagedState::Ready;
+        match handle {
+            Some(handle) => {
+                crate::serial::print("USER_ENDPOINT_CONNECTED from=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::print(" to=");
+                crate::serial::print_u64(target_pid as u64);
+                crate::serial::print(" handle=0x");
+                crate::serial::print_hex(handle);
+                crate::serial::print(" generation=");
+                crate::serial::print_u64(target_generation.unwrap_or(0));
+                crate::serial::println("");
+            }
+            None => {
+                crate::serial::print("USER_ENDPOINT_CONNECT_DENIED from=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::print(" to=");
+                crate::serial::print_u64(target_pid as u64);
+                crate::serial::println("");
+            }
+        }
+    }
+
+    fn complete_endpoint_send(&mut self, index: usize, handle: u64, value: u64) {
+        let (sender_pid, target) = {
+            let managed = self.slots[index].as_ref().expect("selected process exists");
+            (
+                managed.process.pid,
+                managed.endpoints.send_capability(handle),
+            )
+        };
+        let Some((target_pid, target_generation)) = target else {
+            let managed = self.slots[index].as_mut().expect("selected process exists");
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_MESSAGE_RECEIVED pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::print("USER_ENDPOINT_SEND_DENIED pid=");
+            crate::serial::print_u64(sender_pid as u64);
+            crate::serial::print(" handle=0x");
+            crate::serial::print_hex(handle);
             crate::serial::println("");
-        } else {
+            return;
+        };
+        let delivery = self.deliver_endpoint_message(
+            target_pid,
+            target_generation,
+            UserChannelMessage {
+                sender_pid: sender_pid as u64,
+                value,
+            },
+        );
+        match delivery {
+            EndpointDelivery::Woken => {
+                ENDPOINT_WAKES.fetch_add(1, Ordering::AcqRel);
+                COMPLETED_ENDPOINT_MESSAGES.fetch_add(1, Ordering::AcqRel);
+            }
+            EndpointDelivery::DuplicateProducer => {
+                ENDPOINT_FAIRNESS_DENIALS.fetch_add(1, Ordering::AcqRel);
+            }
+            _ => {}
+        }
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        managed.process.context.rax = match delivery {
+            EndpointDelivery::Woken | EndpointDelivery::Queued(_) => 0,
+            EndpointDelivery::DuplicateProducer
+            | EndpointDelivery::QueueFull
+            | EndpointDelivery::CopyFailed => {
+                syscall::error_code(syscall::SyscallError::Unavailable)
+            }
+            EndpointDelivery::Stale => syscall::error_code(syscall::SyscallError::InvalidArgument),
+        };
+        managed.state = ManagedState::Ready;
+        crate::serial::print(match delivery {
+            EndpointDelivery::Woken => "USER_ENDPOINT_DELIVERED from=",
+            EndpointDelivery::Queued(_) => "USER_ENDPOINT_QUEUED from=",
+            EndpointDelivery::DuplicateProducer => "USER_CHANNEL_FAIRNESS_DENIED from=",
+            EndpointDelivery::QueueFull => "USER_ENDPOINT_QUEUE_FULL from=",
+            EndpointDelivery::CopyFailed => "USER_ENDPOINT_COPY_FAILED from=",
+            EndpointDelivery::Stale => "USER_ENDPOINT_SEND_STALE from=",
+        });
+        crate::serial::print_u64(sender_pid as u64);
+        crate::serial::print(" to=");
+        crate::serial::print_u64(target_pid as u64);
+        crate::serial::print(" generation=");
+        crate::serial::print_u64(target_generation);
+        if let EndpointDelivery::Queued(depth) = delivery {
+            crate::serial::print(" depth=");
+            crate::serial::print_u64(depth as u64);
+        }
+        crate::serial::println("");
+    }
+
+    /// Hands one message to a published endpoint: straight into a validated
+    /// waiter when the target is parked on that exact endpoint, otherwise onto
+    /// its fair queue. Nothing is ever overwritten.
+    fn deliver_endpoint_message(
+        &mut self,
+        target_pid: u8,
+        target_generation: u64,
+        message: UserChannelMessage,
+    ) -> EndpointDelivery {
+        let target_index = self.slots.iter().position(|slot| {
+            slot.as_ref().is_some_and(|managed| {
+                managed.process.pid == target_pid
+                    && !managed.process.completed
+                    && managed.endpoints.published_generation() == Some(target_generation)
+            })
+        });
+        let Some(target_index) = target_index else {
+            return EndpointDelivery::Stale;
+        };
+        let target = self.slots[target_index]
+            .as_mut()
+            .expect("endpoint target exists");
+        let pending = target.endpoints.pending_receive.filter(|pending| {
+            target.state == ManagedState::Waiting
+                && target.blocked_on == BlockReason::Endpoint
+                && pending.generation == target_generation
+        });
+        if let Some(pending) = pending {
+            if pending.length != USER_CHANNEL_MESSAGE_SIZE
+                || target.endpoints.receive_generation(pending.handle) != Some(target_generation)
+                || !copy_to_user_data(
+                    &target.process,
+                    pending.address,
+                    channel_message_bytes(&message),
+                )
+            {
+                return EndpointDelivery::CopyFailed;
+            }
+            target.endpoints.pending_receive = None;
+            target.process.context.rax = USER_CHANNEL_MESSAGE_SIZE;
+            target.state = ManagedState::Ready;
+            target.blocked_on = BlockReason::None;
+            return EndpointDelivery::Woken;
+        }
+        let Some(endpoint) = target.endpoints.published.as_mut() else {
+            return EndpointDelivery::Stale;
+        };
+        if endpoint.queue.contains_sender(message.sender_pid) {
+            return EndpointDelivery::DuplicateProducer;
+        }
+        if !endpoint.queue.push(message) {
+            return EndpointDelivery::QueueFull;
+        }
+        EndpointDelivery::Queued(endpoint.queue.len())
+    }
+
+    fn complete_endpoint_receive(&mut self, index: usize, handle: u64, address: u64, length: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let generation = managed.endpoints.receive_generation(handle).filter(|_| {
+            length == USER_CHANNEL_MESSAGE_SIZE
+                && valid_user_data_buffer(&managed.process, address, length)
+        });
+        let Some(generation) = generation else {
+            managed.process.context.rax =
+                syscall::error_code(syscall::SyscallError::InvalidArgument);
+            managed.state = ManagedState::Ready;
+            crate::serial::print("USER_ENDPOINT_RECEIVE_DENIED pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::print(" handle=0x");
+            crate::serial::print_hex(handle);
+            crate::serial::println("");
+            return;
+        };
+        let queued = managed
+            .endpoints
+            .published
+            .as_mut()
+            .and_then(|endpoint| endpoint.queue.pop());
+        let Some(message) = queued else {
             managed.state = ManagedState::Waiting;
-            managed.blocked_on = BlockReason::Receive;
+            managed.blocked_on = BlockReason::Endpoint;
+            managed.endpoints.pending_receive = Some(PendingReceive {
+                handle,
+                generation,
+                address,
+                length,
+            });
+            crate::serial::print("USER_ENDPOINT_BLOCK pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::print(" handle=0x");
+            crate::serial::print_hex(handle);
+            crate::serial::print(" generation=");
+            crate::serial::print_u64(generation);
+            crate::serial::println("");
+            return;
+        };
+        let copied = copy_to_user_data(&managed.process, address, channel_message_bytes(&message));
+        if copied {
+            COMPLETED_ENDPOINT_MESSAGES.fetch_add(1, Ordering::AcqRel);
+        }
+        managed.endpoints.pending_receive = None;
+        managed.process.context.rax = if copied {
+            USER_CHANNEL_MESSAGE_SIZE
+        } else {
+            syscall::error_code(syscall::SyscallError::InvalidArgument)
+        };
+        managed.state = ManagedState::Ready;
+        managed.blocked_on = BlockReason::None;
+        crate::serial::print(if copied {
+            "USER_ENDPOINT_RECEIVED pid="
+        } else {
+            "USER_ENDPOINT_COPY_FAILED pid="
+        });
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" from=");
+        crate::serial::print_u64(message.sender_pid);
+        crate::serial::print(" generation=");
+        crate::serial::print_u64(generation);
+        crate::serial::print(" depth=");
+        crate::serial::print_u64(managed.endpoints.queue_depth() as u64);
+        crate::serial::println("");
+    }
+
+    fn complete_endpoint_close(&mut self, index: usize, handle: u64) {
+        let (owner_pid, role) = {
+            let managed = self.slots[index].as_mut().expect("selected process exists");
+            (managed.process.pid, managed.endpoints.close(handle))
+        };
+        let revoked = match role {
+            Some(EndpointRole::Receive { generation }) => {
+                self.revoke_endpoint_send_handles(owner_pid, generation)
+            }
+            _ => 0,
+        };
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        managed.process.context.rax = if role.is_some() {
+            0
+        } else {
+            syscall::error_code(syscall::SyscallError::InvalidArgument)
+        };
+        managed.state = ManagedState::Ready;
+        crate::serial::print("USER_ENDPOINT_CLOSED pid=");
+        crate::serial::print_u64(owner_pid as u64);
+        crate::serial::print(" handle=0x");
+        crate::serial::print_hex(handle);
+        crate::serial::print(" kind=");
+        crate::serial::print(match role {
+            Some(EndpointRole::Receive { .. }) => "receive",
+            Some(EndpointRole::Send { .. }) => "send",
+            None => "rejected",
+        });
+        crate::serial::print(" revoked=");
+        crate::serial::print_u64(revoked as u64);
+        crate::serial::println("");
+    }
+
+    /// Revokes every send capability held anywhere in the manager that names
+    /// one endpoint generation, so no handle outlives the endpoint it targets.
+    fn revoke_endpoint_send_handles(&mut self, target_pid: u8, target_generation: u64) -> usize {
+        let mut revoked = 0;
+        for managed in self.slots.iter_mut().flatten() {
+            revoked += managed
+                .endpoints
+                .revoke_send_handles(target_pid, target_generation);
+        }
+        if revoked > 0 {
+            crate::serial::print("USER_ENDPOINT_REVOKED pid=");
+            crate::serial::print_u64(target_pid as u64);
+            crate::serial::print(" generation=");
+            crate::serial::print_u64(target_generation);
+            crate::serial::print(" handles=");
+            crate::serial::print_u64(revoked as u64);
+            crate::serial::println("");
+        }
+        revoked
+    }
+
+    /// Clears one process' endpoint authority and revokes the remote send
+    /// handles that depended on it. Always runs before address-space reclaim.
+    fn release_endpoints(&mut self, index: usize) {
+        let (owner_pid, generation) = {
+            let managed = self.slots[index].as_mut().expect("selected process exists");
+            let generation = managed.endpoints.published_generation();
+            managed.endpoints.clear();
+            (managed.process.pid, generation)
+        };
+        if let Some(generation) = generation {
+            self.revoke_endpoint_send_handles(owner_pid, generation);
         }
     }
 
@@ -1257,6 +1824,7 @@ impl ProcessManager {
     }
 
     fn complete_terminal(&mut self, index: usize, state: ManagedState) {
+        self.release_endpoints(index);
         let (pid, exit_code) = {
             let managed = self.slots[index].as_mut().expect("selected process exists");
             managed.state = state;
@@ -1287,15 +1855,22 @@ impl ProcessManager {
     }
 
     pub fn kill(&mut self, task_id: u32) -> Result<ProcessUpdate, LaunchError> {
-        let managed = self
+        let index = self
             .slots
-            .iter_mut()
-            .flatten()
-            .find(|managed| managed.task_id == task_id)
+            .iter()
+            .position(|slot| {
+                slot.as_ref()
+                    .is_some_and(|managed| managed.task_id == task_id)
+            })
             .ok_or(LaunchError::ImageUnavailable)?;
-        if managed.process.completed {
+        if self.slots[index]
+            .as_ref()
+            .is_some_and(|managed| managed.process.completed)
+        {
             return Err(LaunchError::InvalidResult);
         }
+        self.release_endpoints(index);
+        let managed = self.slots[index].as_mut().expect("killed process exists");
         managed.process.completed = true;
         managed.process.killed = true;
         managed.process.event = ProcessEvent::Exit;
@@ -1332,12 +1907,18 @@ impl ProcessManager {
                     .is_some_and(|managed| managed.task_id == task_id)
             })
             .ok_or(LaunchError::ImageUnavailable)?;
+        if !self.slots[index]
+            .as_ref()
+            .ok_or(LaunchError::ImageUnavailable)?
+            .process
+            .completed
+        {
+            return Err(LaunchError::InvalidResult);
+        }
+        self.release_endpoints(index);
         let managed = self.slots[index]
             .as_ref()
             .ok_or(LaunchError::ImageUnavailable)?;
-        if !managed.process.completed {
-            return Err(LaunchError::InvalidResult);
-        }
         let result = WaitResult {
             pid: managed.process.pid,
             state: if managed.process.killed {
@@ -1552,8 +2133,6 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 ProcessEvent::Yield | ProcessEvent::Preempt => {}
                 ProcessEvent::Exit | ProcessEvent::Fault => live -= 1,
                 ProcessEvent::Sleep(_)
-                | ProcessEvent::Send { .. }
-                | ProcessEvent::Receive
                 | ProcessEvent::WaitChild(_)
                 | ProcessEvent::ReadFile { .. }
                 | ProcessEvent::OpenFile { .. }
@@ -1561,7 +2140,12 @@ pub fn run_probe(elf_bytes: &'static [u8]) -> UserProbeResult {
                 | ProcessEvent::StatHandle { .. }
                 | ProcessEvent::CloseHandle(_)
                 | ProcessEvent::WriteHandle { .. }
-                | ProcessEvent::WaitInput { .. } => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::WaitInput { .. }
+                | ProcessEvent::CreateEndpoint
+                | ProcessEvent::ConnectEndpoint(_)
+                | ProcessEvent::SendEndpoint { .. }
+                | ProcessEvent::ReceiveEndpoint { .. }
+                | ProcessEvent::CloseEndpoint(_) => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -1674,6 +2258,18 @@ pub fn opened_file_handle_count() -> u64 {
     OPENED_FILE_HANDLES.load(Ordering::Acquire)
 }
 
+pub fn completed_endpoint_message_count() -> u64 {
+    COMPLETED_ENDPOINT_MESSAGES.load(Ordering::Acquire)
+}
+
+pub fn channel_fairness_denial_count() -> u64 {
+    ENDPOINT_FAIRNESS_DENIALS.load(Ordering::Acquire)
+}
+
+pub fn endpoint_wake_count() -> u64 {
+    ENDPOINT_WAKES.load(Ordering::Acquire)
+}
+
 pub fn closed_file_handle_count() -> u64 {
     CLOSED_FILE_HANDLES.load(Ordering::Acquire)
 }
@@ -1726,7 +2322,53 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     Ok(result)
 }
 
+/// Latches the last line each pid wrote. A write syscall only marks its line
+/// pending; the line is handed to whichever poll observes the process next, and
+/// a timer preemption can land between the write and the syscall the probe is
+/// waiting for. Stages therefore ask the latch what a pid printed instead of
+/// demanding the line on one specific update.
+struct OutputLatch {
+    lines: [(u8, FixedText); MAX_ASYNC_PROCESSES],
+    used: usize,
+}
+
+impl OutputLatch {
+    const fn new() -> Self {
+        Self {
+            lines: [(0, FixedText::empty()); MAX_ASYNC_PROCESSES],
+            used: 0,
+        }
+    }
+
+    fn observe(&mut self, update: &ProcessUpdate) {
+        if update.output.is_empty() {
+            return;
+        }
+        if let Some(entry) = self.lines[..self.used]
+            .iter_mut()
+            .find(|(pid, _)| *pid == update.pid)
+        {
+            entry.1 = update.output;
+            return;
+        }
+        if self.used < self.lines.len() {
+            self.lines[self.used] = (update.pid, update.output);
+            self.used += 1;
+        }
+    }
+
+    fn text(&self, pid: u8) -> &str {
+        self.lines[..self.used]
+            .iter()
+            .find(|(entry, _)| *entry == pid)
+            .map_or("", |(_, text)| text.as_str())
+    }
+}
+
 pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
+    /// Upper bound on the polls a single-process stage spends waiting for its
+    /// next observation, so an extra preemption cannot strand the stage.
+    const PROBE_POLL_BUDGET: usize = 8;
     const NORMAL_TASK: u32 = 0x1000;
     const HOLD_TASK: u32 = 0x1001;
     const PARENT_TASK: u32 = 0x1002;
@@ -1735,6 +2377,9 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     const WRITE_TASK: u32 = 0x1005;
     const INPUT_TASK: u32 = 0x1006;
     const INPUT_CONTENDER_TASK: u32 = 0x1007;
+    const FANIN_RECEIVER_TASK: u32 = 0x1008;
+    const FANIN_A_TASK: u32 = 0x1009;
+    const FANIN_B_TASK: u32 = 0x100a;
 
     let reclaimed_before = reclaimed_frame_count();
     let mut manager = ProcessManager::new();
@@ -1742,10 +2387,25 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     if manager.spawn_init(NORMAL_TASK, false).is_err() {
         fail("USER_ASYNC_SPAWN_FAILED");
     }
-    let first = manager.poll(0);
-    let second = manager.poll(0);
-    if !matches!(first, Some(update) if update.state == ManagedState::Ready)
-        || !matches!(second, Some(update) if update.state == ManagedState::Exited && update.exit_code == 0 && !update.output.is_empty())
+    let mut outputs = OutputLatch::new();
+    let mut saw_ready = false;
+    let mut async_exit = None;
+    for _ in 0..PROBE_POLL_BUDGET {
+        let Some(update) = manager.poll(0) else {
+            continue;
+        };
+        outputs.observe(&update);
+        match update.state {
+            ManagedState::Ready => saw_ready = true,
+            ManagedState::Exited => {
+                async_exit = Some(update);
+                break;
+            }
+            _ => {}
+        }
+    }
+    if !saw_ready
+        || !matches!(async_exit, Some(update) if update.exit_code == 0 && !outputs.text(update.pid).is_empty())
     {
         fail("USER_ASYNC_EXIT_FAILED");
     }
@@ -1759,11 +2419,22 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     if manager.spawn_init(HOLD_TASK, true).is_err() {
         fail("USER_ASYNC_HOLD_FAILED");
     }
-    let first = manager.poll(0);
-    let second = manager.poll(0);
-    if !matches!(first, Some(update) if update.state == ManagedState::Ready)
-        || !matches!(second, Some(update) if update.state == ManagedState::Ready && !update.output.is_empty())
-    {
+    let mut outputs = OutputLatch::new();
+    let mut held_pid = None;
+    for _ in 0..PROBE_POLL_BUDGET {
+        let Some(update) = manager.poll(0) else {
+            continue;
+        };
+        outputs.observe(&update);
+        if update.state != ManagedState::Ready {
+            fail("USER_ASYNC_HOLD_FAILED");
+        }
+        held_pid = Some(update.pid);
+        if !outputs.text(update.pid).is_empty() {
+            break;
+        }
+    }
+    if !matches!(held_pid, Some(pid) if !outputs.text(pid).is_empty()) {
         fail("USER_ASYNC_HOLD_FAILED");
     }
     if !matches!(manager.kill(HOLD_TASK), Ok(update) if update.state == ManagedState::Killed && update.exit_code == 137)
@@ -1786,12 +2457,14 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     let (parent_pid, child_pid) = manager
         .spawn_coordination_pair(PARENT_TASK, CHILD_TASK)
         .unwrap_or_else(|_| fail("USER_PAIR_SPAWN_FAILED"));
+    let mut outputs = OutputLatch::new();
     let mut saw_parent_wait = false;
     let mut saw_child_sleep = false;
     let mut saw_child_exit = false;
     let mut saw_parent_exit = false;
     for tick in 1..=24 {
         if let Some(update) = manager.poll(tick) {
+            outputs.observe(&update);
             saw_parent_wait |= update.pid == parent_pid && update.state == ManagedState::Waiting;
             saw_child_sleep |= update.pid == child_pid && update.state == ManagedState::Sleeping;
             saw_child_exit |= update.pid == child_pid
@@ -1799,11 +2472,15 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                 && update.exit_code == 7;
             saw_parent_exit |= update.pid == parent_pid
                 && update.state == ManagedState::Exited
-                && update.exit_code == 0
-                && !update.output.is_empty();
+                && update.exit_code == 0;
         }
     }
-    if !saw_parent_wait || !saw_child_sleep || !saw_child_exit || !saw_parent_exit {
+    if !saw_parent_wait
+        || !saw_child_sleep
+        || !saw_child_exit
+        || !saw_parent_exit
+        || outputs.text(parent_pid).is_empty()
+    {
         fail("USER_COORDINATION_FAILED");
     }
     if !matches!(manager.wait(CHILD_TASK), Ok(result) if result.pid == child_pid && result.exit_code == 7)
@@ -1819,20 +2496,110 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     crate::serial::println("USER_MESSAGE_OK");
     crate::serial::println("USER_COORDINATION_OK");
 
+    // The fan-in image sleeps 5 / 10 / 800 ticks before its first send, and
+    // producer A waits another 2,000 after its refused send, so the stage cannot
+    // finish before tick FANIN_FIRST_TICK + 2_005. That retry gap is deliberately
+    // wide: the receiver wakes at 800 and every receive yields, so it needs two
+    // more slices to drain A1 and B1 and park on the empty queue before A2 lands
+    // and wakes it directly. On top of those deadlines each producer may spend
+    // bounded connect retries (ten ticks apart) waiting for the receiver's
+    // endpoint to appear, and producer B sleeps a further 200 ticks after its
+    // connect so A1 is queued first no matter how the retries interleaved. Here
+    // the receiver is spawned first and publishes before either producer wakes,
+    // so neither cost is actually paid, but the window carries slack for both
+    // plus the extra slices each process needs on either side of a sleep. It is
+    // a per-stage tick label, and every fan-in process is reaped here, so later
+    // stages restart their own numbering safely.
+    const FANIN_FIRST_TICK: u64 = 25;
+    const FANIN_LAST_TICK: u64 = FANIN_FIRST_TICK + 2_200;
+
+    let messages_before = completed_endpoint_message_count();
+    let denials_before = channel_fairness_denial_count();
+    let wakes_before = endpoint_wake_count();
+    let (receiver_pid, a_pid, b_pid) = manager
+        .spawn_endpoint_fan_in(FANIN_RECEIVER_TASK, FANIN_A_TASK, FANIN_B_TASK)
+        .unwrap_or_else(|_| fail("USER_FANIN_SPAWN_FAILED"));
+    let mut outputs = OutputLatch::new();
+    let mut saw_receiver_sleep = false;
+    let mut saw_a_sleep = false;
+    let mut saw_b_sleep = false;
+    let mut saw_receiver_block = false;
+    let mut saw_receiver_exit = false;
+    let mut saw_a_exit = false;
+    let mut saw_b_exit = false;
+    for tick in FANIN_FIRST_TICK..=FANIN_LAST_TICK {
+        // Draining every ready process before the tick advances is what makes
+        // the fan-in order deterministic: both producers reach their sends
+        // while the receiver is still asleep, and producer A only retries its
+        // refused send after the queue has been drained.
+        while let Some(update) = manager.poll(tick) {
+            outputs.observe(&update);
+            saw_receiver_sleep |=
+                update.pid == receiver_pid && update.state == ManagedState::Sleeping;
+            saw_a_sleep |= update.pid == a_pid && update.state == ManagedState::Sleeping;
+            saw_b_sleep |= update.pid == b_pid && update.state == ManagedState::Sleeping;
+            // Exactly two messages have been consumed when the third receive
+            // parks, which separates the endpoint block from the later
+            // child-wait blocks.
+            saw_receiver_block |= update.pid == receiver_pid
+                && update.state == ManagedState::Waiting
+                && completed_endpoint_message_count() == messages_before + 2;
+            saw_receiver_exit |= update.pid == receiver_pid
+                && update.state == ManagedState::Exited
+                && update.exit_code == 0;
+            saw_a_exit |= update.pid == a_pid
+                && update.state == ManagedState::Exited
+                && update.exit_code == 0;
+            saw_b_exit |= update.pid == b_pid
+                && update.state == ManagedState::Exited
+                && update.exit_code == 0;
+        }
+    }
+    if !saw_receiver_sleep
+        || !saw_a_sleep
+        || !saw_b_sleep
+        || !saw_receiver_block
+        || !saw_receiver_exit
+        || !saw_a_exit
+        || !saw_b_exit
+        || outputs.text(receiver_pid) != "INIT.ELF fan-in A1 B1 A2"
+        || completed_endpoint_message_count() != messages_before + 3
+        || channel_fairness_denial_count() != denials_before + 1
+        || endpoint_wake_count() != wakes_before + 1
+    {
+        fail("USER_FANIN_PROBE_FAILED");
+    }
+    if !matches!(manager.wait(FANIN_A_TASK), Ok(result) if result.pid == a_pid && result.exit_code == 0)
+        || !matches!(manager.wait(FANIN_B_TASK), Ok(result) if result.pid == b_pid && result.exit_code == 0)
+        || !matches!(manager.wait(FANIN_RECEIVER_TASK), Ok(result) if result.pid == receiver_pid && result.exit_code == 0)
+        || manager.live_count() != 0
+        || active_process_count() != 0
+        || reclaimed_frame_count() < reclaimed_before + 70
+    {
+        fail("USER_FANIN_REAP_FAILED");
+    }
+    crate::serial::println("USER_ENDPOINT_CAPABILITY_OK");
+    crate::serial::println("USER_CHANNEL_FAIRNESS_OK");
+    crate::serial::println("USER_ENDPOINT_WAKE_OK");
+    crate::serial::println("USER_FANIN_OK");
+
     if manager.spawn_file_init(FILE_TASK).is_err() {
         fail("USER_FILE_SPAWN_FAILED");
     }
     let opened_before = opened_file_handle_count();
     let closed_before = closed_file_handle_count();
     let reads_before = completed_file_read_count();
+    let mut outputs = OutputLatch::new();
     let mut saw_file_wait = false;
     let mut saw_file_exit = false;
+    let mut file_pid = 0u8;
     let mut read_offsets = [u64::MAX; 2];
     let mut read_count = 0usize;
-    for tick in 30..=72 {
+    for tick in 70..=112 {
         let Some(update) = manager.poll(tick) else {
             continue;
         };
+        outputs.observe(&update);
         if let Some(request) = update.vfs_request {
             saw_file_wait |= update.state == ManagedState::Waiting;
             if manager.poll(tick).is_some() {
@@ -1882,11 +2649,13 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                 UserVfsRequest::Write(_) => fail("USER_UNEXPECTED_FILE_WRITE"),
             }
         }
-        saw_file_exit |= update.state == ManagedState::Exited
-            && update.exit_code == 0
-            && update.output.as_str() == "INIT.ELF used open/read/stat/close";
+        if update.state == ManagedState::Exited && update.exit_code == 0 {
+            saw_file_exit = true;
+            file_pid = update.pid;
+        }
     }
     if !saw_file_exit
+        || outputs.text(file_pid) != "INIT.ELF used open/read/stat/close"
         || !saw_file_wait
         || read_count != 2
         || read_offsets != [0, 17]
@@ -1897,7 +2666,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         || !matches!(manager.wait(FILE_TASK), Ok(result) if result.exit_code == 0)
         || manager.live_count() != 0
         || active_process_count() != 0
-        || reclaimed_frame_count() < reclaimed_before + 50
+        || reclaimed_frame_count() < reclaimed_before + 80
     {
         fail("USER_FILE_PROBE_FAILED");
     }
@@ -1916,12 +2685,15 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     let writes_before = completed_file_write_count();
     let mut write_offsets = [u64::MAX; 2];
     let mut write_count = 0usize;
+    let mut outputs = OutputLatch::new();
     let mut saw_write_wait = false;
     let mut saw_write_exit = false;
-    for tick in 80..=150 {
+    let mut write_pid = 0u8;
+    for tick in 120..=190 {
         let Some(update) = manager.poll(tick) else {
             continue;
         };
+        outputs.observe(&update);
         if let Some(request) = update.vfs_request {
             saw_write_wait |= update.state == ManagedState::Waiting;
             if manager.poll(tick).is_some() {
@@ -1983,11 +2755,13 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
                 }
             }
         }
-        saw_write_exit |= update.state == ManagedState::Exited
-            && update.exit_code == 0
-            && update.output.as_str() == "INIT.ELF wrote and verified /USER/APP.TXT";
+        if update.state == ManagedState::Exited && update.exit_code == 0 {
+            saw_write_exit = true;
+            write_pid = update.pid;
+        }
     }
     if !saw_write_exit
+        || outputs.text(write_pid) != "INIT.ELF wrote and verified /USER/APP.TXT"
         || !saw_write_wait
         || write_count != 2
         || write_offsets != [0, 13]
@@ -1999,7 +2773,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         || !matches!(manager.wait(WRITE_TASK), Ok(result) if result.exit_code == 0)
         || manager.live_count() != 0
         || active_process_count() != 0
-        || reclaimed_frame_count() < reclaimed_before + 60
+        || reclaimed_frame_count() < reclaimed_before + 90
     {
         fail("USER_FILE_WRITE_PROBE_FAILED");
     }
@@ -2011,12 +2785,13 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         fail("USER_INPUT_SPAWN_FAILED");
     }
     let input_before = completed_input_wait_count();
+    let mut outputs = OutputLatch::new();
     let mut saw_input_wait = false;
     let mut input_contender_spawned = false;
     let mut saw_input_busy = false;
     let mut saw_input_wake = false;
     let mut saw_input_exit = false;
-    for tick in 151..=220 {
+    for tick in 191..=260 {
         if saw_input_wait && !input_contender_spawned {
             if manager.spawn_input_init(INPUT_CONTENDER_TASK).is_err() {
                 fail("USER_INPUT_CONTENDER_SPAWN_FAILED");
@@ -2047,6 +2822,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         let Some(update) = manager.poll(tick) else {
             continue;
         };
+        outputs.observe(&update);
         if update.state == ManagedState::Waiting {
             saw_input_wait = true;
             if !input_contender_spawned && manager.poll(tick).is_some() {
@@ -2056,10 +2832,11 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         saw_input_busy |= update.task_id == INPUT_CONTENDER_TASK
             && update.state == ManagedState::Exited
             && update.exit_code == 0
-            && update.output.as_str() == "INIT.ELF input channel is busy";
-        saw_input_exit |= update.state == ManagedState::Exited
+            && outputs.text(update.pid) == "INIT.ELF input channel is busy";
+        saw_input_exit |= update.task_id == INPUT_TASK
+            && update.state == ManagedState::Exited
             && update.exit_code == 0
-            && update.output.as_str() == "INIT.ELF received key: G";
+            && outputs.text(update.pid) == "INIT.ELF received key: G";
     }
     if !saw_input_wait
         || !saw_input_wake
@@ -2070,7 +2847,7 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
         || !matches!(manager.wait(INPUT_CONTENDER_TASK), Ok(result) if result.exit_code == 0)
         || manager.live_count() != 0
         || active_process_count() != 0
-        || reclaimed_frame_count() < reclaimed_before + 80
+        || reclaimed_frame_count() < reclaimed_before + 110
     {
         fail("USER_INPUT_PROBE_FAILED");
     }
@@ -2445,18 +3222,6 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.event = ProcessEvent::Sleep(ticks);
             1
         }
-        Ok(SyscallAction::Send { pid, value }) => {
-            frame.rax = 0;
-            process.context = *frame;
-            process.event = ProcessEvent::Send { pid, value };
-            1
-        }
-        Ok(SyscallAction::Receive) => {
-            frame.rax = 0;
-            process.context = *frame;
-            process.event = ProcessEvent::Receive;
-            1
-        }
         Ok(SyscallAction::WaitChild { pid }) => {
             frame.rax = 0;
             process.context = *frame;
@@ -2468,12 +3233,16 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 abi_version: USER_ABI_VERSION,
                 page_size: paging::PAGE_SIZE,
                 timer_hz: USER_TIMER_HZ,
-                message_capacity: USER_MESSAGE_CAPACITY,
+                // `message_capacity` keeps its ABI 8 value; it now reports the
+                // depth of one endpoint queue.
+                message_capacity: ENDPOINT_QUEUE_CAPACITY as u64,
                 max_file_read: USER_FILE_READ_MAX as u64,
                 file_handle_capacity: USER_FILE_HANDLE_CAPACITY,
                 max_file_write: USER_FILE_WRITE_MAX as u64,
                 input_event_size: core::mem::size_of::<UserInputEvent>() as u64,
                 input_mask: USER_INPUT_MASK_ALL,
+                endpoint_handle_capacity: USER_ENDPOINT_HANDLE_CAPACITY,
+                channel_message_size: USER_CHANNEL_MESSAGE_SIZE,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -2626,6 +3395,51 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 0
             }
         }
+        Ok(SyscallAction::CreateEndpoint) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::CreateEndpoint;
+            1
+        }
+        Ok(SyscallAction::ConnectEndpoint { pid }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::ConnectEndpoint(pid);
+            1
+        }
+        Ok(SyscallAction::SendEndpoint { handle, value }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SendEndpoint { handle, value };
+            1
+        }
+        Ok(SyscallAction::ReceiveEndpoint {
+            handle,
+            output_address,
+            output_length,
+        }) => {
+            if output_length == USER_CHANNEL_MESSAGE_SIZE
+                && valid_user_data_buffer(process, output_address, output_length)
+            {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::ReceiveEndpoint {
+                    handle,
+                    address: output_address,
+                    length: output_length,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::CloseEndpoint { handle }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::CloseEndpoint(handle);
+            1
+        }
         Ok(SyscallAction::Exit(code)) => {
             process.event = ProcessEvent::Exit;
             process.exit_code = code;
@@ -2637,6 +3451,12 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             crate::serial::print_u64(code as u64);
             crate::serial::println("");
             1
+        }
+        // The legacy direct-PID actions stay reserved in the shared ABI but are
+        // no longer reachable: `dispatch` rejects their syscall numbers.
+        Ok(SyscallAction::Send { .. }) | Ok(SyscallAction::Receive) => {
+            frame.rax = syscall::error_code(syscall::SyscallError::UnknownNumber);
+            0
         }
         Err(error) => {
             frame.rax = syscall::error_code(error);
@@ -2757,6 +3577,15 @@ fn valid_user_data_buffer(process: &UserProcess, address: u64, length: u64) -> b
     true
 }
 
+fn channel_message_bytes(message: &UserChannelMessage) -> &[u8] {
+    unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::from_ref(message).cast::<u8>(),
+            core::mem::size_of::<UserChannelMessage>(),
+        )
+    }
+}
+
 fn copy_to_user_data(process: &UserProcess, address: u64, bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return true;
@@ -2850,4 +3679,304 @@ fn fail(marker: &str) -> ! {
     paging::activate_kernel();
     crate::serial::println(marker);
     arch::halt_loop();
+}
+
+/// Host tests for the endpoint capability layer. `EndpointState` deliberately
+/// owns no paging or context state, so every rule that decides whether a handle
+/// is honoured can be exercised without a real address space.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(sender_pid: u64, value: u64) -> UserChannelMessage {
+        UserChannelMessage { sender_pid, value }
+    }
+
+    fn published(owner_pid: u8) -> (EndpointState, u64) {
+        let mut state = EndpointState::new(owner_pid);
+        let handle = state.create().expect("first endpoint publishes");
+        (state, handle)
+    }
+
+    fn push(state: &mut EndpointState, message: UserChannelMessage) -> bool {
+        let endpoint = state.published.as_mut().expect("endpoint is published");
+        !endpoint.queue.contains_sender(message.sender_pid) && endpoint.queue.push(message)
+    }
+
+    #[test]
+    fn receive_handles_are_owned_tagged_and_slot_exact() {
+        let (state, handle) = published(7);
+        let capability = state.capability(handle).expect("owner resolves its handle");
+
+        assert_eq!(handle & ENDPOINT_HANDLE_TAG_MASK, ENDPOINT_HANDLE_TAG);
+        assert_eq!(capability.owner_pid, 7);
+        assert_eq!(capability.slot, 0);
+        assert_eq!(
+            capability.role,
+            EndpointRole::Receive {
+                generation: state.published_generation().expect("endpoint is published"),
+            }
+        );
+        assert_eq!(
+            state.receive_generation(handle),
+            state.published_generation()
+        );
+    }
+
+    #[test]
+    fn guessed_and_foreign_handles_never_resolve() {
+        let (state, handle) = published(7);
+        let neighbour = EndpointState::new(8);
+
+        // Same table position, different owner: the owner field is part of the
+        // handle, so pid 8's handle cannot name pid 7's capability.
+        assert_eq!(state.capability(handle ^ (1 << 40)), None);
+        // Neighbouring slots and generations are not authority either.
+        assert_eq!(state.capability(handle + 1), None);
+        assert_eq!(state.capability(handle + (1 << 8)), None);
+        assert_eq!(state.capability(handle & !ENDPOINT_HANDLE_TAG_MASK), None);
+        assert_eq!(state.capability(0), None);
+        // A file handle is shaped `pid << 56 | generation << 8 | slot`, which
+        // never carries the endpoint tag.
+        assert_eq!(state.capability((7u64 << 56) | (1 << 8) | 1), None);
+        // Another process cannot spend a handle it does not hold.
+        assert_eq!(neighbour.capability(handle), None);
+    }
+
+    #[test]
+    fn only_one_endpoint_can_be_published_per_process() {
+        let (mut state, handle) = published(7);
+
+        assert_eq!(state.create(), None);
+        assert!(state.capability(handle).is_some());
+        assert_eq!(state.published_generation(), Some(1));
+    }
+
+    #[test]
+    fn the_handle_table_is_bounded() {
+        let mut state = EndpointState::new(7);
+        state.create().expect("first endpoint publishes");
+        for slot in 1..ENDPOINT_HANDLE_CAPACITY {
+            assert!(
+                state
+                    .allocate(EndpointRole::Send {
+                        target_pid: 20 + slot as u8,
+                        target_generation: 1,
+                    })
+                    .is_some(),
+                "slot {slot} should be free"
+            );
+        }
+        assert_eq!(
+            state.allocate(EndpointRole::Send {
+                target_pid: 99,
+                target_generation: 1,
+            }),
+            None
+        );
+        // A full table also blocks publishing after the endpoint is closed.
+        let mut full = EndpointState::new(8);
+        for _ in 0..ENDPOINT_HANDLE_CAPACITY {
+            full.allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 1,
+            })
+            .expect("slot is free");
+        }
+        assert_eq!(full.create(), None);
+        assert_eq!(full.published_generation(), None);
+    }
+
+    #[test]
+    fn send_and_receive_capabilities_do_not_substitute_for_each_other() {
+        let (mut state, receive) = published(7);
+        let send = state
+            .allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 4,
+            })
+            .expect("slot is free");
+
+        assert_eq!(state.send_capability(send), Some((9, 4)));
+        assert_eq!(state.receive_generation(send), None);
+        assert_eq!(state.send_capability(receive), None);
+        assert_eq!(state.receive_generation(receive), Some(1));
+    }
+
+    #[test]
+    fn a_second_message_from_one_producer_is_denied_without_overwrite() {
+        let (mut state, _) = published(7);
+
+        assert!(push(&mut state, message(2, 100)));
+        assert!(!push(&mut state, message(2, 200)));
+        assert!(push(&mut state, message(3, 300)));
+        assert_eq!(state.queue_depth(), 2);
+
+        let endpoint = state.published.as_mut().expect("endpoint is published");
+        // The first admission survives the denied one untouched.
+        assert_eq!(endpoint.queue.pop(), Some(message(2, 100)));
+        assert_eq!(endpoint.queue.pop(), Some(message(3, 300)));
+        assert_eq!(endpoint.queue.pop(), None);
+    }
+
+    #[test]
+    fn a_full_queue_denies_further_producers() {
+        let (mut state, _) = published(7);
+        for sender in 1..=ENDPOINT_QUEUE_CAPACITY as u64 {
+            assert!(push(&mut state, message(sender, sender)));
+        }
+        assert_eq!(state.queue_depth(), ENDPOINT_QUEUE_CAPACITY);
+        assert!(!push(&mut state, message(99, 99)));
+        assert_eq!(state.queue_depth(), ENDPOINT_QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn a_parked_receive_keeps_metadata_that_still_names_the_endpoint() {
+        let (mut state, handle) = published(7);
+        let generation = state.published_generation().expect("endpoint is published");
+        state.pending_receive = Some(PendingReceive {
+            handle,
+            generation,
+            address: 0x4010,
+            length: USER_CHANNEL_MESSAGE_SIZE,
+        });
+
+        // What a delivering sender re-checks before copying 16 bytes out.
+        let pending = state.pending_receive.expect("receive is parked");
+        assert_eq!(pending.length, USER_CHANNEL_MESSAGE_SIZE);
+        assert_eq!(pending.generation, generation);
+        assert_eq!(state.receive_generation(pending.handle), Some(generation));
+
+        // Closing the endpoint retires the parked metadata with it.
+        state.close(handle).expect("receive handle closes");
+        assert_eq!(state.pending_receive, None);
+        assert_eq!(state.receive_generation(handle), None);
+    }
+
+    #[test]
+    fn closing_a_send_handle_revokes_only_that_handle() {
+        let (mut state, receive) = published(7);
+        let first = state
+            .allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 3,
+            })
+            .expect("slot is free");
+        let second = state
+            .allocate(EndpointRole::Send {
+                target_pid: 10,
+                target_generation: 5,
+            })
+            .expect("slot is free");
+
+        assert_eq!(
+            state.close(first),
+            Some(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 3,
+            })
+        );
+        assert_eq!(state.capability(first), None);
+        assert_eq!(state.send_capability(second), Some((10, 5)));
+        assert_eq!(state.receive_generation(receive), Some(1));
+        assert!(state.published.is_some());
+        // Closing the same handle twice is a stale use.
+        assert_eq!(state.close(first), None);
+    }
+
+    #[test]
+    fn closing_the_receive_handle_drops_the_queue_and_the_endpoint() {
+        let (mut state, receive) = published(7);
+        let send = state
+            .allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 3,
+            })
+            .expect("slot is free");
+        assert!(push(&mut state, message(2, 100)));
+
+        assert_eq!(
+            state.close(receive),
+            Some(EndpointRole::Receive { generation: 1 })
+        );
+        assert_eq!(state.published_generation(), None);
+        assert_eq!(state.queue_depth(), 0);
+        assert_eq!(state.capability(receive), None);
+        // Only the local receive authority goes; the process keeps its own send
+        // handles to other endpoints.
+        assert_eq!(state.send_capability(send), Some((9, 3)));
+    }
+
+    #[test]
+    fn revocation_drops_exactly_the_handles_naming_one_endpoint() {
+        let mut state = EndpointState::new(7);
+        let matching = state
+            .allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 3,
+            })
+            .expect("slot is free");
+        let other_generation = state
+            .allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 4,
+            })
+            .expect("slot is free");
+        let other_pid = state
+            .allocate(EndpointRole::Send {
+                target_pid: 10,
+                target_generation: 3,
+            })
+            .expect("slot is free");
+
+        assert_eq!(state.revoke_send_handles(9, 3), 1);
+        assert_eq!(state.capability(matching), None);
+        assert_eq!(state.send_capability(other_generation), Some((9, 4)));
+        assert_eq!(state.send_capability(other_pid), Some((10, 3)));
+        assert_eq!(state.revoke_send_handles(9, 3), 0);
+    }
+
+    #[test]
+    fn exit_cleanup_clears_every_local_endpoint_resource() {
+        let (mut state, receive) = published(7);
+        let send = state
+            .allocate(EndpointRole::Send {
+                target_pid: 9,
+                target_generation: 3,
+            })
+            .expect("slot is free");
+        assert!(push(&mut state, message(2, 100)));
+        state.pending_receive = Some(PendingReceive {
+            handle: receive,
+            generation: 1,
+            address: 0x4010,
+            length: USER_CHANNEL_MESSAGE_SIZE,
+        });
+
+        state.clear();
+
+        assert_eq!(state.capability(receive), None);
+        assert_eq!(state.capability(send), None);
+        assert_eq!(state.published_generation(), None);
+        assert_eq!(state.queue_depth(), 0);
+        assert_eq!(state.pending_receive, None);
+    }
+
+    #[test]
+    fn a_reused_slot_never_honours_the_previous_generation() {
+        let (mut state, first) = published(7);
+        state.close(first).expect("receive handle closes");
+        let second = state.create().expect("a new endpoint publishes");
+
+        assert_ne!(first, second);
+        assert_eq!(state.capability(first), None);
+        assert_eq!(state.receive_generation(first), None);
+        assert_eq!(
+            state.receive_generation(second),
+            state.published_generation()
+        );
+        // The reissued endpoint carries a fresh generation, so send handles held
+        // against the closed one stay unusable even in the same slot.
+        assert_eq!(state.published_generation(), Some(3));
+    }
 }

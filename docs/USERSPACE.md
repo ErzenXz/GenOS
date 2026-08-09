@@ -1,6 +1,6 @@
 # GenOS userspace boundary
 
-GenOS 0.15 adds blocking keyboard and pointer events, filtered delivery, and deterministic input ownership to the independently built ELF runtime. This document states exactly what the milestone proves and what it does not.
+GenOS 0.16 replaces direct PID messaging with endpoint capabilities: a published receive endpoint, process-owned send handles, sender identity in every message, and a fairness rule that admits at most one queued message per producer. This document states exactly what the milestone proves and what it does not.
 
 ## Build and packaging pipeline
 
@@ -32,14 +32,16 @@ Every accepted page receives a newly allocated zeroed physical frame. File bytes
 
 At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
 
-1. all instances query ABI version 8 and become eligible for timer scheduling;
+1. all instances query ABI version 9 and become eligible for timer scheduling;
 2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
 3. the first instance writes to its guard page and is terminated with page-fault status 142 before performing output work;
 4. the two healthy instances resume afterward, write greetings through the validated output syscall, report private values through validated copy-in, and exit with status 0.
 
 GenOS then launches a fourth instance through the general ELF launch function and verifies preemption, output, private memory, normal exit, and reclamation. A separate lifecycle probe starts a normal asynchronous process and a persistent held process. The normal process outputs text, exits, and is reaped. The held process is preempted, killed with status 137, and reaped. Both release ten frames: two ELF pages, four stack pages, three user page-table pages, and one CR3 root.
 
-The probe then creates an owned parent-child pair. Each has its own CR3 root. The parent blocks while waiting on the exact child PID. The child blocks on a three-tick sleep deadline, wakes, places a value in the parent's bounded inbox, and exits with status 7. Child termination injects that status into the parent's saved `rax` and returns the parent to `Ready`; the parent's subsequent receive removes the queued value before it exits with status 0. Both address spaces are reclaimed and both terminal records are reaped.
+The probe then creates an owned parent-child pair. Each has its own CR3 root. The parent publishes an endpoint and blocks while waiting on the exact child PID. The child blocks on a three-tick sleep deadline, wakes, connects to the parent's live PID, sends one value through the resulting send handle, closes that handle, and exits with status 7. Child termination injects that status into the parent's saved `rax` and returns the parent to `Ready`; the parent's subsequent receive copies out the queued message, checks that `sender_pid` is the child's PID, closes its endpoint, and exits with status 0. Both address spaces are reclaimed and both terminal records are reaped.
+
+The fan-in probe then launches three processes: a receiver and its two producer children. The receiver publishes an endpoint and sleeps four ticks. Producer A wakes after one tick, connects to the receiver's PID, and sends `A1`. Its immediate second send is refused with `USER_ERROR_UNAVAILABLE` because `A1` is still queued, which is the fairness rule observed from Ring 3; A then sleeps five ticks. Producer B wakes after two ticks, connects independently, and sends `B1`. The receiver drains `A1` then `B1` in arrival order. Its third receive finds an empty queue and parks with `BlockReason::Endpoint`. Producer A's retried send now finds a parked receiver whose destination buffer is revalidated, copies the message straight into it, writes `16` into saved `rax`, and returns the receiver to `Ready` without any queue transit. The receiver reaps both producers with `wait_child`, closes its endpoint, and prints `INIT.ELF fan-in A1 B1 A2`. The probe requires exactly three completed messages, exactly one fairness denial, exactly one direct wake, the exact output text, and reclamation of all three address spaces.
 
 Finally, a file-mode process requests `UserSystemInfo` through structured copy-out and opens `/README.TXT`. The open request blocks while the desktop VFS resolves a regular file; completion installs an opaque, read-only capability in the calling process's four-slot handle table. Ring 3 copies out `UserFileStat`, reads 17 bytes, confirms that `stat_handle` now reports offset 17, then reads the remaining 37 bytes through the same handle. The kernel derives the path and offset from the capability rather than trusting userspace. Each read blocks, and a scheduler poll confirms that no userspace slice runs while the request is outstanding.
 
@@ -53,7 +55,7 @@ The probe next starts an input-mode process. After two bounded output calls it i
 
 While the first process still owns the one-shot input channel, a second input-mode process attempts the same wait. It receives `USER_ERROR_UNAVAILABLE`, reports that the channel is busy, exits normally, and releases its address space. The kernel then converts key `G` into the stable 32-byte `UserInputEvent`, revalidates the first process's private writable range, copies the event, writes `32` into saved `rax`, and returns that process to `Ready`. Ring 3 verifies the kind, code, printable value, and reserved field before reporting the exact key and exiting. Both task records are reaped and both ten-frame address spaces are reclaimed.
 
-The QEMU smoke test requires markers for structured copy-out, file block/wake, exact content verification, input block/filter/ownership/wake, sleep/block/wake, owned child wait/wake, message send/receive, frame reclamation, fault containment, and the long-lived desktop. Recycled roots are visibly reused by later processes in the serial proof.
+The QEMU smoke test requires markers for structured copy-out, file block/wake, exact content verification, input block/filter/ownership/wake, sleep/block/wake, owned child wait/wake, message send/receive, endpoint capability, channel fairness, endpoint wake, fan-in ordering, frame reclamation, fault containment, and the long-lived desktop. Recycled roots are visibly reused by later processes in the serial proof.
 
 ## Desktop lifecycle
 
@@ -63,7 +65,8 @@ The QEMU smoke test requires markers for structured copy-out, file block/wake, e
 - `run init file` copies out system metadata, opens `/README.TXT`, verifies stat and offset changes across two blocking reads, closes the handle, and proves stale reuse fails.
 - `run init write` proves protected-path denial, creates `/USER/APP.TXT`, performs two bounded writes, checks stat, closes and reopens read-only, proves write denial, and verifies exact read-back.
 - `run init input` waits for one printable keyboard event. Matching input is routed to the application instead of the shell, copied into private memory, reported, and consumed once.
-- `run pair` reserves two task records and launches the parent-child coordination proof. Task Manager exposes their `waiting`, `sleeping`, `ready`, and terminal transitions.
+- `run pair` reserves two task records and launches the parent-child coordination proof over one published endpoint. Task Manager exposes their `waiting`, `sleeping`, `ready`, and terminal transitions.
+- `run fanin` reserves three task records and launches the receiver and two producers of the multi-producer proof: FIFO drain of `A1` and `B1`, one fairness denial, a blocking receive woken directly by `A2`, and `wait_child` reaping inside Ring 3.
 - `ps` shows the user task alongside system and kernel-worker records.
 - `kill PID` terminates a live userspace task with status 137 and immediately releases its address space.
 - `wait PID` is non-blocking. It reports “still running” for a live process; after exit, fault, or kill it returns the retained result and frees the process-manager slot.
@@ -72,23 +75,23 @@ Completed task history remains in the task registry even after the heavier proce
 
 The shell's `wait PID` remains an observational reap command for operators. ABI `wait_child` is the blocking primitive used by a Ring 3 parent; the two operations intentionally serve different callers.
 
-## ABI version 8
+## ABI version 9
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
 | Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
-| 1 | `abi_version` | all zero | ABI version `8` |
+| 1 | `abi_version` | all zero | ABI version `9` |
 | 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
 | 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
 | 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
 | 5 | `write` | mapped user address and length `1..80` | sanitized text length after copy-in |
 | 6 | `sleep` | deadline delta `1..10000` ticks | `0` after the scheduler wakes the saved context |
-| 7 | `send` | target PID `1..255`, fixed-width value | `0`, or a bounded error if the target is unavailable or its inbox is full |
-| 8 | `receive` | all zero | next fixed-width inbox value; blocks if the inbox is empty |
+| 7 | — | — | reserved: the legacy direct-PID `send`, removed in ABI 9 and never reassigned |
+| 8 | — | — | reserved: the legacy inbox `receive`, removed in ABI 9 and never reassigned |
 | 9 | `wait_child` | child PID `1..255` | child exit status; blocks while an owned child remains live |
-| 10 | `system_info` | writable address and exact structure size `72` | copies `UserSystemInfo` and returns `72` |
+| 10 | `system_info` | writable address and exact structure size `88` | copies `UserSystemInfo` and returns `88` |
 | 11 | `read_file` | path address/length and writable output address/capacity | ABI 5 compatibility read; blocks and returns a byte count |
 | 12 | `open_file` | path address/length | blocks, then returns an opaque read-only handle or a bounded error |
 | 13 | `read_handle` | handle and writable output address/capacity | blocks, copies from the kernel-owned offset, advances it, and returns a byte count |
@@ -97,14 +100,33 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 16 | `open_file_with_rights` | path address/length and rights mask | blocks, then returns an opaque handle with the granted read/write rights |
 | 17 | `write_handle` | handle and mapped input address/length | copies at most 128 bytes into the kernel, blocks, writes at the owned offset, and returns a byte count |
 | 18 | `wait_input` | writable event address, exact size `32`, and keyboard/pointer mask | blocks until a matching event is copied, then returns `32`; contention returns `USER_ERROR_UNAVAILABLE` |
+| 19 | `create_endpoint` | all zero | publishes this process's endpoint and returns its opaque receive handle; `USER_ERROR_UNAVAILABLE` when one is already published or the four handle slots are full |
+| 20 | `connect_endpoint` | target PID `1..255`; remaining arguments zero | returns an opaque send handle naming that PID and the generation it publishes now; `USER_ERROR_UNAVAILABLE` when the PID is not live, publishes nothing, or the caller's handle table is full |
+| 21 | `send_endpoint` | nonzero send handle and a `u64` value; remaining arguments zero | `0` when the message is delivered or queued; `USER_ERROR_INVALID_ARGUMENT` for a handle that is not a live send capability or whose target generation is gone; `USER_ERROR_UNAVAILABLE` when this producer already has a message queued, the queue is full, or the copy into a parked receiver fails |
+| 22 | `receive_endpoint` | own receive handle, writable address, exact size `16` | returns `16` after one `UserChannelMessage` is copied out; blocks while the queue is empty; `USER_ERROR_INVALID_ARGUMENT` for a handle that is not the currently published receive capability, a wrong length, or a buffer outside the process's writable data mapping |
+| 23 | `close_endpoint` | handle; remaining arguments zero | `0`; closing a send handle revokes only that handle, closing the receive handle also drops the queue, unpublishes the endpoint, and revokes every remote send handle naming that generation. Unknown or stale values return `USER_ERROR_INVALID_ARGUMENT` |
 
 The output path validates the whole range against the userspace window, translates every byte through the owning address space, rejects unmapped holes, and replaces control or non-ASCII bytes before the shell sees them. The application uses runtime functions instead of handwritten assembly. Cooperative yield remains available for ABI compatibility, but the execution proof relies on timer preemption.
 
 Blocking syscalls copy the normalized interrupt frame into the process context and return to Ring 0. Sleeping and waiting processes are excluded from runnable selection. A wakeup writes the syscall result into saved `rax` before changing the state back to `Ready`, so execution continues immediately after the original `int 0x80` instruction.
 
-Each managed process owns a four-value FIFO inbox. `send` either wakes a receiver directly or appends at the tail; it never allocates and never silently overwrites an older value. `wait_child` accepts only a live or retained process whose recorded parent PID matches the caller. These policies keep the first IPC contract small and deterministic.
+### Endpoint capabilities
 
-`UserSystemInfo` is a `repr(C)` structure of nine `u64` fields: ABI version, page size, timer frequency, message capacity, maximum file-read size, file-handle capacity, maximum file-write size, input-event size, and supported input masks. `UserFileStat` has four `u64` fields: size, current offset, node kind, and rights. `UserInputEvent` contains `kind`, `code`, signed `value0`, and signed `value1`, each eight bytes. Their sizes, alignments, field offsets, rights, limits, errors, masks, and codes are tested. `UserProcessHeader` fixes the kernel-owned token and preemption words at offsets 0 and 8; those offsets are also tested so adding application data cannot silently break preemption again.
+Messaging authority is a capability, not a PID. A process may publish exactly one endpoint at a time with `create_endpoint`; the call returns a receive capability it owns. Every other process must obtain a separate send capability with `connect_endpoint` before it can send anything, and a raw PID by itself grants nothing.
+
+Each process has a four-slot endpoint handle table shared by receive and send capabilities, so at most four endpoint capabilities can be held at once. Each published endpoint owns one four-message FIFO. Handles are opaque `u64` values that encode a dedicated endpoint tag byte, the owner PID, a monotonically advancing per-process generation, and the slot index. Resolution requires the tag, slot, owner PID, and generation to reproduce the handle exactly, so a guessed value, another process's handle, or a stale local handle never resolves. The endpoint tag occupies the byte that file handles use for their owner PID, so endpoint authority can never be spent on the file tables and file authority can never be spent on an endpoint.
+
+Discovery is deliberately minimal: `connect_endpoint` takes a live PID and succeeds only while that process is not completed and currently publishes an endpoint. There is no name service, no directory, and no way to pass a handle to a third process. The returned send capability records the target PID together with the exact generation observed at connect time, which is what makes revocation total rather than best effort.
+
+`send_endpoint` copies a `UserChannelMessage` whose `sender_pid` is filled in by the kernel from the calling Ring 3 process; a sender cannot forge another identity. Delivery is fair by admission: an endpoint queue holds at most one message per producer PID, so a second send from the same producer is refused with `USER_ERROR_UNAVAILABLE` while its first message is still queued, and is admitted again as soon as the receiver pops it. A single producer therefore cannot fill the four slots and starve its peers. Nothing is ever overwritten: a full queue and a duplicate producer both return errors rather than dropping an older message.
+
+`receive_endpoint` pops the queue in arrival order. When the queue is empty the process leaves the runnable set with `BlockReason::Endpoint` after its output buffer has already been validated; the parked handle, generation, address, and length are stored in the kernel. A later send to that exact generation revalidates the stored destination, copies the sixteen bytes straight into it, writes `16` into saved `rax`, and returns the receiver to `Ready` without the message passing through the queue.
+
+Revocation happens on every path that ends a capability. `close_endpoint` on a send handle frees that slot. `close_endpoint` on the receive handle unpublishes the endpoint, discards its queued messages, clears any parked receive, and sweeps every process's handle table to revoke send capabilities naming that generation. Normal exit, a Ring 3 fault, `kill`, and reap all run the same release path before the address space is reclaimed. A send through a handle whose target generation no longer exists is rejected with `USER_ERROR_INVALID_ARGUMENT` instead of reaching an unrelated process that later reuses the PID.
+
+`wait_child` accepts only a live or retained process whose recorded parent PID matches the caller.
+
+`UserSystemInfo` is a `repr(C)` structure of eleven `u64` fields: ABI version, page size, timer frequency, message capacity, maximum file-read size, file-handle capacity, maximum file-write size, input-event size, supported input masks, endpoint-handle capacity, and channel-message size. `message_capacity` keeps its number and now reports the depth of one endpoint queue. `UserChannelMessage` is a `repr(C)` structure of two `u64` fields, `sender_pid` at offset 0 and `value` at offset 8, for a total of sixteen bytes with eight-byte alignment; `receive_endpoint` accepts only that exact length. `UserFileStat` has four `u64` fields: size, current offset, node kind, and rights. `UserInputEvent` contains `kind`, `code`, signed `value0`, and signed `value1`, each eight bytes. Their sizes, alignments, field offsets, rights, limits, errors, masks, and codes are tested. `UserProcessHeader` fixes the kernel-owned token and preemption words at offsets 0 and 8; those offsets are also tested so adding application data cannot silently break preemption again.
 
 Input mask `1` selects keyboard events and mask `2` selects pointer events; callers may combine them. Keyboard events use kind `1`; printable characters place ASCII in `value0`, while Enter, Backspace, Escape, Tab, Arrow Up, and Arrow Down have stable codes and zero values. Pointer movement uses kind `2`, signed deltas in `value0`/`value1`, and the active button mask in `code`. Pointer button events use kind `3`, cursor position in the signed values, and left/right/middle bits `1`, `2`, and `4` in `code`.
 
@@ -142,7 +164,13 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - Sleep deadlines use saturating tick arithmetic and a bounded `1..10000` duration.
 - A child exit wakes a blocked parent and returns the exact eight-bit exit status through the saved syscall frame.
 - Only the recorded parent PID can use `wait_child` for a process.
-- Each process inbox is a four-value FIFO; full or unavailable delivery returns an error instead of overwriting data.
+- Messaging requires an endpoint capability: one published receive endpoint per process, and a separate process-owned send handle per connection.
+- Endpoint handles are opaque, tagged, generation-checked, and resolvable only in the owning process's four-slot table.
+- Every delivered message carries the kernel-supplied sender PID; a sender cannot forge another identity.
+- Each endpoint queue is a four-message FIFO that admits at most one message per producer, so no producer can starve its peers.
+- A full queue, a duplicate producer, and a stale target all return bounded errors instead of overwriting or dropping data.
+- A blocking receive leaves runnable selection until a message is copied into its pre-validated buffer, either from the queue or directly from a sender.
+- Closing a receive handle unpublishes the endpoint and revokes every remote send handle naming that generation; exit, fault, kill, and reap run the same release path.
 - Structured copy-out is limited to the process-owned writable data mapping and revalidates every translated byte.
 - The process token and preemption counter have tested, shared ABI offsets.
 - File reads leave the process non-runnable until the VFS completion path injects a result into saved `rax`.
@@ -168,7 +196,11 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - Shell `wait PID` is observational; blocking semantics are available only to a userspace parent through `wait_child`.
 - The process manager has four slots. A terminal process occupies one until `wait` reaps it.
 - The recycled-frame pool is intentionally bounded to 256 frames; this milestone does not provide a general coalescing physical-memory allocator.
-- Messages carry one `u64`; there are no byte streams, endpoint handles, permissions beyond process availability, or multi-producer fairness guarantees yet.
+- A message carries one scalar `u64` payload plus the sender PID. There are no byte streams, buffers, or typed payloads.
+- A process may publish only one endpoint at a time, and there is no name service: `connect_endpoint` needs a live PID.
+- Handles cannot be delegated. A capability is usable only inside the process that created it, so there is no way to hand a send handle to a third process.
+- The endpoint handle table holds four capabilities per process and each endpoint queue holds four messages, with at most one queued message per producer. A producer that wants to send again must wait for the receiver to drain its previous message.
+- There are no priorities, timeouts, non-blocking receive, multicast, or reply correlation in the endpoint contract.
 - The userspace file API is capped at four handles and 128 bytes per read or write, and it is backed only by the session RAM VFS. Directory capabilities, seek, truncation controls, shared handles, live metadata refresh, and persistent storage are not implemented yet.
 - `/USER/` writes last only for the current boot; there is no durable block device or crash-consistency guarantee yet.
 - The desktop holds one pending VFS request because it schedules at most one userspace slice and services one completion per tick.
@@ -177,4 +209,4 @@ Only Ring 3 page faults and general-protection faults can become process-local t
 - Output is a bounded text syscall, not file-descriptor-based standard I/O.
 - The transition state is single-core and supports one active user process at a time.
 
-The next slice is multi-producer channel policy and endpoint handles, followed by moving the shell into userspace.
+The next slice is moving the shell into userspace.

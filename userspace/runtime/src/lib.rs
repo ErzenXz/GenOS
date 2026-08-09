@@ -4,8 +4,11 @@
 use core::arch::asm;
 
 pub use genos_abi::{
-    UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo,
-    USER_ABI_VERSION as ABI_VERSION, USER_ERROR_INVALID_ARGUMENT as ERROR_INVALID_ARGUMENT,
+    UserChannelMessage, UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo,
+    USER_ABI_VERSION as ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE as CHANNEL_MESSAGE_SIZE,
+    USER_ENDPOINT_HANDLE_CAPACITY as ENDPOINT_HANDLE_CAPACITY,
+    USER_ENDPOINT_QUEUE_CAPACITY as ENDPOINT_QUEUE_CAPACITY,
+    USER_ERROR_INVALID_ARGUMENT as ERROR_INVALID_ARGUMENT,
     USER_ERROR_UNAVAILABLE as ERROR_UNAVAILABLE, USER_FILE_HANDLE_CAPACITY as FILE_HANDLE_CAPACITY,
     USER_FILE_KIND_REGULAR as FILE_KIND_REGULAR, USER_FILE_READ_MAX as FILE_READ_MAX,
     USER_FILE_RIGHT_READ as FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE as FILE_RIGHT_WRITE,
@@ -25,12 +28,16 @@ pub const STACK_GUARD: u64 = 0x0000_4000_0000_7000;
 
 use genos_abi::{
     USER_SYSCALL_ABI_VERSION as SYSCALL_ABI_VERSION,
-    USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE, USER_SYSCALL_EXIT as SYSCALL_EXIT,
+    USER_SYSCALL_CLOSE_ENDPOINT as SYSCALL_CLOSE_ENDPOINT,
+    USER_SYSCALL_CLOSE_HANDLE as SYSCALL_CLOSE_HANDLE,
+    USER_SYSCALL_CONNECT_ENDPOINT as SYSCALL_CONNECT_ENDPOINT,
+    USER_SYSCALL_CREATE_ENDPOINT as SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_EXIT as SYSCALL_EXIT,
     USER_SYSCALL_OPEN_FILE as SYSCALL_OPEN_FILE,
     USER_SYSCALL_OPEN_FILE_WITH_RIGHTS as SYSCALL_OPEN_FILE_WITH_RIGHTS,
     USER_SYSCALL_PING as SYSCALL_PING, USER_SYSCALL_READ_FILE as SYSCALL_READ_FILE,
-    USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE, USER_SYSCALL_RECEIVE as SYSCALL_RECEIVE,
-    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND as SYSCALL_SEND,
+    USER_SYSCALL_READ_HANDLE as SYSCALL_READ_HANDLE,
+    USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
+    USER_SYSCALL_REPORT as SYSCALL_REPORT, USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT,
     USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO, USER_SYSCALL_WAIT_CHILD as SYSCALL_WAIT_CHILD,
     USER_SYSCALL_WAIT_INPUT as SYSCALL_WAIT_INPUT, USER_SYSCALL_WRITE as SYSCALL_WRITE,
@@ -66,12 +73,36 @@ pub fn sleep(ticks: u64) -> u64 {
     unsafe { syscall(SYSCALL_SLEEP, [ticks, 0, 0, 0, 0, 0]) }
 }
 
-pub fn send(pid: u8, value: u64) -> u64 {
-    unsafe { syscall(SYSCALL_SEND, [pid as u64, value, 0, 0, 0, 0]) }
+pub fn create_endpoint() -> u64 {
+    unsafe { syscall(SYSCALL_CREATE_ENDPOINT, [0; 6]) }
 }
 
-pub fn receive() -> u64 {
-    unsafe { syscall(SYSCALL_RECEIVE, [0; 6]) }
+pub fn connect_endpoint(pid: u8) -> u64 {
+    unsafe { syscall(SYSCALL_CONNECT_ENDPOINT, [pid as u64, 0, 0, 0, 0, 0]) }
+}
+
+pub fn send_endpoint(handle: u64, value: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SEND_ENDPOINT, [handle, value, 0, 0, 0, 0]) }
+}
+
+pub fn receive_endpoint(handle: u64, message: &mut UserChannelMessage) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_RECEIVE_ENDPOINT,
+            [
+                handle,
+                message as *mut UserChannelMessage as u64,
+                core::mem::size_of::<UserChannelMessage>() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn close_endpoint(handle: u64) -> u64 {
+    unsafe { syscall(SYSCALL_CLOSE_ENDPOINT, [handle, 0, 0, 0, 0, 0]) }
 }
 
 pub fn wait_child(pid: u8) -> u64 {

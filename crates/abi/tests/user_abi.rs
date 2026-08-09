@@ -1,19 +1,22 @@
 use genos_abi::{
-    UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo, USER_ABI_VERSION,
-    USER_ERROR_INVALID_ARGUMENT, USER_ERROR_UNAVAILABLE, USER_ERROR_UNKNOWN_SYSCALL,
-    USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_DIRECTORY, USER_FILE_KIND_REGULAR,
-    USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ, USER_FILE_RIGHT_WRITE,
-    USER_FILE_WRITE_MAX, USER_INPUT_KIND_KEY, USER_INPUT_KIND_POINTER_BUTTON,
-    USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_ALL, USER_INPUT_MASK_KEYBOARD,
-    USER_INPUT_MASK_POINTER, USER_KEY_ARROW_DOWN, USER_KEY_ARROW_UP, USER_KEY_BACKSPACE,
-    USER_KEY_CHAR, USER_KEY_ENTER, USER_KEY_ESCAPE, USER_KEY_TAB, USER_MESSAGE_CAPACITY,
-    USER_PAGE_SIZE, USER_POINTER_BUTTON_LEFT, USER_POINTER_BUTTON_MIDDLE,
-    USER_POINTER_BUTTON_RIGHT, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    UserChannelMessage, UserFileStat, UserInputEvent, UserProcessHeader, UserSystemInfo,
+    USER_ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY,
+    USER_ENDPOINT_QUEUE_CAPACITY, USER_ERROR_INVALID_ARGUMENT, USER_ERROR_UNAVAILABLE,
+    USER_ERROR_UNKNOWN_SYSCALL, USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_DIRECTORY,
+    USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_READ,
+    USER_FILE_RIGHT_WRITE, USER_FILE_WRITE_MAX, USER_INPUT_KIND_KEY,
+    USER_INPUT_KIND_POINTER_BUTTON, USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_ALL,
+    USER_INPUT_MASK_KEYBOARD, USER_INPUT_MASK_POINTER, USER_KEY_ARROW_DOWN, USER_KEY_ARROW_UP,
+    USER_KEY_BACKSPACE, USER_KEY_CHAR, USER_KEY_ENTER, USER_KEY_ESCAPE, USER_KEY_TAB,
+    USER_MESSAGE_CAPACITY, USER_PAGE_SIZE, USER_POINTER_BUTTON_LEFT, USER_POINTER_BUTTON_MIDDLE,
+    USER_POINTER_BUTTON_RIGHT, USER_SYSCALL_CLOSE_ENDPOINT, USER_SYSCALL_CONNECT_ENDPOINT,
+    USER_SYSCALL_CREATE_ENDPOINT, USER_SYSCALL_RECEIVE_ENDPOINT, USER_SYSCALL_SEND_ENDPOINT,
+    USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 
 #[test]
 fn system_info_copy_out_layout_is_stable() {
-    assert_eq!(core::mem::size_of::<UserSystemInfo>(), 72);
+    assert_eq!(core::mem::size_of::<UserSystemInfo>(), 88);
     assert_eq!(core::mem::align_of::<UserSystemInfo>(), 8);
     assert_eq!(core::mem::offset_of!(UserSystemInfo, abi_version), 0);
     assert_eq!(
@@ -23,14 +26,42 @@ fn system_info_copy_out_layout_is_stable() {
     assert_eq!(core::mem::offset_of!(UserSystemInfo, max_file_write), 48);
     assert_eq!(core::mem::offset_of!(UserSystemInfo, input_event_size), 56);
     assert_eq!(core::mem::offset_of!(UserSystemInfo, input_mask), 64);
+    assert_eq!(
+        core::mem::offset_of!(UserSystemInfo, endpoint_handle_capacity),
+        72
+    );
+    assert_eq!(
+        core::mem::offset_of!(UserSystemInfo, channel_message_size),
+        80
+    );
     assert_eq!(UserSystemInfo::empty().abi_version, 0);
-    assert_eq!(USER_ABI_VERSION, 8);
+    assert_eq!(UserSystemInfo::empty().endpoint_handle_capacity, 0);
+    assert_eq!(UserSystemInfo::empty().channel_message_size, 0);
+    assert_eq!(USER_ABI_VERSION, 9);
     assert_eq!(USER_MESSAGE_CAPACITY, 4);
     assert_eq!(USER_FILE_READ_MAX, 128);
     assert_eq!(USER_PAGE_SIZE, 4096);
     assert_eq!(USER_TIMER_HZ, 100);
     assert_eq!(USER_FILE_HANDLE_CAPACITY, 4);
     assert_eq!(USER_FILE_WRITE_MAX, 128);
+}
+
+#[test]
+fn channel_message_layout_and_endpoint_constants_are_stable() {
+    assert_eq!(core::mem::size_of::<UserChannelMessage>(), 16);
+    assert_eq!(core::mem::align_of::<UserChannelMessage>(), 8);
+    assert_eq!(core::mem::offset_of!(UserChannelMessage, sender_pid), 0);
+    assert_eq!(core::mem::offset_of!(UserChannelMessage, value), 8);
+    assert_eq!(UserChannelMessage::empty().sender_pid, 0);
+    assert_eq!(UserChannelMessage::empty().value, 0);
+    assert_eq!(USER_CHANNEL_MESSAGE_SIZE, 16);
+    assert_eq!(USER_ENDPOINT_HANDLE_CAPACITY, 4);
+    assert_eq!(USER_ENDPOINT_QUEUE_CAPACITY, 4);
+    assert_eq!(USER_SYSCALL_CREATE_ENDPOINT, 19);
+    assert_eq!(USER_SYSCALL_CONNECT_ENDPOINT, 20);
+    assert_eq!(USER_SYSCALL_SEND_ENDPOINT, 21);
+    assert_eq!(USER_SYSCALL_RECEIVE_ENDPOINT, 22);
+    assert_eq!(USER_SYSCALL_CLOSE_ENDPOINT, 23);
 }
 
 #[test]
