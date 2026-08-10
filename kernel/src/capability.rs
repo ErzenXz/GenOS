@@ -6,6 +6,7 @@ pub enum HandleKind {
     Console,
     Lifecycle,
     Process,
+    Socket,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

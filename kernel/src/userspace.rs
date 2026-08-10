@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use genos_abi::{
     UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
-    UserProcessHeader, UserProcessStatus, UserSystemInfo, USER_ABI_VERSION,
+    UserProcessHeader, UserProcessStatus, UserSocketStatus, UserSystemInfo, USER_ABI_VERSION,
     USER_CHANNEL_MESSAGE_SIZE, USER_ENDPOINT_HANDLE_CAPACITY, USER_ENDPOINT_QUEUE_CAPACITY,
     USER_EXECUTABLE_PAGE_CAPACITY, USER_FILE_HANDLE_CAPACITY, USER_FILE_KIND_DIRECTORY,
     USER_FILE_KIND_REGULAR, USER_FILE_READ_MAX, USER_FILE_RIGHTS_MASK, USER_FILE_RIGHT_MANAGE,
@@ -11,7 +11,9 @@ use genos_abi::{
     USER_INPUT_MASK_ALL, USER_PATH_MAX, USER_PROCESS_HANDLE_CAPACITY, USER_PROCESS_IMAGE_INIT,
     USER_PROCESS_MODE_HOLD, USER_PROCESS_MODE_NORMAL, USER_PROCESS_STATE_EXITED,
     USER_PROCESS_STATE_FAULTED, USER_PROCESS_STATE_KILLED, USER_PROCESS_STATE_READY,
-    USER_PROCESS_STATE_SLEEPING, USER_PROCESS_STATE_WAITING, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    USER_PROCESS_STATE_SLEEPING, USER_PROCESS_STATE_WAITING, USER_SOCKET_BUFFER_CAPACITY,
+    USER_SOCKET_HANDLE_CAPACITY, USER_SOCKET_SHUTDOWN_READ, USER_SOCKET_SHUTDOWN_WRITE,
+    USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
     capability::{HandleKind, HandleTable},
@@ -20,6 +22,9 @@ use kernel::{
     input::{InputEvent, KeyEvent, MouseButtons},
     ipc::ChannelQueue,
     request::RequestSequence,
+    socket::{
+        local_port_is_available, SocketError, SocketOwner, SocketProtocol, SocketSet, TcpServerPeer,
+    },
     syscall::{self, SyscallAction},
     tasks::{TaskClass, TaskSnapshot, TaskSnapshotSet, TaskState},
     vfs::{NodeKind, RamVfs},
@@ -48,7 +53,7 @@ const TOKEN_FANIN_PRODUCER_A_MODE: u64 = 0xd000_0000_0000_0000;
 const TOKEN_FANIN_PRODUCER_B_MODE: u64 = 0xe000_0000_0000_0000;
 const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
 const ENDPOINT_HANDLE_CAPACITY: usize = USER_ENDPOINT_HANDLE_CAPACITY as usize;
-const HANDLE_TABLE_CAPACITY: usize = 16;
+const HANDLE_TABLE_CAPACITY: usize = 20;
 const HANDLE_RIGHT_USE: u64 = 1;
 const ENDPOINT_QUEUE_CAPACITY: usize = USER_ENDPOINT_QUEUE_CAPACITY;
 /// Endpoint handles carry a dedicated tag byte in the position file handles use
@@ -242,6 +247,44 @@ enum ProcessEvent {
         text: FixedText,
     },
     ConsoleClear(u64),
+    SocketOpen {
+        protocol: u64,
+    },
+    SocketConnect {
+        handle: u64,
+        target: u32,
+        port: u16,
+    },
+    SocketBind {
+        handle: u64,
+        port: u16,
+    },
+    SocketListen {
+        handle: u64,
+        backlog: u64,
+    },
+    SocketAccept {
+        handle: u64,
+    },
+    SocketSend {
+        handle: u64,
+        data: FileWriteBuffer,
+    },
+    SocketReceive {
+        handle: u64,
+        address: u64,
+        capacity: u64,
+    },
+    SocketStatus {
+        handle: u64,
+        address: u64,
+        length: u64,
+    },
+    SocketShutdown {
+        handle: u64,
+        direction: u64,
+    },
+    SocketClose(u64),
     Exit,
     Fault,
 }
@@ -329,6 +372,7 @@ pub struct ProcessUpdate {
     pub console: Option<ConsoleUpdate>,
     pub vfs_request: Option<UserVfsRequest>,
     pub lifecycle_request: Option<UserLifecycleRequest>,
+    pub socket_request: Option<UserSocketRequest>,
 }
 
 #[derive(Clone, Copy)]
@@ -346,6 +390,62 @@ pub enum AsyncOperation {
     DirectoryRead,
     DirectoryCreate,
     PathRemove,
+    UdpSocketExchange,
+    TcpSocketExchange,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct UserSocketRequest {
+    pub request_id: u64,
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub owner_task_id: u32,
+    pub owner_pid: u8,
+    pub handle: u64,
+    pub protocol: SocketProtocol,
+    pub target: u32,
+    pub port: u16,
+    pub data: FileWriteBuffer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserTcpListener {
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub owner_pid: u8,
+    pub handle: u64,
+    pub port: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserTcpStream {
+    pub owner_slot: u8,
+    pub owner_instance: u64,
+    pub owner_task_id: u32,
+    pub owner_pid: u8,
+    pub handle: u64,
+    pub peer: TcpServerPeer,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct UserTcpStreamSend {
+    pub stream: UserTcpStream,
+    pub request_id: u64,
+    pub data: FileWriteBuffer,
+}
+
+impl UserSocketRequest {
+    pub const fn identity(self) -> AsyncRequestIdentity {
+        AsyncRequestIdentity {
+            request_id: self.request_id,
+            owner_slot: self.owner_slot,
+            owner_instance: self.owner_instance,
+            operation: match self.protocol {
+                SocketProtocol::Udp => AsyncOperation::UdpSocketExchange,
+                SocketProtocol::TcpStream => AsyncOperation::TcpSocketExchange,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -601,6 +701,7 @@ struct ManagedProcess {
     file_handles: [Option<FileCapability>; FILE_HANDLE_CAPACITY],
     next_file_generation: u64,
     endpoints: EndpointState,
+    sockets: SocketSet,
     pending_file_open: Option<PendingFileOpen>,
     pending_file_read: Option<PendingFileRead>,
     pending_file_write: Option<PendingFileWrite>,
@@ -617,6 +718,25 @@ struct ManagedProcess {
 struct ProcessKey {
     slot: u8,
     incarnation: u64,
+}
+
+fn socket_owner(managed: &ManagedProcess) -> SocketOwner {
+    SocketOwner {
+        slot: managed.key.slot,
+        incarnation: managed.key.incarnation,
+    }
+}
+
+fn socket_error_code(error: SocketError) -> u64 {
+    match error {
+        SocketError::InvalidHandle | SocketError::InvalidState => {
+            syscall::error_code(syscall::SyscallError::InvalidArgument)
+        }
+        SocketError::WouldBlock => genos_abi::USER_ERROR_WOULD_BLOCK,
+        SocketError::Capacity | SocketError::Unavailable => {
+            syscall::error_code(syscall::SyscallError::Unavailable)
+        }
+    }
 }
 
 const PROCESS_HANDLE_CAPACITY: usize = USER_PROCESS_HANDLE_CAPACITY as usize;
@@ -1034,6 +1154,7 @@ impl ManagedProcess {
             file_handles: [None; FILE_HANDLE_CAPACITY],
             next_file_generation: 1,
             endpoints,
+            sockets: SocketSet::new(),
             pending_file_open: None,
             pending_file_read: None,
             pending_file_write: None,
@@ -1175,6 +1296,10 @@ impl ManagedProcess {
     }
 
     fn revoke_resources(&mut self) {
+        self.sockets.close_owner(SocketOwner {
+            slot: self.key.slot,
+            incarnation: self.key.incarnation,
+        });
         self.handles.clear();
         self.file_handles = [None; FILE_HANDLE_CAPACITY];
         self.endpoints.clear_payload();
@@ -1195,6 +1320,10 @@ impl ManagedProcess {
         let expected = self.file_handles.iter().flatten().count()
             + self.endpoints.handles.iter().flatten().count()
             + self.process_handles.iter().flatten().count()
+            + self.sockets.len_owner(SocketOwner {
+                slot: self.key.slot,
+                incarnation: self.key.incarnation,
+            })
             + usize::from(self.process.console_handle != 0)
             + usize::from(self.process.lifecycle_handle != 0);
         if self.handles.len() != expected {
@@ -1250,6 +1379,15 @@ impl ManagedProcess {
         }) {
             return false;
         }
+        let owner = socket_owner(self);
+        if self.sockets.handles(owner).any(|handle| {
+            !self
+                .handles
+                .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                || self.handles.allows(handle, HandleKind::File, 0)
+        }) {
+            return false;
+        }
         !self.process_handles.iter().flatten().any(|capability| {
             !self
                 .handles
@@ -1266,6 +1404,10 @@ impl ManagedProcess {
             && self.endpoints.handles.iter().all(Option::is_none)
             && self.endpoints.published.is_none()
             && self.endpoints.pending_receive.is_none()
+            && self.sockets.len_owner(SocketOwner {
+                slot: self.key.slot,
+                incarnation: self.key.incarnation,
+            }) == 0
             && self.process_handles.iter().all(Option::is_none)
             && self.pending_file_open.is_none()
             && self.pending_file_read.is_none()
@@ -1300,6 +1442,272 @@ impl ProcessManager {
             .iter()
             .flatten()
             .all(ManagedProcess::handle_table_is_consistent)
+    }
+
+    pub fn tcp_listener(&self, port: u16) -> Option<UserTcpListener> {
+        self.slots.iter().flatten().find_map(|managed| {
+            let handle = managed.sockets.listener_handle(port)?;
+            managed
+                .handles
+                .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                .then_some(UserTcpListener {
+                    owner_slot: managed.key.slot,
+                    owner_instance: managed.key.incarnation,
+                    owner_pid: managed.process.pid,
+                    handle,
+                    port,
+                })
+        })
+    }
+
+    pub fn tcp_listener_active(&self, listener: UserTcpListener) -> bool {
+        self.slots
+            .get(listener.owner_slot as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|managed| {
+                managed.key.incarnation == listener.owner_instance
+                    && managed.process.pid == listener.owner_pid
+                    && managed
+                        .handles
+                        .allows(listener.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                    && managed.sockets.listener_handle(listener.port) == Some(listener.handle)
+            })
+    }
+
+    pub fn queue_tcp_peer(
+        &mut self,
+        listener: UserTcpListener,
+        peer: TcpServerPeer,
+    ) -> Result<(), SocketError> {
+        let managed = self
+            .slots
+            .get_mut(listener.owner_slot as usize)
+            .and_then(Option::as_mut)
+            .filter(|managed| {
+                managed.key.incarnation == listener.owner_instance
+                    && managed.process.pid == listener.owner_pid
+                    && managed
+                        .handles
+                        .allows(listener.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                    && managed.sockets.listener_handle(listener.port) == Some(listener.handle)
+            })
+            .ok_or(SocketError::InvalidHandle)?;
+        managed
+            .sockets
+            .queue_incoming(socket_owner(managed), listener.handle, peer)
+    }
+
+    pub fn tcp_stream(&self, peer: TcpServerPeer) -> Option<UserTcpStream> {
+        self.slots.iter().flatten().find_map(|managed| {
+            let handle = managed.sockets.server_handle(peer)?;
+            managed
+                .handles
+                .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                .then_some(UserTcpStream {
+                    owner_slot: managed.key.slot,
+                    owner_instance: managed.key.incarnation,
+                    owner_task_id: managed.task_id,
+                    owner_pid: managed.process.pid,
+                    handle,
+                    peer,
+                })
+        })
+    }
+
+    pub fn drop_tcp_peer(
+        &mut self,
+        listener: UserTcpListener,
+        peer: TcpServerPeer,
+    ) -> Result<(), SocketError> {
+        let managed = self
+            .slots
+            .get_mut(listener.owner_slot as usize)
+            .and_then(Option::as_mut)
+            .filter(|managed| {
+                managed.key.incarnation == listener.owner_instance
+                    && managed.process.pid == listener.owner_pid
+                    && managed
+                        .handles
+                        .allows(listener.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                    && managed.sockets.listener_handle(listener.port) == Some(listener.handle)
+            })
+            .ok_or(SocketError::InvalidHandle)?;
+        managed
+            .sockets
+            .drop_incoming(socket_owner(managed), listener.handle, peer)
+    }
+
+    pub fn tcp_stream_active(&self, stream: UserTcpStream) -> bool {
+        self.slots
+            .get(stream.owner_slot as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|managed| {
+                managed.key.incarnation == stream.owner_instance
+                    && managed.task_id == stream.owner_task_id
+                    && managed.process.pid == stream.owner_pid
+                    && !managed.process.completed
+                    && managed
+                        .handles
+                        .allows(stream.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                    && managed
+                        .sockets
+                        .server_peer(socket_owner(managed), stream.handle)
+                        == Ok(stream.peer)
+            })
+    }
+
+    pub fn queue_tcp_stream_receive(
+        &mut self,
+        stream: UserTcpStream,
+        bytes: &[u8],
+    ) -> Result<usize, SocketError> {
+        let managed = self
+            .slots
+            .get_mut(stream.owner_slot as usize)
+            .and_then(Option::as_mut)
+            .filter(|managed| {
+                managed.key.incarnation == stream.owner_instance
+                    && managed.task_id == stream.owner_task_id
+                    && managed.process.pid == stream.owner_pid
+                    && !managed.process.completed
+                    && managed
+                        .handles
+                        .allows(stream.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                    && managed
+                        .sockets
+                        .server_peer(socket_owner(managed), stream.handle)
+                        == Ok(stream.peer)
+            })
+            .ok_or(SocketError::InvalidHandle)?;
+        managed
+            .sockets
+            .push_receive(socket_owner(managed), stream.handle, bytes)
+    }
+
+    pub fn begin_tcp_stream_send(&mut self, stream: UserTcpStream) -> Option<UserTcpStreamSend> {
+        let managed = self
+            .slots
+            .get_mut(stream.owner_slot as usize)
+            .and_then(Option::as_mut)?;
+        let owner = socket_owner(managed);
+        if managed.key.incarnation != stream.owner_instance
+            || managed.task_id != stream.owner_task_id
+            || managed.process.pid != stream.owner_pid
+            || managed.process.completed
+            || !managed
+                .handles
+                .allows(stream.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+            || !managed
+                .sockets
+                .server_send_pending(owner, stream.handle, stream.peer)
+        {
+            return None;
+        }
+        let request_id = managed.allocate_request_id()?;
+        let mut data = FileWriteBuffer::empty();
+        let len = managed
+            .sockets
+            .begin_server_send(owner, stream.handle, request_id, &mut data.bytes)
+            .ok()?;
+        data.len = len;
+        Some(UserTcpStreamSend {
+            stream,
+            request_id,
+            data,
+        })
+    }
+
+    pub fn tcp_stream_send_active(&self, request: UserTcpStreamSend) -> bool {
+        self.slots
+            .get(request.stream.owner_slot as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|managed| {
+                managed.key.incarnation == request.stream.owner_instance
+                    && managed.task_id == request.stream.owner_task_id
+                    && managed.process.pid == request.stream.owner_pid
+                    && !managed.process.completed
+                    && managed.handles.allows(
+                        request.stream.handle,
+                        HandleKind::Socket,
+                        HANDLE_RIGHT_USE,
+                    )
+                    && managed.sockets.server_send_active(
+                        socket_owner(managed),
+                        request.stream.handle,
+                        request.stream.peer,
+                        request.request_id,
+                        request.data.len(),
+                    )
+            })
+    }
+
+    pub fn complete_tcp_stream_send(
+        &mut self,
+        request: UserTcpStreamSend,
+    ) -> Result<usize, SocketError> {
+        if !self.tcp_stream_send_active(request) {
+            return Err(SocketError::InvalidHandle);
+        }
+        let managed = self.slots[request.stream.owner_slot as usize]
+            .as_mut()
+            .ok_or(SocketError::InvalidHandle)?;
+        managed.sockets.complete_server_send(
+            socket_owner(managed),
+            request.stream.handle,
+            request.stream.peer,
+            request.request_id,
+        )
+    }
+
+    pub fn tcp_stream_write_closed(&self, stream: UserTcpStream) -> bool {
+        self.slots
+            .get(stream.owner_slot as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|managed| {
+                managed.key.incarnation == stream.owner_instance
+                    && managed.task_id == stream.owner_task_id
+                    && managed.process.pid == stream.owner_pid
+                    && managed.sockets.server_write_closed(
+                        socket_owner(managed),
+                        stream.handle,
+                        stream.peer,
+                    )
+            })
+    }
+
+    pub fn mark_tcp_stream_read_closed(
+        &mut self,
+        stream: UserTcpStream,
+    ) -> Result<(), SocketError> {
+        let managed = self.slots[stream.owner_slot as usize]
+            .as_mut()
+            .ok_or(SocketError::InvalidHandle)?;
+        managed
+            .sockets
+            .mark_server_read_closed(socket_owner(managed), stream.handle, stream.peer)
+    }
+
+    pub fn mark_tcp_stream_closed(&mut self, stream: UserTcpStream) -> Result<(), SocketError> {
+        let managed = self.slots[stream.owner_slot as usize]
+            .as_mut()
+            .ok_or(SocketError::InvalidHandle)?;
+        managed
+            .sockets
+            .mark_server_closed(socket_owner(managed), stream.handle, stream.peer)
+    }
+
+    pub fn fail_tcp_stream(&mut self, stream: UserTcpStream) -> Result<(), SocketError> {
+        let managed = self.slots[stream.owner_slot as usize]
+            .as_mut()
+            .ok_or(SocketError::InvalidHandle)?;
+        if managed
+            .sockets
+            .server_peer(socket_owner(managed), stream.handle)
+            != Ok(stream.peer)
+        {
+            return Err(SocketError::InvalidHandle);
+        }
+        managed.sockets.fail(socket_owner(managed), stream.handle)
     }
 
     fn allocate_key(&mut self, slot: usize) -> Result<ProcessKey, LaunchError> {
@@ -1714,6 +2122,24 @@ impl ProcessManager {
                     if text.as_str() == "network diagnostics ready" {
                         crate::serial::println("USER_NETWORK_DIAGNOSTICS_READY");
                     }
+                    if text.as_str() == "nonblocking socket capabilities ready" {
+                        crate::serial::println("USER_SOCKET_CAPABILITY_READY abi=17");
+                    }
+                    if text.as_str() == "asynchronous UDP socket ready" {
+                        crate::serial::println("USER_SOCKET_UDP_ASYNC_READY");
+                    }
+                    if text.as_str() == "asynchronous TCP socket ready" {
+                        crate::serial::println("USER_SOCKET_TCP_ASYNC_READY");
+                    }
+                    if text.as_str() == "listener capability authority ready" {
+                        crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=17");
+                    }
+                    if text.as_str() == "passive TCP accept ready" {
+                        crate::serial::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
+                    }
+                    if text.as_str() == "passive TCP stream ready" {
+                        crate::serial::println("USER_SOCKET_PASSIVE_STREAM_READY");
+                    }
                     if text.as_str() == "durable file committed" {
                         crate::serial::println("USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT");
                     }
@@ -1771,10 +2197,41 @@ impl ProcessManager {
                     crate::serial::print_u64(managed.process.pid as u64);
                     crate::serial::println("");
                 }
+                ProcessEvent::SocketOpen { protocol } => self.complete_socket_open(index, protocol),
+                ProcessEvent::SocketConnect {
+                    handle,
+                    target,
+                    port,
+                } => self.complete_socket_connect(index, handle, target, port),
+                ProcessEvent::SocketBind { handle, port } => {
+                    self.complete_socket_bind(index, handle, port)
+                }
+                ProcessEvent::SocketListen { handle, backlog } => {
+                    self.complete_socket_listen(index, handle, backlog)
+                }
+                ProcessEvent::SocketAccept { handle } => self.complete_socket_accept(index, handle),
+                ProcessEvent::SocketSend { handle, data } => {
+                    self.complete_socket_send(index, handle, data)
+                }
+                ProcessEvent::SocketReceive {
+                    handle,
+                    address,
+                    capacity,
+                } => self.complete_socket_receive(index, handle, address, capacity),
+                ProcessEvent::SocketStatus {
+                    handle,
+                    address,
+                    length,
+                } => self.complete_socket_status(index, handle, address, length),
+                ProcessEvent::SocketShutdown { handle, direction } => {
+                    self.complete_socket_shutdown(index, handle, direction)
+                }
+                ProcessEvent::SocketClose(handle) => self.complete_socket_close(index, handle),
                 ProcessEvent::Exit => self.complete_terminal(index, ManagedState::Exited),
                 ProcessEvent::Fault => self.complete_terminal(index, ManagedState::Faulted),
                 ProcessEvent::None => return None,
             }
+            let socket_request = self.begin_socket_request(index);
             let managed = self.slots[index].as_mut().expect("selected process exists");
             let output = if managed.process.output_pending {
                 managed.process.output_pending = false;
@@ -1797,9 +2254,299 @@ impl ProcessManager {
                 console,
                 vfs_request,
                 lifecycle_request,
+                socket_request,
             });
         }
         None
+    }
+
+    fn begin_socket_request(&mut self, index: usize) -> Option<UserSocketRequest> {
+        let managed = self.slots[index].as_mut()?;
+        if managed.process.completed {
+            return None;
+        }
+        let owner = socket_owner(managed);
+        let (handle, protocol) = managed.sockets.pending_transport(owner)?;
+        let request_id = managed.allocate_request_id()?;
+        let mut data = FileWriteBuffer::empty();
+        let (target, port, len) = managed
+            .sockets
+            .begin_transport(owner, handle, protocol, request_id, &mut data.bytes)
+            .ok()?;
+        data.len = len;
+        crate::serial::print(match protocol {
+            SocketProtocol::Udp => "USER_SOCKET_UDP_QUEUED pid=",
+            SocketProtocol::TcpStream => "USER_SOCKET_TCP_QUEUED pid=",
+        });
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::print(" request=");
+        crate::serial::print_u64(request_id);
+        crate::serial::println("");
+        Some(UserSocketRequest {
+            request_id,
+            owner_slot: managed.key.slot,
+            owner_instance: managed.key.incarnation,
+            owner_task_id: managed.task_id,
+            owner_pid: managed.process.pid,
+            handle,
+            protocol,
+            target,
+            port,
+            data,
+        })
+    }
+
+    fn complete_socket_open(&mut self, index: usize, protocol: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let owner = socket_owner(managed);
+        let result = SocketProtocol::from_raw(protocol)
+            .ok_or(SocketError::InvalidState)
+            .and_then(|protocol| managed.sockets.open(owner, protocol));
+        managed.process.context.rax = match result {
+            Ok(handle)
+                if managed
+                    .handles
+                    .register(handle, HandleKind::Socket, HANDLE_RIGHT_USE) =>
+            {
+                crate::serial::print("USER_SOCKET_OPEN pid=");
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::print(" handle=0x");
+                crate::serial::print_hex(handle);
+                crate::serial::println("");
+                handle
+            }
+            Ok(handle) => {
+                let _ = managed.sockets.close(owner, handle);
+                syscall::error_code(syscall::SyscallError::Unavailable)
+            }
+            Err(error) => socket_error_code(error),
+        };
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_connect(&mut self, index: usize, handle: u64, target: u32, port: u16) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| {
+                managed
+                    .sockets
+                    .connect(socket_owner(managed), handle, target, port)
+            })
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_bind(&mut self, index: usize, handle: u64, port: u16) {
+        let validation = self.slots[index]
+            .as_ref()
+            .filter(|managed| {
+                managed
+                    .handles
+                    .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+            })
+            .map(|managed| {
+                managed
+                    .sockets
+                    .validate_bind(socket_owner(managed), handle, port)
+            })
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        let port_available = local_port_is_available(
+            self.slots.iter().flatten().map(|managed| &managed.sockets),
+            port,
+        );
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let result = if let Err(error) = validation {
+            Err(error)
+        } else if !port_available {
+            Err(SocketError::Unavailable)
+        } else {
+            managed.sockets.bind(socket_owner(managed), handle, port)
+        };
+        managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_listen(&mut self, index: usize, handle: u64, backlog: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| {
+                managed
+                    .sockets
+                    .listen(socket_owner(managed), handle, backlog as usize)
+            })
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_accept(&mut self, index: usize, handle: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let owner = socket_owner(managed);
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| managed.sockets.accept(owner, handle))
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = match result {
+            Ok(accepted)
+                if managed
+                    .handles
+                    .register(accepted, HandleKind::Socket, HANDLE_RIGHT_USE) =>
+            {
+                accepted
+            }
+            Ok(accepted) => {
+                let _ = managed.sockets.close(owner, accepted);
+                syscall::error_code(syscall::SyscallError::Unavailable)
+            }
+            Err(error) => socket_error_code(error),
+        };
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_send(&mut self, index: usize, handle: u64, data: FileWriteBuffer) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let server_stream = managed
+            .sockets
+            .server_peer(socket_owner(managed), handle)
+            .is_ok();
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| {
+                managed
+                    .sockets
+                    .send(socket_owner(managed), handle, data.as_slice())
+            })
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = result.map_or_else(socket_error_code, |length| {
+            if server_stream {
+                crate::serial::print("USER_SOCKET_PASSIVE_SEND_QUEUED bytes=");
+                crate::serial::print_u64(length as u64);
+                crate::serial::println("");
+            }
+            length as u64
+        });
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_receive(&mut self, index: usize, handle: u64, address: u64, capacity: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let mut output = [0u8; USER_SOCKET_BUFFER_CAPACITY as usize];
+        let server_stream = managed
+            .sockets
+            .server_peer(socket_owner(managed), handle)
+            .is_ok();
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| {
+                managed.sockets.receive(
+                    socket_owner(managed),
+                    handle,
+                    &mut output[..capacity as usize],
+                )
+            })
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = match result {
+            Ok(length) if copy_to_user_data(&managed.process, address, &output[..length]) => {
+                if server_stream {
+                    crate::serial::print("USER_SOCKET_PASSIVE_RECEIVE bytes=");
+                    crate::serial::print_u64(length as u64);
+                    crate::serial::println("");
+                }
+                length as u64
+            }
+            Ok(_) => syscall::error_code(syscall::SyscallError::InvalidArgument),
+            Err(error) => {
+                if server_stream {
+                    crate::serial::println("USER_SOCKET_PASSIVE_RECEIVE_BLOCKED");
+                }
+                socket_error_code(error)
+            }
+        };
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_status(&mut self, index: usize, handle: u64, address: u64, length: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| managed.sockets.status(socket_owner(managed), handle))
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = match result {
+            Ok(status) => {
+                let status = UserSocketStatus {
+                    protocol: status.protocol as u64,
+                    state: status.state as u64,
+                    readiness: status.readiness,
+                    queued_send: status.queued_send as u64,
+                    queued_receive: status.queued_receive as u64,
+                };
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        core::ptr::from_ref(&status).cast::<u8>(),
+                        core::mem::size_of::<UserSocketStatus>(),
+                    )
+                };
+                if length as usize == bytes.len()
+                    && copy_to_user_data(&managed.process, address, bytes)
+                {
+                    length
+                } else {
+                    syscall::error_code(syscall::SyscallError::InvalidArgument)
+                }
+            }
+            Err(error) => socket_error_code(error),
+        };
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_shutdown(&mut self, index: usize, handle: u64, direction: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| {
+                managed.sockets.shutdown(
+                    socket_owner(managed),
+                    handle,
+                    direction & USER_SOCKET_SHUTDOWN_READ != 0,
+                    direction & USER_SOCKET_SHUTDOWN_WRITE != 0,
+                )
+            })
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
+        managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_close(&mut self, index: usize, handle: u64) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let result = allowed
+            .then(|| managed.sockets.close(socket_owner(managed), handle))
+            .unwrap_or(Err(SocketError::InvalidHandle));
+        managed.process.context.rax = match result {
+            Ok(()) if managed.handles.unregister(handle, HandleKind::Socket) => 0,
+            Ok(()) => syscall::error_code(syscall::SyscallError::InvalidArgument),
+            Err(error) => socket_error_code(error),
+        };
+        managed.state = ManagedState::Ready;
     }
 
     fn block_process_launch(
@@ -3609,6 +4356,7 @@ impl ProcessManager {
             console: None,
             vfs_request: None,
             lifecycle_request: None,
+            socket_request: None,
         };
         Ok(update)
     }
@@ -3816,6 +4564,83 @@ impl ProcessManager {
             }),
         }
     }
+
+    pub fn socket_request_active(&self, request: UserSocketRequest) -> bool {
+        self.slots.iter().flatten().any(|managed| {
+            managed.key.slot == request.owner_slot
+                && managed.key.incarnation == request.owner_instance
+                && managed.task_id == request.owner_task_id
+                && managed.process.pid == request.owner_pid
+                && !managed.process.completed
+                && managed
+                    .handles
+                    .allows(request.handle, HandleKind::Socket, HANDLE_RIGHT_USE)
+                && managed.sockets.transport_request_active(
+                    socket_owner(managed),
+                    request.handle,
+                    request.protocol,
+                    request.request_id,
+                    request.data.len(),
+                )
+        })
+    }
+
+    pub fn complete_socket_request(
+        &mut self,
+        request: UserSocketRequest,
+        response: Option<&[u8]>,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        if !self.socket_request_active(request) {
+            return Err(LaunchError::InvalidResult);
+        }
+        let managed = self
+            .slots
+            .iter_mut()
+            .flatten()
+            .find(|managed| {
+                managed.key.slot == request.owner_slot
+                    && managed.key.incarnation == request.owner_instance
+                    && managed.task_id == request.owner_task_id
+                    && managed.process.pid == request.owner_pid
+            })
+            .ok_or(LaunchError::ImageUnavailable)?;
+        let owner = socket_owner(managed);
+        match response {
+            Some(bytes) => {
+                managed
+                    .sockets
+                    .complete_transport(
+                        owner,
+                        request.handle,
+                        request.protocol,
+                        request.request_id,
+                        bytes,
+                    )
+                    .map_err(|_| LaunchError::InvalidResult)?;
+                crate::serial::print(match request.protocol {
+                    SocketProtocol::Udp => "USER_SOCKET_UDP_COMPLETE pid=",
+                    SocketProtocol::TcpStream => "USER_SOCKET_TCP_COMPLETE pid=",
+                });
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::print(" bytes=");
+                crate::serial::print_u64(bytes.len() as u64);
+                crate::serial::println("");
+            }
+            None => {
+                managed
+                    .sockets
+                    .fail_transport(owner, request.handle, request.protocol, request.request_id)
+                    .map_err(|_| LaunchError::InvalidResult)?;
+                crate::serial::print(match request.protocol {
+                    SocketProtocol::Udp => "USER_SOCKET_UDP_TIMEOUT pid=",
+                    SocketProtocol::TcpStream => "USER_SOCKET_TCP_ERROR pid=",
+                });
+                crate::serial::print_u64(managed.process.pid as u64);
+                crate::serial::println("");
+            }
+        }
+        Ok(process_update(managed))
+    }
 }
 
 fn namespace_request_active(
@@ -3866,6 +4691,7 @@ fn process_update(managed: &ManagedProcess) -> ProcessUpdate {
         console: None,
         vfs_request: None,
         lifecycle_request: None,
+        socket_request: None,
     }
 }
 
@@ -4093,7 +4919,17 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
                 | ProcessEvent::CloseEndpoint(_)
                 | ProcessEvent::ConsoleWrite { .. }
                 | ProcessEvent::ConsoleSetInput { .. }
-                | ProcessEvent::ConsoleClear(_) => fail("USER_PROBE_BLOCKED"),
+                | ProcessEvent::ConsoleClear(_)
+                | ProcessEvent::SocketOpen { .. }
+                | ProcessEvent::SocketConnect { .. }
+                | ProcessEvent::SocketBind { .. }
+                | ProcessEvent::SocketListen { .. }
+                | ProcessEvent::SocketAccept { .. }
+                | ProcessEvent::SocketSend { .. }
+                | ProcessEvent::SocketReceive { .. }
+                | ProcessEvent::SocketStatus { .. }
+                | ProcessEvent::SocketShutdown { .. }
+                | ProcessEvent::SocketClose(_) => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
             }
         }
@@ -5672,6 +6508,9 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 process_handle_capacity: USER_PROCESS_HANDLE_CAPACITY as u64,
                 image_layout_version: USER_IMAGE_LAYOUT_VERSION,
                 executable_page_capacity: USER_EXECUTABLE_PAGE_CAPACITY,
+                socket_handle_capacity: USER_SOCKET_HANDLE_CAPACITY,
+                socket_buffer_capacity: USER_SOCKET_BUFFER_CAPACITY,
+                socket_status_size: core::mem::size_of::<UserSocketStatus>() as u64,
             };
             let bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -5900,6 +6739,109 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 output_capacity,
             );
             0
+        }
+        Ok(SyscallAction::SocketOpen { protocol }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketOpen { protocol };
+            1
+        }
+        Ok(SyscallAction::SocketConnect {
+            handle,
+            target,
+            port,
+        }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketConnect {
+                handle,
+                target,
+                port,
+            };
+            1
+        }
+        Ok(SyscallAction::SocketBind { handle, port }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketBind { handle, port };
+            1
+        }
+        Ok(SyscallAction::SocketListen { handle, backlog }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketListen { handle, backlog };
+            1
+        }
+        Ok(SyscallAction::SocketAccept { handle }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketAccept { handle };
+            1
+        }
+        Ok(SyscallAction::SocketSend {
+            handle,
+            input_address,
+            input_length,
+        }) => {
+            if let Some(data) = copy_user_bytes(process, input_address, input_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::SocketSend { handle, data };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::SocketReceive {
+            handle,
+            output_address,
+            output_capacity,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_capacity) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::SocketReceive {
+                    handle,
+                    address: output_address,
+                    capacity: output_capacity,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::SocketStatus {
+            handle,
+            output_address,
+            output_length,
+        }) => {
+            if valid_user_data_buffer(process, output_address, output_length) {
+                frame.rax = 0;
+                process.context = *frame;
+                process.event = ProcessEvent::SocketStatus {
+                    handle,
+                    address: output_address,
+                    length: output_length,
+                };
+                1
+            } else {
+                frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
+                0
+            }
+        }
+        Ok(SyscallAction::SocketShutdown { handle, direction }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketShutdown { handle, direction };
+            1
+        }
+        Ok(SyscallAction::SocketClose { handle }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketClose(handle);
+            1
         }
         Ok(SyscallAction::WaitInput {
             output_address,

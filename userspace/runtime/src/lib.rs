@@ -5,8 +5,8 @@ use core::arch::asm;
 
 pub use genos_abi::{
     UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
-    UserProcessHeader, UserProcessStatus, UserSystemInfo, USER_ABI_VERSION as ABI_VERSION,
-    USER_CHANNEL_MESSAGE_SIZE as CHANNEL_MESSAGE_SIZE,
+    UserProcessHeader, UserProcessStatus, UserSocketStatus, UserSystemInfo,
+    USER_ABI_VERSION as ABI_VERSION, USER_CHANNEL_MESSAGE_SIZE as CHANNEL_MESSAGE_SIZE,
     USER_CONSOLE_LINE_ERROR as CONSOLE_LINE_ERROR, USER_CONSOLE_LINE_OUTPUT as CONSOLE_LINE_OUTPUT,
     USER_CONSOLE_LINE_PROMPT as CONSOLE_LINE_PROMPT,
     USER_CONSOLE_LINE_STATUS as CONSOLE_LINE_STATUS, USER_CONSOLE_TEXT_MAX as CONSOLE_TEXT_MAX,
@@ -14,7 +14,7 @@ pub use genos_abi::{
     USER_ENDPOINT_HANDLE_CAPACITY as ENDPOINT_HANDLE_CAPACITY,
     USER_ENDPOINT_QUEUE_CAPACITY as ENDPOINT_QUEUE_CAPACITY,
     USER_ERROR_INVALID_ARGUMENT as ERROR_INVALID_ARGUMENT,
-    USER_ERROR_UNAVAILABLE as ERROR_UNAVAILABLE,
+    USER_ERROR_UNAVAILABLE as ERROR_UNAVAILABLE, USER_ERROR_WOULD_BLOCK as ERROR_WOULD_BLOCK,
     USER_EXECUTABLE_PAGE_CAPACITY as EXECUTABLE_PAGE_CAPACITY,
     USER_FILE_HANDLE_CAPACITY as FILE_HANDLE_CAPACITY,
     USER_FILE_KIND_DIRECTORY as FILE_KIND_DIRECTORY, USER_FILE_KIND_REGULAR as FILE_KIND_REGULAR,
@@ -38,7 +38,30 @@ pub use genos_abi::{
     USER_PROCESS_MODE_NORMAL as PROCESS_MODE_NORMAL, USER_PROCESS_STATE_EXITED as PROCESS_EXITED,
     USER_PROCESS_STATE_FAULTED as PROCESS_FAULTED, USER_PROCESS_STATE_KILLED as PROCESS_KILLED,
     USER_PROCESS_STATE_READY as PROCESS_READY, USER_PROCESS_STATE_SLEEPING as PROCESS_SLEEPING,
-    USER_PROCESS_STATE_WAITING as PROCESS_WAITING, USER_TIMER_HZ as TIMER_HZ,
+    USER_PROCESS_STATE_WAITING as PROCESS_WAITING,
+    USER_SOCKET_BUFFER_CAPACITY as SOCKET_BUFFER_CAPACITY,
+    USER_SOCKET_HANDLE_CAPACITY as SOCKET_HANDLE_CAPACITY,
+    USER_SOCKET_LISTENER_BACKLOG_CAPACITY as SOCKET_LISTENER_BACKLOG_CAPACITY,
+    USER_SOCKET_LISTENER_PORT_MIN as SOCKET_LISTENER_PORT_MIN,
+    USER_SOCKET_PROTOCOL_TCP_STREAM as SOCKET_PROTOCOL_TCP_STREAM,
+    USER_SOCKET_PROTOCOL_UDP as SOCKET_PROTOCOL_UDP,
+    USER_SOCKET_READY_ACCEPT as SOCKET_READY_ACCEPT,
+    USER_SOCKET_READY_CLOSED as SOCKET_READY_CLOSED,
+    USER_SOCKET_READY_CONNECTED as SOCKET_READY_CONNECTED,
+    USER_SOCKET_READY_ERROR as SOCKET_READY_ERROR,
+    USER_SOCKET_READY_READABLE as SOCKET_READY_READABLE,
+    USER_SOCKET_READY_WRITABLE as SOCKET_READY_WRITABLE,
+    USER_SOCKET_SHUTDOWN_BOTH as SOCKET_SHUTDOWN_BOTH,
+    USER_SOCKET_SHUTDOWN_READ as SOCKET_SHUTDOWN_READ,
+    USER_SOCKET_SHUTDOWN_WRITE as SOCKET_SHUTDOWN_WRITE,
+    USER_SOCKET_STATE_BOUND as SOCKET_STATE_BOUND, USER_SOCKET_STATE_CLOSED as SOCKET_STATE_CLOSED,
+    USER_SOCKET_STATE_CONNECTING as SOCKET_STATE_CONNECTING,
+    USER_SOCKET_STATE_ESTABLISHED as SOCKET_STATE_ESTABLISHED,
+    USER_SOCKET_STATE_FAILED as SOCKET_STATE_FAILED,
+    USER_SOCKET_STATE_LISTENING as SOCKET_STATE_LISTENING,
+    USER_SOCKET_STATE_OPEN as SOCKET_STATE_OPEN,
+    USER_SOCKET_STATE_READ_CLOSED as SOCKET_STATE_READ_CLOSED,
+    USER_SOCKET_STATE_WRITE_CLOSED as SOCKET_STATE_WRITE_CLOSED, USER_TIMER_HZ as TIMER_HZ,
 };
 pub const STACK_GUARD: u64 = 0x0000_4000_0000_b000;
 
@@ -64,6 +87,16 @@ use genos_abi::{
     USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
     USER_SYSCALL_REMOVE_PATH as SYSCALL_REMOVE_PATH, USER_SYSCALL_REPORT as SYSCALL_REPORT,
     USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT, USER_SYSCALL_SLEEP as SYSCALL_SLEEP,
+    USER_SYSCALL_SOCKET_ACCEPT as SYSCALL_SOCKET_ACCEPT,
+    USER_SYSCALL_SOCKET_BIND as SYSCALL_SOCKET_BIND,
+    USER_SYSCALL_SOCKET_CLOSE as SYSCALL_SOCKET_CLOSE,
+    USER_SYSCALL_SOCKET_CONNECT as SYSCALL_SOCKET_CONNECT,
+    USER_SYSCALL_SOCKET_LISTEN as SYSCALL_SOCKET_LISTEN,
+    USER_SYSCALL_SOCKET_OPEN as SYSCALL_SOCKET_OPEN,
+    USER_SYSCALL_SOCKET_RECEIVE as SYSCALL_SOCKET_RECEIVE,
+    USER_SYSCALL_SOCKET_SEND as SYSCALL_SOCKET_SEND,
+    USER_SYSCALL_SOCKET_SHUTDOWN as SYSCALL_SOCKET_SHUTDOWN,
+    USER_SYSCALL_SOCKET_STATUS as SYSCALL_SOCKET_STATUS,
     USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO,
     USER_SYSCALL_TCP_EXCHANGE as SYSCALL_TCP_EXCHANGE,
@@ -241,6 +274,80 @@ pub fn tcp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8])
             ],
         )
     }
+}
+
+pub fn socket_open(protocol: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SOCKET_OPEN, [protocol, 0, 0, 0, 0, 0]) }
+}
+
+pub fn socket_connect(handle: u64, target: u32, port: u16) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_SOCKET_CONNECT,
+            [handle, target as u64, port as u64, 0, 0, 0],
+        )
+    }
+}
+
+pub fn socket_bind(handle: u64, port: u16) -> u64 {
+    unsafe { syscall(SYSCALL_SOCKET_BIND, [handle, port as u64, 0, 0, 0, 0]) }
+}
+
+pub fn socket_listen(handle: u64, backlog: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SOCKET_LISTEN, [handle, backlog, 0, 0, 0, 0]) }
+}
+
+pub fn socket_accept(handle: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SOCKET_ACCEPT, [handle, 0, 0, 0, 0, 0]) }
+}
+
+pub fn socket_send(handle: u64, bytes: &[u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_SOCKET_SEND,
+            [handle, bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0],
+        )
+    }
+}
+
+pub fn socket_receive(handle: u64, output: &mut [u8]) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_SOCKET_RECEIVE,
+            [
+                handle,
+                output.as_mut_ptr() as u64,
+                output.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn socket_status(handle: u64, status: &mut UserSocketStatus) -> u64 {
+    unsafe {
+        syscall(
+            SYSCALL_SOCKET_STATUS,
+            [
+                handle,
+                status as *mut UserSocketStatus as u64,
+                core::mem::size_of::<UserSocketStatus>() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    }
+}
+
+pub fn socket_shutdown(handle: u64, direction: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SOCKET_SHUTDOWN, [handle, direction, 0, 0, 0, 0]) }
+}
+
+pub fn socket_close(handle: u64) -> u64 {
+    unsafe { syscall(SYSCALL_SOCKET_CLOSE, [handle, 0, 0, 0, 0, 0]) }
 }
 
 pub fn read_file(path: &[u8], output: &mut [u8]) -> u64 {

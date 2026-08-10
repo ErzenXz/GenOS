@@ -6,6 +6,7 @@ mod input_hw;
 mod interrupts;
 mod memory;
 mod network;
+mod network_device;
 mod paging;
 mod ramfs;
 mod rtc;

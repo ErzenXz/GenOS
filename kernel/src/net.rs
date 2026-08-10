@@ -110,6 +110,20 @@ pub fn parse_ipv4_frame(frame: &[u8]) -> Option<Ipv4Packet<'_>> {
     })
 }
 
+pub fn parse_arp_reply(frame: &[u8], sender: [u8; 4], target: [u8; 4]) -> Option<[u8; 6]> {
+    (frame.len() >= 42
+        && frame[12..14] == 0x0806u16.to_be_bytes()
+        && frame[14..16] == 1u16.to_be_bytes()
+        && frame[16..18] == 0x0800u16.to_be_bytes()
+        && frame[18] == 6
+        && frame[19] == 4
+        && frame[20..22] == 2u16.to_be_bytes()
+        && frame[28..32] == sender
+        && frame[38..42] == target)
+        .then(|| frame[22..28].try_into().ok())
+        .flatten()
+}
+
 pub fn parse_udp(payload: &[u8]) -> Option<UdpPacket<'_>> {
     if payload.len() < UDP_HEADER_BYTES {
         return None;
@@ -143,6 +157,24 @@ pub fn parse_tcp(payload: &[u8]) -> Option<TcpPacket<'_>> {
     })
 }
 
+pub fn is_initial_tcp_syn(packet: &TcpPacket<'_>) -> bool {
+    packet.flags & 0x3f == 0x02
+        && packet.source_port != 0
+        && packet.destination_port != 0
+        && packet.payload.is_empty()
+}
+
+pub fn is_tcp_handshake_ack(
+    packet: &TcpPacket<'_>,
+    remote_sequence: u32,
+    local_sequence: u32,
+) -> bool {
+    packet.flags & 0x17 == 0x10
+        && packet.sequence == remote_sequence.wrapping_add(1)
+        && packet.acknowledgment == local_sequence.wrapping_add(1)
+        && packet.payload.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +198,39 @@ mod tests {
         udp[2..4].copy_from_slice(&53u16.to_be_bytes());
         udp[4..6].copy_from_slice(&11u16.to_be_bytes());
         udp[8..].copy_from_slice(b"dns");
+        frame
+    }
+
+    fn valid_tcp_syn_frame() -> [u8; ETHERNET_HEADER_BYTES + IPV4_HEADER_BYTES + TCP_HEADER_BYTES] {
+        const SOURCE: [u8; 4] = [10, 0, 2, 2];
+        const DESTINATION: [u8; 4] = [10, 0, 2, 15];
+        let mut frame = [0u8; ETHERNET_HEADER_BYTES + IPV4_HEADER_BYTES + TCP_HEADER_BYTES];
+        frame[6..12].copy_from_slice(&[0x52, 0x54, 0, 0x12, 0x34, 0x56]);
+        frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        let ip = &mut frame[ETHERNET_HEADER_BYTES..];
+        ip[0] = 0x45;
+        ip[2..4].copy_from_slice(&((IPV4_HEADER_BYTES + TCP_HEADER_BYTES) as u16).to_be_bytes());
+        ip[6..8].copy_from_slice(&0x4000u16.to_be_bytes());
+        ip[8] = 64;
+        ip[9] = 6;
+        ip[12..16].copy_from_slice(&SOURCE);
+        ip[16..20].copy_from_slice(&DESTINATION);
+        let sum = checksum(&ip[..IPV4_HEADER_BYTES]);
+        ip[10..12].copy_from_slice(&sum.to_be_bytes());
+        let tcp = &mut ip[IPV4_HEADER_BYTES..];
+        tcp[0..2].copy_from_slice(&49152u16.to_be_bytes());
+        tcp[2..4].copy_from_slice(&18081u16.to_be_bytes());
+        tcp[4..8].copy_from_slice(&0x1020_3040u32.to_be_bytes());
+        tcp[12] = 5 << 4;
+        tcp[13] = 0x02;
+        tcp[14..16].copy_from_slice(&4096u16.to_be_bytes());
+        let mut pseudo = [0u8; 12 + TCP_HEADER_BYTES];
+        pseudo[..4].copy_from_slice(&SOURCE);
+        pseudo[4..8].copy_from_slice(&DESTINATION);
+        pseudo[9] = 6;
+        pseudo[10..12].copy_from_slice(&(TCP_HEADER_BYTES as u16).to_be_bytes());
+        pseudo[12..].copy_from_slice(tcp);
+        tcp[16..18].copy_from_slice(&checksum(&pseudo).to_be_bytes());
         frame
     }
 
@@ -208,5 +273,73 @@ mod tests {
             6,
             &[0; 20]
         ));
+    }
+
+    #[test]
+    fn passive_tcp_handshake_requires_exact_bounded_packets() {
+        let frame = valid_tcp_syn_frame();
+        let ip = parse_ipv4_frame(&frame).unwrap();
+        assert_eq!(ip.protocol, 6);
+        assert!(transport_checksum_valid(
+            ip.source,
+            ip.destination,
+            ip.protocol,
+            ip.payload
+        ));
+        let syn = parse_tcp(ip.payload).unwrap();
+        assert!(is_initial_tcp_syn(&syn));
+        assert_eq!(syn.destination_port, 18081);
+        for len in 0..frame.len() {
+            assert!(parse_ipv4_frame(&frame[..len]).is_none());
+        }
+
+        let mut bad_checksum = frame;
+        bad_checksum[ETHERNET_HEADER_BYTES + IPV4_HEADER_BYTES + 16] ^= 1;
+        let ip = parse_ipv4_frame(&bad_checksum).unwrap();
+        assert!(!transport_checksum_valid(
+            ip.source,
+            ip.destination,
+            ip.protocol,
+            ip.payload
+        ));
+
+        let mut ack = [0u8; TCP_HEADER_BYTES];
+        ack[0..2].copy_from_slice(&49152u16.to_be_bytes());
+        ack[2..4].copy_from_slice(&18081u16.to_be_bytes());
+        ack[4..8].copy_from_slice(&0x1020_3041u32.to_be_bytes());
+        ack[8..12].copy_from_slice(&0x5060_7081u32.to_be_bytes());
+        ack[12] = 5 << 4;
+        ack[13] = 0x10;
+        let ack = parse_tcp(&ack).unwrap();
+        assert!(is_tcp_handshake_ack(&ack, 0x1020_3040, 0x5060_7080));
+        assert!(!is_initial_tcp_syn(&ack));
+        assert!(!is_tcp_handshake_ack(&ack, 0x1020_3041, 0x5060_7080));
+    }
+
+    #[test]
+    fn arp_reply_requires_the_exact_peer_and_rejects_every_truncation() {
+        let sender = [10, 0, 2, 2];
+        let target = [10, 0, 2, 15];
+        let mac = [0x52, 0x54, 0, 0x12, 0x34, 0x56];
+        let mut frame = [0u8; 42];
+        frame[12..14].copy_from_slice(&0x0806u16.to_be_bytes());
+        frame[14..16].copy_from_slice(&1u16.to_be_bytes());
+        frame[16..18].copy_from_slice(&0x0800u16.to_be_bytes());
+        frame[18] = 6;
+        frame[19] = 4;
+        frame[20..22].copy_from_slice(&2u16.to_be_bytes());
+        frame[22..28].copy_from_slice(&mac);
+        frame[28..32].copy_from_slice(&sender);
+        frame[38..42].copy_from_slice(&target);
+
+        assert_eq!(parse_arp_reply(&frame, sender, target), Some(mac));
+        for len in 0..frame.len() {
+            assert!(parse_arp_reply(&frame[..len], sender, target).is_none());
+        }
+        assert!(parse_arp_reply(&frame, [10, 0, 2, 3], target).is_none());
+        assert!(parse_arp_reply(&frame, sender, [10, 0, 2, 16]).is_none());
+
+        frame[20..22].copy_from_slice(&1u16.to_be_bytes());
+        assert!(parse_arp_reply(&frame, sender, target).is_none());
     }
 }

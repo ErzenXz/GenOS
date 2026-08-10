@@ -5,7 +5,7 @@ pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
 pub const MAX_MEMORY_REGIONS: usize = 256;
 pub const MAX_CMDLINE_LEN: usize = 128;
-pub const USER_ABI_VERSION: u64 = 15;
+pub const USER_ABI_VERSION: u64 = 17;
 pub const USER_IMAGE_LAYOUT_VERSION: u64 = 2;
 pub const USER_EXECUTABLE_PAGE_CAPACITY: u64 = 8;
 pub const USER_SYSCALL_PING: u64 = 0;
@@ -48,6 +48,16 @@ pub const USER_SYSCALL_REMOVE_PATH: u64 = 34;
 pub const USER_SYSCALL_NETWORK_CONFIG: u64 = 35;
 pub const USER_SYSCALL_UDP_EXCHANGE: u64 = 36;
 pub const USER_SYSCALL_TCP_EXCHANGE: u64 = 37;
+pub const USER_SYSCALL_SOCKET_OPEN: u64 = 38;
+pub const USER_SYSCALL_SOCKET_CONNECT: u64 = 39;
+pub const USER_SYSCALL_SOCKET_SEND: u64 = 40;
+pub const USER_SYSCALL_SOCKET_RECEIVE: u64 = 41;
+pub const USER_SYSCALL_SOCKET_STATUS: u64 = 42;
+pub const USER_SYSCALL_SOCKET_SHUTDOWN: u64 = 43;
+pub const USER_SYSCALL_SOCKET_CLOSE: u64 = 44;
+pub const USER_SYSCALL_SOCKET_BIND: u64 = 45;
+pub const USER_SYSCALL_SOCKET_LISTEN: u64 = 46;
+pub const USER_SYSCALL_SOCKET_ACCEPT: u64 = 47;
 pub const USER_CONSOLE_LINE_OUTPUT: u64 = 0;
 pub const USER_CONSOLE_LINE_PROMPT: u64 = 1;
 pub const USER_CONSOLE_LINE_ERROR: u64 = 2;
@@ -60,6 +70,30 @@ pub const USER_ENDPOINT_QUEUE_CAPACITY: usize = 4;
 pub const USER_FILE_READ_MAX: usize = 128;
 pub const USER_FILE_WRITE_MAX: usize = 128;
 pub const USER_FILE_HANDLE_CAPACITY: u64 = 4;
+pub const USER_SOCKET_HANDLE_CAPACITY: u64 = 4;
+pub const USER_SOCKET_BUFFER_CAPACITY: u64 = 128;
+pub const USER_SOCKET_PROTOCOL_UDP: u64 = 1;
+pub const USER_SOCKET_PROTOCOL_TCP_STREAM: u64 = 2;
+pub const USER_SOCKET_STATE_OPEN: u64 = 1;
+pub const USER_SOCKET_STATE_CONNECTING: u64 = 2;
+pub const USER_SOCKET_STATE_ESTABLISHED: u64 = 3;
+pub const USER_SOCKET_STATE_READ_CLOSED: u64 = 4;
+pub const USER_SOCKET_STATE_WRITE_CLOSED: u64 = 5;
+pub const USER_SOCKET_STATE_CLOSED: u64 = 6;
+pub const USER_SOCKET_STATE_FAILED: u64 = 7;
+pub const USER_SOCKET_STATE_BOUND: u64 = 8;
+pub const USER_SOCKET_STATE_LISTENING: u64 = 9;
+pub const USER_SOCKET_READY_READABLE: u64 = 1;
+pub const USER_SOCKET_READY_WRITABLE: u64 = 2;
+pub const USER_SOCKET_READY_CONNECTED: u64 = 4;
+pub const USER_SOCKET_READY_CLOSED: u64 = 8;
+pub const USER_SOCKET_READY_ERROR: u64 = 16;
+pub const USER_SOCKET_READY_ACCEPT: u64 = 32;
+pub const USER_SOCKET_LISTENER_BACKLOG_CAPACITY: u64 = 2;
+pub const USER_SOCKET_LISTENER_PORT_MIN: u64 = 1024;
+pub const USER_SOCKET_SHUTDOWN_READ: u64 = 1;
+pub const USER_SOCKET_SHUTDOWN_WRITE: u64 = 2;
+pub const USER_SOCKET_SHUTDOWN_BOTH: u64 = USER_SOCKET_SHUTDOWN_READ | USER_SOCKET_SHUTDOWN_WRITE;
 pub const USER_PROCESS_HANDLE_CAPACITY: u64 = 3;
 pub const USER_PROCESS_IMAGE_INIT: u64 = 1;
 pub const USER_PROCESS_MODE_NORMAL: u64 = 0;
@@ -99,6 +133,7 @@ pub const USER_POINTER_BUTTON_MIDDLE: u64 = 4;
 pub const USER_ERROR_UNKNOWN_SYSCALL: u64 = u64::MAX;
 pub const USER_ERROR_INVALID_ARGUMENT: u64 = u64::MAX - 1;
 pub const USER_ERROR_UNAVAILABLE: u64 = u64::MAX - 2;
+pub const USER_ERROR_WOULD_BLOCK: u64 = u64::MAX - 3;
 pub const USER_PAGE_SIZE: u64 = 4096;
 pub const USER_TIMER_HZ: u64 = 100;
 pub const USER_PING_REPLY: u64 = 0x4745_4e4f_535f_4f4b;
@@ -123,6 +158,28 @@ impl UserNetworkConfig {
             dns: 0,
             mac: [0; 6],
             reserved: [0; 2],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UserSocketStatus {
+    pub protocol: u64,
+    pub state: u64,
+    pub readiness: u64,
+    pub queued_send: u64,
+    pub queued_receive: u64,
+}
+
+impl UserSocketStatus {
+    pub const fn empty() -> Self {
+        Self {
+            protocol: 0,
+            state: 0,
+            readiness: 0,
+            queued_send: 0,
+            queued_receive: 0,
         }
     }
 }
@@ -163,6 +220,9 @@ pub struct UserSystemInfo {
     pub process_handle_capacity: u64,
     pub image_layout_version: u64,
     pub executable_page_capacity: u64,
+    pub socket_handle_capacity: u64,
+    pub socket_buffer_capacity: u64,
+    pub socket_status_size: u64,
 }
 
 impl UserSystemInfo {
@@ -185,6 +245,9 @@ impl UserSystemInfo {
             process_handle_capacity: 0,
             image_layout_version: 0,
             executable_page_capacity: 0,
+            socket_handle_capacity: 0,
+            socket_buffer_capacity: 0,
+            socket_status_size: 0,
         }
     }
 }

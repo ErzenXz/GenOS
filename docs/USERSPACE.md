@@ -1,6 +1,6 @@
 # GenOS userspace boundary
 
-GenOS 0.42 boots the interactive command shell as a separately linked Ring 3 process and gives it opaque console, VFS, namespace, and process-lifecycle capabilities plus bounded network exchanges. ABI 15 keeps normal filesystem and process control in `SHELL.ELF` without granting authority through raw paths or PIDs, and adds validated network configuration, UDP exchange, and TCP exchange calls. This document states exactly what the milestone proves and what it does not.
+GenOS 0.49 boots the interactive command shell as a separately linked Ring 3 process and gives it opaque console, VFS, namespace, process-lifecycle, and socket capabilities plus bounded network exchanges. ABI 17 keeps normal filesystem and process control in `SHELL.ELF` without granting authority through raw paths or PIDs, preserves generation-safe non-blocking UDP/TCP clients, and adds bounded TCP listener authority with one accepted request/response stream. This document states exactly what the milestone proves and what it does not.
 
 ## Build and packaging pipeline
 
@@ -33,7 +33,7 @@ Every accepted page receives a newly allocated zeroed physical frame. File bytes
 
 At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
 
-1. all instances query ABI version 14 and become eligible for timer scheduling;
+1. all instances query ABI version 17 and become eligible for timer scheduling;
 2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
 3. the first instance writes to its guard page and is terminated with page-fault status 142 before performing output work;
 4. the two healthy instances resume afterward, write greetings through the validated output syscall, report private values through validated copy-in, and exit with status 0.
@@ -78,14 +78,14 @@ Completed task history remains in the task registry even after the heavier proce
 
 The shell's `wait JOB` remains an observational reap command for operators. ABI `wait_child` is the blocking primitive used by a Ring 3 parent; the two operations intentionally serve different callers.
 
-## ABI version 14
+## ABI version 17
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
 | Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
-| 1 | `abi_version` | all zero | ABI version `14` |
+| 1 | `abi_version` | all zero | ABI version `17` |
 | 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
 | 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
 | 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
@@ -94,7 +94,7 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 7 | — | — | reserved: the legacy direct-PID `send`, removed in ABI 9 and never reassigned |
 | 8 | — | — | reserved: the legacy inbox `receive`, removed in ABI 9 and never reassigned |
 | 9 | `wait_child` | child PID `1..255` | child exit status; blocks while an owned child remains live |
-| 10 | `system_info` | writable address and exact structure size `136` | copies `UserSystemInfo` and returns `136` |
+| 10 | `system_info` | writable address and exact structure size `160` | copies `UserSystemInfo` and returns `160` |
 | 11 | `read_file` | path address/length and writable output address/capacity | ABI 5 compatibility read; blocks and returns a byte count |
 | 12 | `open_file` | path address/length | blocks, then returns an opaque read-only handle or a bounded error |
 | 13 | `read_handle` | handle and writable output address/capacity | blocks, copies from the kernel-owned offset, advances it, and returns a byte count |
@@ -119,6 +119,19 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 32 | `process_reap` | owned process handle, writable address, exact structure size `64` | for a terminal target, atomically copies status, consumes the handle, frees the manager slot, and returns `64`; a live target returns `USER_ERROR_UNAVAILABLE` |
 | 33 | `create_directory` | managed parent-directory handle and child-name address/length | blocks, creates exactly one child directory beneath the owned parent, and returns `0` |
 | 34 | `remove_path` | managed parent-directory handle and child-name address/length | blocks, removes one file or empty directory, revokes handles naming it, and returns `0` |
+| 35 | `network_config` | writable address and exact structure size `24` | copies the configured IPv4 address, subnet, gateway, DNS, and MAC or returns unavailable |
+| 36 | `udp_exchange` | IPv4 target, port, mapped request, writable response | compatibility one-shot UDP request/response with bounded buffers |
+| 37 | `tcp_exchange` | IPv4 target, port, mapped request, writable response | compatibility one-shot active TCP request/response with bounded buffers |
+| 38 | `socket_open` | UDP or TCP-stream protocol; remaining arguments zero | returns a generation-safe process-owned socket capability |
+| 39 | `socket_connect` | socket handle, nonzero IPv4 target, port | records the remote; UDP becomes established and TCP enters connecting |
+| 40 | `socket_send` | socket handle and mapped input `1..128` bytes | queues all bytes or returns `USER_ERROR_WOULD_BLOCK` without overwriting admitted data |
+| 41 | `socket_receive` | socket handle and writable capacity `1..128` | copies available bytes while preserving any suffix, or returns `USER_ERROR_WOULD_BLOCK` |
+| 42 | `socket_status` | socket handle, writable address, exact structure size `40` | copies protocol, state, readiness, and exact queued-byte counts |
+| 43 | `socket_shutdown` | socket handle and read, write, or both direction mask | cancels queued work in the selected direction and records half/full-close state |
+| 44 | `socket_close` | socket handle; remaining arguments zero | revokes and reclaims the object; stale or foreign values are rejected |
+| 45 | `socket_bind` | TCP-stream handle and local port `1024..65535` | claims the port exclusively across live processes and enters `Bound`, or returns unavailable when another listener owns it |
+| 46 | `socket_listen` | bound TCP-stream handle and backlog `1..2` | enters `Listening` with a fixed bounded pending-peer queue |
+| 47 | `socket_accept` | listening TCP-stream handle; remaining arguments zero | returns a fresh established child capability for the oldest queued peer, or `USER_ERROR_WOULD_BLOCK` while the backlog is empty |
 
 The output path validates the whole range against the userspace window, translates every byte through the owning address space, rejects unmapped holes, and replaces control or non-ASCII bytes before the shell sees them. The application uses runtime functions instead of handwritten assembly. Cooperative yield remains available for ABI compatibility, but the execution proof relies on timer preemption.
 
@@ -146,9 +159,25 @@ Discovery is deliberately minimal: `connect_endpoint` takes a live PID and succe
 
 Revocation happens on every path that ends a capability. `close_endpoint` on a send handle frees that slot. `close_endpoint` on the receive handle unpublishes the endpoint, discards its queued messages, clears any parked receive, and sweeps every process's handle table to revoke send capabilities naming that generation. Normal exit, a Ring 3 fault, `kill`, and reap all run the same release path before the address space is reclaimed. A send through a handle whose target generation no longer exists is rejected with `USER_ERROR_INVALID_ARGUMENT` instead of reaching an unrelated process that later reuses the PID.
 
+### Socket capabilities
+
+Socket authority follows the same unified-table rule but has an independent `0xe7` tag, an encoded process slot/incarnation fragment, and an advancing per-process generation. A handle resolves only when its decoded slot, stored generation, exact value, typed `Socket` entry, and owning process slot/incarnation all agree. Closing and reopening the same metadata slot therefore produces a different value, another process cannot spend it, and PID or manager-slot reuse does not revive it.
+
+ABI 17 owns four socket objects per process and two fixed 128-byte queues per object. UDP connect enters `Established`; TCP-stream connect enters `Connecting` until its first bounded client transaction completes or fails. A send is admitted atomically only when the whole payload fits. A receive may copy a prefix and retains the unread suffix. Empty reads and saturated writes return `USER_ERROR_WOULD_BLOCK`, which is distinct from invalid authority and unavailable resources.
+
+`socket_status` exposes `Open`, `Connecting`, `Established`, `ReadClosed`, `WriteClosed`, `Closed`, `Failed`, `Bound`, or `Listening` plus readable, writable, connected, closed, error, and accept bits. Read/write shutdown clears the selected queued work before changing state. Full close removes both object metadata and typed authority. Exit, fault, kill, and supervisor cleanup close every socket owned by the exact process incarnation before its address space is reclaimed.
+
+An admitted UDP datagram or TCP client request moves into a separate in-flight slot with a nonzero monotonic request ID. Completion requires the exact process slot, incarnation, task, PID, socket protocol, capability, request ID, and byte length to remain live. The runtime coordinator performs bounded ARP and transport progress outside the syscall, admits only a response from the exact address and port with valid checksums and protocol state, and copies at most 128 bytes into the owning receive queue. Completion moves a TCP socket from `Connecting` to `Established`. Timeout, RST, or bounded response overflow marks it `Failed` with error readiness. Write shutdown, close, exit, fault, or kill invalidates the request and prevents stale delivery.
+
+ABI 17 binding is TCP-only and reserves ports below 1024. The process manager checks every live socket set before admitting a bind, so one local port has one owner system-wide. Listen fixes the backlog at one or two peers. Empty accept is non-blocking; an admitted peer makes the listener readable and accept-ready, and accept creates a separately revocable child capability in FIFO order. Allocation failure preserves the queued peer, handle-table failure rolls the child back, and close or owner cleanup makes the port immediately reusable.
+
+The coordinator drives one checksum-validated passive SYN/SYN-ACK/ACK exchange for an exact live listener, then queues that peer only if the same process incarnation, PID, typed handle, port, and backlog authority remain valid. The accepted child retains the handshake's immutable MAC, address, ports, and initial sequences. It becomes readable only after exact wire validation and writable while its bounded send queue has capacity; it remains excluded from the active client engine. Accepted send completion uses its own nonzero request identity and requires the exact process slot, incarnation, task, PID, child handle, peer, byte count, and wire ACK.
+
+The deterministic QEMU host sends `GENOS_PING`, half-closes, reads the Ring 3 `GENOS_PONG` response, and requires EOF after the guest FIN. Ring 3 waits for queued-send accounting to reach zero before write shutdown, then waits for wire FIN completion before closing the capability. The ordinary boot closes the optional listener after a bounded window when no peer exists. The shell also proves client socket authority, real UDP DNS, bounded TCP HTTP, RST/timeout/cancellation, listener denial and cleanup, and stale-handle rejection. Both active and passive paths remain one bounded request and response; concurrent clients, long-lived segmentation/reassembly, fair service, dynamic flow/congestion control, and production TCP remain Stage 5.4.
+
 `wait_child` resolves the requested runtime PID only among children whose immutable parent process key matches the caller, then stores that exact child key while blocked. PID reuse cannot wake the wrong parent.
 
-`UserSystemInfo` is a `repr(C)` structure of seventeen `u64` fields. ABI 15 preserves image-layout version `2` and the eight-page executable capacity while adding a separate 24-byte `UserNetworkConfig`. `UserProcessStatus` reports an immutable instance ID, task ID, informational runtime PID, state, exit code, fault vector, and preemption count. These identity fields are observations, never authority. `UserDirectoryEntry` remains 96 bytes, `UserChannelMessage` 16 bytes, `UserFileStat` 32 bytes, and `UserInputEvent` 32 bytes. Their sizes, alignments, offsets, rights, limits, errors, masks, and codes are tested.
+`UserSystemInfo` is a `repr(C)` structure of twenty `u64` fields and reports the four-socket limit, 128-byte queue budget, and 40-byte status layout. ABI 17 preserves image-layout version `2`, the eight-page executable capacity, and the separate 24-byte `UserNetworkConfig`. `UserSocketStatus` reports protocol, lifecycle state, readiness bits, and queued send/receive bytes. `UserProcessStatus` reports an immutable instance ID, task ID, informational runtime PID, state, exit code, fault vector, and preemption count. These identity fields are observations, never authority. `UserDirectoryEntry` remains 96 bytes, `UserChannelMessage` 16 bytes, `UserFileStat` 32 bytes, and `UserInputEvent` 32 bytes. Their sizes, alignments, offsets, rights, limits, errors, masks, and codes are tested.
 
 Input mask `1` selects keyboard events and mask `2` selects pointer events; callers may combine them. Keyboard events use kind `1`; printable characters place ASCII in `value0`, while Enter, Backspace, Escape, Tab, Arrow Up, and Arrow Down have stable codes and zero values. Pointer movement uses kind `2`, signed deltas in `value0`/`value1`, and the active button mask in `code`. Pointer button events use kind `3`, cursor position in the signed values, and left/right/middle bits `1`, `2`, and `4` in `code`.
 

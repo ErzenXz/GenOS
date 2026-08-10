@@ -22,7 +22,17 @@ pub use genos_abi::{
     USER_SYSCALL_RECEIVE_ENDPOINT as SYSCALL_RECEIVE_ENDPOINT,
     USER_SYSCALL_REMOVE_PATH as SYSCALL_REMOVE_PATH, USER_SYSCALL_REPORT as SYSCALL_REPORT,
     USER_SYSCALL_SEND as SYSCALL_SEND, USER_SYSCALL_SEND_ENDPOINT as SYSCALL_SEND_ENDPOINT,
-    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
+    USER_SYSCALL_SLEEP as SYSCALL_SLEEP, USER_SYSCALL_SOCKET_ACCEPT as SYSCALL_SOCKET_ACCEPT,
+    USER_SYSCALL_SOCKET_BIND as SYSCALL_SOCKET_BIND,
+    USER_SYSCALL_SOCKET_CLOSE as SYSCALL_SOCKET_CLOSE,
+    USER_SYSCALL_SOCKET_CONNECT as SYSCALL_SOCKET_CONNECT,
+    USER_SYSCALL_SOCKET_LISTEN as SYSCALL_SOCKET_LISTEN,
+    USER_SYSCALL_SOCKET_OPEN as SYSCALL_SOCKET_OPEN,
+    USER_SYSCALL_SOCKET_RECEIVE as SYSCALL_SOCKET_RECEIVE,
+    USER_SYSCALL_SOCKET_SEND as SYSCALL_SOCKET_SEND,
+    USER_SYSCALL_SOCKET_SHUTDOWN as SYSCALL_SOCKET_SHUTDOWN,
+    USER_SYSCALL_SOCKET_STATUS as SYSCALL_SOCKET_STATUS,
+    USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO,
     USER_SYSCALL_TCP_EXCHANGE as SYSCALL_TCP_EXCHANGE,
     USER_SYSCALL_TRUNCATE_HANDLE as SYSCALL_TRUNCATE_HANDLE,
@@ -186,6 +196,47 @@ pub enum SyscallAction {
         input_length: u64,
         output_address: u64,
         output_capacity: u64,
+    },
+    SocketOpen {
+        protocol: u64,
+    },
+    SocketConnect {
+        handle: u64,
+        target: u32,
+        port: u16,
+    },
+    SocketBind {
+        handle: u64,
+        port: u16,
+    },
+    SocketListen {
+        handle: u64,
+        backlog: u64,
+    },
+    SocketAccept {
+        handle: u64,
+    },
+    SocketSend {
+        handle: u64,
+        input_address: u64,
+        input_length: u64,
+    },
+    SocketReceive {
+        handle: u64,
+        output_address: u64,
+        output_capacity: u64,
+    },
+    SocketStatus {
+        handle: u64,
+        output_address: u64,
+        output_length: u64,
+    },
+    SocketShutdown {
+        handle: u64,
+        direction: u64,
+    },
+    SocketClose {
+        handle: u64,
     },
 }
 
@@ -513,6 +564,105 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
             };
             Ok(action)
         }
+        SYSCALL_SOCKET_OPEN
+            if matches!(
+                args[0],
+                genos_abi::USER_SOCKET_PROTOCOL_UDP | genos_abi::USER_SOCKET_PROTOCOL_TCP_STREAM
+            ) && args[1..] == [0; 5] =>
+        {
+            Ok(SyscallAction::SocketOpen { protocol: args[0] })
+        }
+        SYSCALL_SOCKET_CONNECT
+            if args[0] != 0
+                && args[1] <= u32::MAX as u64
+                && args[1] != 0
+                && (1..=u16::MAX as u64).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::SocketConnect {
+                handle: args[0],
+                target: args[1] as u32,
+                port: args[2] as u16,
+            })
+        }
+        SYSCALL_SOCKET_BIND
+            if args[0] != 0
+                && (genos_abi::USER_SOCKET_LISTENER_PORT_MIN..=u16::MAX as u64)
+                    .contains(&args[1])
+                && args[2..] == [0; 4] =>
+        {
+            Ok(SyscallAction::SocketBind {
+                handle: args[0],
+                port: args[1] as u16,
+            })
+        }
+        SYSCALL_SOCKET_LISTEN
+            if args[0] != 0
+                && (1..=genos_abi::USER_SOCKET_LISTENER_BACKLOG_CAPACITY).contains(&args[1])
+                && args[2..] == [0; 4] =>
+        {
+            Ok(SyscallAction::SocketListen {
+                handle: args[0],
+                backlog: args[1],
+            })
+        }
+        SYSCALL_SOCKET_ACCEPT if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::SocketAccept { handle: args[0] })
+        }
+        SYSCALL_SOCKET_SEND
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_SOCKET_BUFFER_CAPACITY).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::SocketSend {
+                handle: args[0],
+                input_address: args[1],
+                input_length: args[2],
+            })
+        }
+        SYSCALL_SOCKET_RECEIVE
+            if args[0] != 0
+                && args[1] != 0
+                && (1..=genos_abi::USER_SOCKET_BUFFER_CAPACITY).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::SocketReceive {
+                handle: args[0],
+                output_address: args[1],
+                output_capacity: args[2],
+            })
+        }
+        SYSCALL_SOCKET_STATUS
+            if args[0] != 0
+                && args[1] != 0
+                && args[2] == core::mem::size_of::<genos_abi::UserSocketStatus>() as u64
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::SocketStatus {
+                handle: args[0],
+                output_address: args[1],
+                output_length: args[2],
+            })
+        }
+        SYSCALL_SOCKET_SHUTDOWN
+            if args[0] != 0
+                && matches!(
+                    args[1],
+                    genos_abi::USER_SOCKET_SHUTDOWN_READ
+                        | genos_abi::USER_SOCKET_SHUTDOWN_WRITE
+                        | genos_abi::USER_SOCKET_SHUTDOWN_BOTH
+                )
+                && args[2..] == [0; 4] =>
+        {
+            Ok(SyscallAction::SocketShutdown {
+                handle: args[0],
+                direction: args[1],
+            })
+        }
+        SYSCALL_SOCKET_CLOSE if args[0] != 0 && args[1..] == [0; 5] => {
+            Ok(SyscallAction::SocketClose { handle: args[0] })
+        }
         SYSCALL_PING
         | SYSCALL_ABI_VERSION
         | SYSCALL_EXIT
@@ -548,7 +698,17 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_REMOVE_PATH
         | SYSCALL_NETWORK_CONFIG
         | SYSCALL_UDP_EXCHANGE
-        | SYSCALL_TCP_EXCHANGE => Err(SyscallError::InvalidArgument),
+        | SYSCALL_TCP_EXCHANGE
+        | SYSCALL_SOCKET_OPEN
+        | SYSCALL_SOCKET_CONNECT
+        | SYSCALL_SOCKET_BIND
+        | SYSCALL_SOCKET_LISTEN
+        | SYSCALL_SOCKET_ACCEPT
+        | SYSCALL_SOCKET_SEND
+        | SYSCALL_SOCKET_RECEIVE
+        | SYSCALL_SOCKET_STATUS
+        | SYSCALL_SOCKET_SHUTDOWN
+        | SYSCALL_SOCKET_CLOSE => Err(SyscallError::InvalidArgument),
         // `SYSCALL_SEND` and `SYSCALL_RECEIVE` stay reserved but unimplemented.
         _ => Err(SyscallError::UnknownNumber),
     }
@@ -636,10 +796,20 @@ mod tests {
             Ok(SyscallAction::WaitChild { pid: 8 })
         );
         assert_eq!(
-            dispatch(SYSCALL_SYSTEM_INFO, [0x6000, 136, 0, 0, 0, 0]),
+            dispatch(
+                SYSCALL_SYSTEM_INFO,
+                [
+                    0x6000,
+                    core::mem::size_of::<genos_abi::UserSystemInfo>() as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
             Ok(SyscallAction::SystemInfo {
                 address: 0x6000,
-                length: 136
+                length: core::mem::size_of::<genos_abi::UserSystemInfo>() as u64,
             })
         );
         assert_eq!(
@@ -807,6 +977,71 @@ mod tests {
                 name_length: 5,
             })
         );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_OPEN, [1, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::SocketOpen { protocol: 1 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_CONNECT, [0xe701, 0x0a00_0202, 443, 0, 0, 0]),
+            Ok(SyscallAction::SocketConnect {
+                handle: 0xe701,
+                target: 0x0a00_0202,
+                port: 443,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_BIND, [0xe701, 18081, 0, 0, 0, 0]),
+            Ok(SyscallAction::SocketBind {
+                handle: 0xe701,
+                port: 18081,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_LISTEN, [0xe701, 2, 0, 0, 0, 0]),
+            Ok(SyscallAction::SocketListen {
+                handle: 0xe701,
+                backlog: 2,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_ACCEPT, [0xe701, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::SocketAccept { handle: 0xe701 })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_SEND, [0xe701, 0x5000, 64, 0, 0, 0]),
+            Ok(SyscallAction::SocketSend {
+                handle: 0xe701,
+                input_address: 0x5000,
+                input_length: 64,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_RECEIVE, [0xe701, 0x6000, 128, 0, 0, 0]),
+            Ok(SyscallAction::SocketReceive {
+                handle: 0xe701,
+                output_address: 0x6000,
+                output_capacity: 128,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_STATUS, [0xe701, 0x6000, 40, 0, 0, 0]),
+            Ok(SyscallAction::SocketStatus {
+                handle: 0xe701,
+                output_address: 0x6000,
+                output_length: 40,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_SHUTDOWN, [0xe701, 3, 0, 0, 0, 0]),
+            Ok(SyscallAction::SocketShutdown {
+                handle: 0xe701,
+                direction: 3,
+            })
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_CLOSE, [0xe701, 0, 0, 0, 0, 0]),
+            Ok(SyscallAction::SocketClose { handle: 0xe701 })
+        );
     }
 
     #[test]
@@ -909,6 +1144,38 @@ mod tests {
         );
         assert_eq!(
             dispatch(SYSCALL_WAIT_INPUT, [0x6000, 32, 4, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_OPEN, [3, 0, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_CONNECT, [0xe701, 0, 443, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_BIND, [0xe701, 1023, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_LISTEN, [0xe701, 3, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_ACCEPT, [0, 0, 0, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_SEND, [0xe701, 0x5000, 129, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_STATUS, [0xe701, 0x6000, 39, 0, 0, 0]),
+            Err(SyscallError::InvalidArgument)
+        );
+        assert_eq!(
+            dispatch(SYSCALL_SOCKET_SHUTDOWN, [0xe701, 0, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
         assert_eq!(dispatch(99, [0; 6]), Err(SyscallError::UnknownNumber));

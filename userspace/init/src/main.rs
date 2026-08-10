@@ -362,6 +362,9 @@ fn file_program() -> Option<u8> {
         || info.max_path_length != runtime::PATH_MAX as u64
         || info.process_status_size != core::mem::size_of::<runtime::UserProcessStatus>() as u64
         || info.process_handle_capacity != runtime::PROCESS_HANDLE_CAPACITY
+        || info.socket_handle_capacity != runtime::SOCKET_HANDLE_CAPACITY
+        || info.socket_buffer_capacity != runtime::SOCKET_BUFFER_CAPACITY
+        || info.socket_status_size != core::mem::size_of::<runtime::UserSocketStatus>() as u64
     {
         return Some(246);
     }

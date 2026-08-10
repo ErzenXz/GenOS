@@ -303,7 +303,7 @@ fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &Boo
             display.set_status("recovery help printed");
         }
         RecoveryCommand::Status => {
-            let mut line = FixedText::from_str("GenOS v0.42 recovery bootabi=");
+            let mut line = FixedText::from_str("GenOS v0.49 recovery bootabi=");
             line.push_u64(boot_info.version as u64);
             line.push_str(" userabi=");
             line.push_u64(kernel::syscall::USER_ABI_VERSION);

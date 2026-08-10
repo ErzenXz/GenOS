@@ -12,6 +12,7 @@ pub mod net;
 pub mod physmem;
 pub mod recovery;
 pub mod request;
+pub mod socket;
 pub mod syscall;
 pub mod tasks;
 pub mod vfs;

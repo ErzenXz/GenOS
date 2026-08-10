@@ -11,6 +11,18 @@ This roadmap turns the GenOS vision into testable engineering milestones. Dates 
 5. Prefer one supported path over several unfinished paths.
 6. Add hardware breadth only after the abstraction it depends on is proven.
 
+## Modernity and compatibility policy
+
+GenOS may use a simple or historical device to bootstrap a subsystem, but legacy hardware is never the long-term architecture by accident.
+
+- Once a modern implementation exists, normal builds and release tests use it by default.
+- A legacy driver may remain only as an isolated, explicitly labelled fallback or compatibility test. It cannot satisfy a modern milestone's acceptance criteria.
+- Protocol and application contracts must sit above device-specific boundaries so replacing hardware does not rewrite the whole subsystem.
+- New virtual-device work targets current VirtIO 1.x interfaces with legacy transport disabled. New physical-storage work targets NVMe; new USB work targets xHCI; new interrupt work targets APIC/x2APIC and MSI/MSI-X; new graphics work targets a userspace compositor and modern display/GPU contracts.
+- IPv4 remains supported, but production networking must be dual-stack IPv4/IPv6. Plaintext HTTP may be used only inside deterministic tests; credentials, packages, updates, and personal data require authenticated TLS 1.3 in userspace.
+- GenOS will not invent cryptographic primitives. Security-sensitive protocols use reviewed implementations, test vectors, explicit trust policy, and negative-path tests.
+- A milestone records the standard or hardware contract it implements, the intentionally unimplemented features, and the evidence proving the default path did not fall back.
+
 ## Stage 0 — Boot and kernel foundation
 
 **Status: complete**
@@ -295,11 +307,11 @@ Acceptance criteria:
 - [x] A host repair writer restores snapshot redundancy without overwriting the only trustworthy generation.
 - [x] Read-only recovery preserves readable files and denies persistent mutation end to end.
 
-## Stage 5 — Networking
+## Stage 5 — Network protocol foundation
 
 **Status: complete**
 
-Goal: establish a small, testable network stack before exposing broad application APIs.
+Goal: establish a small, testable network stack before exposing broad application APIs. The original device was a bootstrap target, not the permanent virtual-hardware contract.
 
 Planned work:
 
@@ -312,12 +324,12 @@ Planned work:
 - DHCP;
 - DNS resolver;
 - TCP state machine;
-- userspace socket API;
+- bounded userspace exchange API as a precursor to socket objects;
 - network diagnostics application.
 
 Delivered:
 
-- GenOS 0.42 a QEMU NE2000 PIO driver with explicit free, driver, and stack packet-buffer ownership and no borrowed frame surviving a receive iteration;
+- GenOS 0.42 a bootstrap QEMU NE2000 PIO driver with explicit free, driver, and stack packet-buffer ownership and no borrowed frame surviving a receive iteration;
 - bounded Ethernet II, ARP, IPv4, ICMP, UDP, and TCP parsing with IPv4 and transport checksum validation, fragment rejection, and truncation-safe host tests;
 - DHCP discover/request/ack configuration with assigned address, subnet, gateway, and DNS state;
 - ARP next-hop resolution and ICMP echo against the QEMU host gateway;
@@ -334,6 +346,214 @@ Acceptance criteria:
 - [x] Malformed-packet tests do not panic or corrupt memory.
 - [x] Packet loss and connection timeout behavior are defined.
 
+## Stage 5.1 — Modern virtual network transport
+
+**Status: complete**
+
+Goal: make the supported virtual-machine network path standards-based, replaceable, and impossible to confuse with the legacy bootstrap driver.
+
+Delivered:
+
+- GenOS 0.43 a device-independent frame boundary used by the existing protocol stack;
+- PCI discovery of VirtIO network functions and traversal of modern vendor capabilities;
+- required `VIRTIO_F_VERSION_1` and MAC feature negotiation with the full status handshake and `FEATURES_OK` verification;
+- independent eight-entry split RX and TX virtqueues with aligned descriptor, available, used, and DMA-buffer memory;
+- the modern 12-byte `virtio_net_hdr`, bounded descriptor validation, explicit volatile DMA access, and acquire/release publication fences;
+- QEMU `virtio-net-pci` with `disable-legacy=on` for normal and test boots;
+- exact smoke markers that reject a false pass through any fallback path;
+- NE2000 moved behind the device boundary and labelled as a legacy recovery fallback only;
+- HTTP/1.1 with a required `Host` header for the deterministic Ring 3 test exchange.
+
+Acceptance criteria:
+
+- [x] Normal boot uses a VirtIO 1.x PCI network device with its legacy interface disabled.
+- [x] DHCP, ICMP, DNS, TCP, and Ring 3 HTTP complete through VirtIO.
+- [x] RX and TX descriptor ownership is bounded and observable.
+- [x] The modern smoke suite fails if the kernel selects NE2000 or another fallback.
+- [x] Boot remains healthy when no network device or deterministic HTTP server is present.
+
+## Stage 5.2 — Non-blocking socket capability foundation
+
+**Status: complete**
+
+Goal: establish the process-owned object and queue contract before attaching applications to an asynchronous packet scheduler. This stage deliberately does not relabel the ABI 15 one-shot exchanges as sockets or claim production TCP.
+
+Delivered:
+
+- GenOS 0.44 and ABI 16 generation-safe, process-owned UDP and TCP-stream handles in the unified typed capability table;
+- validated `socket_open`, `socket_connect`, `socket_send`, `socket_receive`, `socket_status`, `socket_shutdown`, and `socket_close` calls;
+- explicit open, connecting, established, half-closed, closed, and failed states plus readable, writable, connected, closed, and error readiness bits;
+- fixed four-handle and 128-byte-per-direction budgets, exact queued-byte accounting, partial receive preservation, `WOULD_BLOCK` backpressure, and no allocation on the syscall path;
+- shutdown cancellation that clears the selected bounded queue, full close revocation, stale-generation rejection, forged-handle rejection, and process-exit owner cleanup;
+- a Ring 3 lifecycle proof required by modern-network and normal-boot smoke tests, plus host tests for isolation, saturation, partial reads, failure visibility, cancellation, and reclamation;
+- ABI 15 exchange compatibility retained only while the transport scheduler is built.
+
+Acceptance criteria:
+
+- [x] Socket handles are opaque, generation-safe, process-local capabilities and cannot be spent as another handle type.
+- [x] Queue memory is statically bounded and saturation returns `WOULD_BLOCK` without overwriting admitted bytes.
+- [x] Readiness, connecting state, partial receive behavior, half-close, close, stale handles, and owner cleanup have deterministic tests.
+- [x] Ring 3 exercises the ABI 16 lifecycle on a modern-only VirtIO boot, including forged-handle denial and queued-work cancellation.
+- [x] Documentation bounded this foundation separately from packet transport and kept production TCP as a release gate.
+
+## Stage 5.3 — Asynchronous UDP socket transport
+
+**Status: complete**
+
+Goal: attach ABI 16 UDP queues to scheduler-driven packet progress without spinning inside the socket syscall, while preserving exact process and request authority across completion, timeout, and cancellation.
+
+Delivered:
+
+- GenOS 0.45 scheduler-owned UDP request extraction from process queues with a nonzero monotonic request ID bound to the exact process slot, incarnation, task, PID, socket handle, and in-flight datagram;
+- one bounded coordinator transport slot that performs ARP resolution, UDP transmission, exact address/port/checksum demultiplexing, and receive-queue completion outside the syscall path;
+- three-attempt deadlines, bounded per-tick NIC recovery polling, failed-socket readiness, queue-full refusal, shutdown cancellation, and stale completion rejection;
+- a real Ring 3 DNS A query sent and received through the ABI 16 socket API on modern-only VirtIO, while the ABI 15 exchange remains as a compatibility proof;
+- required QEMU markers for transport start, successful completion, timeout, and cancellation in both deterministic-server and normal no-server network boots;
+- host tests that bind completion to the exact in-flight request and reject every truncation of an ARP reply.
+
+Acceptance criteria:
+
+- [x] A UDP socket queue makes wire progress without spinning in its syscall or blocking the kernel scheduler for an unbounded wait.
+- [x] Only the exact live process incarnation, capability, request ID, and datagram can receive a completion.
+- [x] DNS completes through ABI 16 sockets on modern-only VirtIO, and the smoke gate requires the exact asynchronous markers.
+- [x] Timeout marks the socket failed and readable as an error; write shutdown cancels an in-flight request without later delivery.
+- [x] Queue memory, retries, receive polling, response copies, and the coordinator transport slot are statically bounded.
+
+Explicit boundary: this stage does not claim TCP socket transport, listeners, multi-socket fairness, interrupt-driven VirtIO completion, IPv6, or production Internet security. TX still uses bounded VirtIO completion polling, and RX uses bounded recovery polling once per coordinator tick until MSI-X work replaces it.
+
+## Stage 5.4 — TCP socket transport, listeners, and production TCP
+
+**Status: in progress; bounded clients plus one passive request/response stream complete; concurrency and production gates remain**
+
+Goal: add server authority and make TCP correct under real loss, reordering, and flow-control pressure while replacing recovery polling with normal interrupt-driven packet completion.
+
+### Stage 5.4A — Asynchronous TCP client transport
+
+**Status: complete**
+
+Delivered:
+
+- GenOS 0.46 typed UDP/TCP in-flight requests using the same exact process-incarnation, capability, request-ID, payload, timeout, and cancellation authority checks;
+- a bounded scheduler-driven TCP client transaction with ARP, SYN, exact SYN-ACK validation, ACK, request data, ordered response buffering, duplicate/out-of-order acknowledgment, FIN acknowledgment, active close, and RST failure;
+- three-attempt deadlines for ARP, SYN, request retransmission, and final response progress, plus fixed 128-byte request/response storage and bounded NIC recovery polling;
+- a real Ring 3 HTTP/1.1 request and 65-byte response through ABI 16 `socket_send` and `socket_receive`, while the no-server boot proves real RST failure without preventing boot;
+- TCP in-flight write-shutdown cancellation with a protocol-specific stale-request marker and no later completion;
+- mandatory modern-VirtIO QEMU markers for TCP transport start, completion, Ring 3 success, RST failure, and cancellation, plus host tests for protocol- and request-bound completion.
+
+Acceptance criteria:
+
+- [x] TCP connect, request, response, and close progress outside the socket syscall with bounded work per coordinator tick.
+- [x] Only the exact live process, typed TCP capability, request ID, and admitted bytes can receive completion.
+- [x] A deterministic HTTP response reaches Ring 3 through ABI 16 TCP sockets on modern-only VirtIO.
+- [x] RST, timeout, response overflow, malformed tuples/checksums, and cancellation fail closed within fixed memory and retry budgets.
+
+Explicit boundary: this client transaction supports one bounded request and response, not a general long-lived byte stream. It does not yet provide listeners, concurrent connections, fair cross-process scheduling, dynamic windows, congestion control, selective acknowledgments, full out-of-order reassembly, or interrupt-driven VirtIO completion.
+
+### Stage 5.4B — TCP listener authority foundation
+
+**Status: complete**
+
+Delivered:
+
+- GenOS 0.47 and ABI 17 `socket_bind`, `socket_listen`, and non-blocking `socket_accept` calls gated by the exact process-owned typed socket capability;
+- TCP-only local ports from 1024 through 65535, with one exclusive owner across every live process and immediate release on close or process cleanup;
+- `Bound` and `Listening` states, an explicit accept-readiness bit, and a fixed per-listener backlog of at most two pending peers;
+- FIFO accepted-child creation as a fresh generation-safe TCP capability, with allocation failure preserving the pending peer and typed-handle registration failure rolling the child back;
+- Ring 3 proof of low-port rejection, forged-handle rejection, empty non-blocking accept, oversized-backlog rejection, duplicate-bind refusal, stale-listener rejection, and close/rebind cleanup;
+- host tests for global port exclusivity, bounded backlog refusal, FIFO accepted children, ownership isolation, readiness, capacity, and reclamation.
+
+Acceptance criteria:
+
+- [x] Bind, listen, and accept require an exact live TCP capability; UDP, forged, foreign, stale, low-port, and invalid-state requests fail closed.
+- [x] A local port has one owner across live processes and becomes reusable after close or owner cleanup.
+- [x] Listener and accepted-child memory is statically bounded, backlog saturation refuses new peers, and allocation failure does not consume queued work.
+- [x] Every accepted child receives separately revocable typed authority and cannot be spent by another process.
+
+Explicit boundary: the backlog is an internal bounded object-model contract only. The receive path does not yet perform passive TCP handshake processing or queue wire peers, so `socket_accept` returns `WOULD_BLOCK` in the current Ring 3 boot proof. This stage does not claim a working inbound server, concurrent host clients, fair listener wakeups, or long-lived accepted streams.
+
+### Stage 5.4C — Bounded passive handshake and Ring 3 accept
+
+**Status: complete**
+
+Delivered:
+
+- GenOS 0.48 scheduler-driven passive TCP receive processing for one exact live listener, with checksum, IPv4 destination, port, peer tuple, flags, and sequence validation;
+- bounded SYN-ACK retransmission and timeout, duplicate-SYN handling, RST failure, explicit refusal for missing listeners or saturated backlogs, and cancellation when listener authority disappears;
+- final-ACK admission through the exact process slot, incarnation, PID, typed listener handle, local port, and fixed backlog before Ring 3 can accept a fresh child capability;
+- a deterministic QEMU host-forwarded connection to guest port 18081 requiring `TCP_PASSIVE_SYN_ACCEPTED`, `TCP_PASSIVE_HANDSHAKE_OK`, and `USER_SOCKET_PASSIVE_ACCEPT_READY`;
+- a separate no-host QEMU boot proving the optional listener window does not stall normal startup;
+- host tests for truncated passive SYN frames, TCP checksum corruption, exact SYN/final-ACK classification, and the rule that accepted children cannot accidentally enter the outbound client transport.
+
+Acceptance criteria:
+
+- [x] A real host SYN reaches only the listener owning its destination port and completes a bounded SYN/SYN-ACK/ACK exchange.
+- [x] The established peer enters only that listener's backlog and becomes a separately revocable Ring 3 capability through non-blocking accept.
+- [x] Missing, stale, closed, or saturated listeners fail closed without granting a child or keeping an unbounded handshake alive.
+- [x] The deterministic passive proof and ordinary no-host boot both pass on modern-only VirtIO 1.x.
+
+Explicit boundary at completion: Stage 5.4C proved one passive handshake and capability admission, not a TCP server data path. Accepted children exposed connected identity but remained deliberately non-writable; Stage 5.4D supplies the first bounded payload/close transaction while multiple simultaneous handshakes, fair listener wakeups, and long-lived service remain open.
+
+### Stage 5.4D — Bounded accepted-stream transaction and close
+
+**Status: complete**
+
+Delivered:
+
+- GenOS 0.49 carries the exact peer MAC, IPv4 address, remote/local ports, and initial sequence state from the completed handshake through backlog admission into the accepted child;
+- one fixed 128-byte passive receive buffer and one fixed 128-byte send buffer, with exact tuple, checksum, sequence, and acknowledgment validation before queue mutation;
+- Ring 3 receive through the accepted capability, response admission under a nonzero request identity bound to the exact process slot, incarnation, task, PID, handle, peer, and byte count, plus ACK-gated completion;
+- bounded response and FIN retransmission, duplicate/out-of-order acknowledgment, oversized-segment reset/failure, peer RST failure, peer half-close, guest FIN, and wire-ACK completion before the socket enters `Closed`;
+- stale listener, accepted capability, or send identity cancellation with an on-wire reset and no later delivery;
+- a QEMU host-forwarded `GENOS_PING` → `GENOS_PONG` exchange that verifies the response and EOF, while the no-host boot still completes without passive success markers.
+
+Acceptance criteria:
+
+- [x] Ring 3 receives bounded peer bytes only through the exact accepted child and can queue a bounded response through that same capability.
+- [x] Send completion requires the exact peer ACK and the socket does not report `Closed` until the guest FIN is acknowledged on the wire.
+- [x] Peer half-close, reset, stale capability, timeout, malformed acknowledgment, and oversized payload paths fail closed within fixed memory and retry budgets.
+- [x] Deterministic modern-VirtIO QEMU proves request, response, peer FIN, guest FIN, and normal no-host degradation.
+
+Explicit boundary: Stage 5.4D is one bounded request and response on one passive stream. It does not provide simultaneous handshakes, multiple accepted clients, arbitrary stream-length segmentation/reassembly, fair listener wakeups, dynamic windows, congestion control, production loss recovery, or an application server framework.
+
+### Remaining Stage 5.4 work
+
+- simultaneous passive handshakes, concurrent accepted-client lifecycle, long-lived segmented streams, and fair listener service;
+- scheduler wakeups, readiness waits, request cancellation, fair queue service, and cross-process resource budgets;
+- retransmission timers, RTT estimation, dynamic send/receive windows, congestion control, out-of-order reassembly, duplicate handling, reset handling, and TCP half-close on the wire;
+- deterministic packet loss, duplication, delay, reordering, zero-window, reset, slow-reader, cancellation, and resource-exhaustion tests;
+- interrupt-driven VirtIO completion, MSI-X, queue recovery, and measured batching before optional offload negotiation.
+
+Acceptance criteria:
+
+- [x] TCP socket queues make progress without spinning in a syscall or blocking the kernel scheduler for an unbounded wait.
+- [x] One bounded passive handshake feeds the exact listener backlog and produces a Ring 3 accepted capability.
+- [x] One accepted capability completes a bounded request, response, peer half-close, guest FIN, and wire-acknowledged close.
+- [ ] A listening service survives concurrent clients, cancellation, peer resets, and slow readers without sharing raw port authority.
+- [ ] TCP transfers remain correct under deterministic loss and reordering and respect bounded memory budgets.
+- [ ] VirtIO RX/TX normally completes through interrupts; polling remains only a bounded recovery mechanism.
+- [ ] Throughput, latency, packet-loss recovery, CPU cost, and queue occupancy have reproducible regression budgets.
+
+## Stage 5.5 — IPv6 dual stack
+
+**Status: planned; required before production networking**
+
+Goal: make IPv6 a first-class path while preserving explicitly tested IPv4 compatibility.
+
+Planned work:
+
+- IPv6 packet validation, extension-header policy, routing, and path-MTU handling;
+- ICMPv6, neighbor discovery, duplicate-address detection, router advertisements, and SLAAC;
+- DNS AAAA resolution and address-selection policy;
+- IPv6-capable UDP and TCP sockets with dual-stack bind/connect semantics;
+- deterministic IPv4-only, IPv6-only, and dual-stack QEMU networks.
+
+Acceptance criteria:
+
+- [ ] GenOS configures a usable IPv6 address and default route without a hard-coded guest address.
+- [ ] DNS and TCP complete on IPv6-only and dual-stack reference networks.
+- [ ] Malformed extension headers, neighbor advertisements, and ICMPv6 packets fail closed.
+- [ ] IPv4 and IPv6 behavior share socket contracts without hiding address-family differences.
+
 ## Stage 6 — Security and identity
 
 Goal: make isolation and authority visible parts of the system architecture.
@@ -345,6 +565,8 @@ Planned work:
 - filesystem permissions;
 - process sandbox profiles;
 - entropy and random-number subsystem;
+- isolated userspace TLS 1.3 with reviewed cryptography, certificate-path validation, hostname verification, a versioned trust store, and secure time policy;
+- HTTPS for packages, updates, credentials, tokens, and personal data, with plaintext network authority denied to those applications;
 - signed package and update metadata;
 - secure-boot research and measured-boot hooks;
 - secrets storage design;
@@ -355,6 +577,8 @@ Acceptance criteria:
 - [ ] Applications receive only explicitly granted resources.
 - [ ] A compromised unprivileged process cannot read another process's memory.
 - [ ] Package and update signatures are verified before installation.
+- [ ] TLS 1.3 interoperability and negative certificate tests pass without custom cryptographic primitives.
+- [ ] No credential, package, update, or personal-data flow can silently downgrade to plaintext.
 - [ ] The project publishes a threat model for each trusted boundary.
 - [ ] Security-sensitive unsafe code has dedicated review coverage.
 
@@ -388,21 +612,34 @@ Acceptance criteria:
 
 Goal: grow beyond a virtual-machine reference platform without losing reliability.
 
-Candidate work:
+Required modern baseline:
 
 - ACPI-based discovery and power control;
 - SMP and multi-core scheduler support;
-- APIC and modern interrupt routing;
-- USB host controller and HID;
-- NVMe;
+- local APIC/x2APIC, I/O APIC, and MSI/MSI-X interrupt routing, with the 8259 PIC retained only for bootstrap fallback;
+- xHCI USB host controller and USB HID, with PS/2 retained only as a labelled compatibility fallback;
+- NVMe as the primary physical-storage contract, with ATA PIO retained only for recovery and simple-emulator coverage;
+- IOMMU research and explicit DMA isolation policy before untrusted-device support;
+- PCIe capability, hotplug, power-state, and error-reporting policy;
+
+Expansion after the baseline:
+
 - audio stack;
-- higher-resolution and accelerated graphics;
+- virtio-gpu for the reference VM and a documented modern physical-GPU strategy behind the Stage 7 userspace compositor;
 - Wi-Fi research;
 - laptop power and battery reporting;
 - suspend and resume;
 - installer and recovery environment.
 
-Hardware support will be introduced through documented reference machines. “Works on my machine” is not an acceptance criterion; repeatable device reports and regression tests are.
+Legacy-only boot is not sufficient to complete this stage. Hardware support will be introduced through documented reference machines with device reports, fault injection, suspend/resume cycles, and regression tests. “Works on my machine” is not an acceptance criterion.
+
+Acceptance criteria:
+
+- [ ] The reference VM boots with modern VirtIO network, block, console, and GPU interfaces and rejects unintended legacy fallback in release tests.
+- [ ] A documented x86_64 reference machine boots from NVMe, routes interrupts through APIC/MSI-X, and uses xHCI for input and removable media.
+- [ ] DMA-capable drivers validate descriptor ownership, lengths, device reset, timeout, and surprise-removal paths.
+- [ ] Suspend/resume, power loss, hotplug, and device-failure tests preserve filesystem and process isolation guarantees.
+- [ ] Legacy compatibility drivers are build-time or boot-policy choices with explicit diagnostics, never silent defaults.
 
 ## Stage 9 — Graphical experience rebuild
 

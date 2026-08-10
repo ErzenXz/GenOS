@@ -84,7 +84,7 @@ The current GenOS build already contains real operating-system infrastructure:
 - boot-time and shell-triggered ELF launches, each receiving a fresh address space;
 - asynchronous userspace scheduling with observable ready, sleeping, waiting, exited, faulted, and killed states;
 - `wait`/`kill` lifecycle controls and deterministic address-space frame reclamation;
-- ABI 15 userspace coordination, capability-based VFS I/O, namespace mutation, messaging, console access, process lifecycle control, and bounded UDP/TCP exchanges;
+- ABI 17 userspace coordination, capability-based VFS I/O, namespace mutation, messaging, console access, process lifecycle control, bounded UDP/TCP exchanges, non-blocking socket capabilities, and TCP listener authority;
 - application output copied from validated user mappings into the serial shell;
 - a DPL3 `int 0x80` syscall gate with scalar and user-buffer validation before copy-in;
 - COM1 input/output with userspace-owned terminal editing;
@@ -93,7 +93,7 @@ The current GenOS build already contains real operating-system infrastructure:
 - round-robin scheduling with measured CPU slices, sleep/wake deadlines, and context-switch accounting;
 - writable RAM-backed virtual filesystem;
 - PCI-discovered ATA storage, MBR partitions, write-back caching, dual-generation durable snapshots, repair tooling, and read-only recovery;
-- NE2000, Ethernet, ARP, IPv4/ICMP, UDP/DHCP/DNS, TCP, and ABI 15 Ring 3 network exchanges;
+- modern-only VirtIO 1.x PCI networking with split RX/TX virtqueues, bounded DMA buffers, a legacy recovery fallback, Ethernet, ARP, IPv4/ICMP, UDP/DHCP/DNS, TCP, ABI 15 exchange compatibility, asynchronous ABI 16 UDP/TCP clients, and ABI 17 listener capabilities with one bounded passive handshake;
 - serial boot diagnostics and long-running headless QEMU smoke tests.
 
 The build has no host operating-system runtime underneath it. QEMU provides virtual hardware, but the bootloader, kernel, input path, filesystem, task model, drawing, and desktop behavior are GenOS code.
@@ -108,7 +108,7 @@ The build has no host operating-system runtime underneath it. QEMU provides virt
 | List shell commands | Run `help` |
 | Show network status | Run `net` |
 
-GenOS 0.42 boots `SHELL.ELF` as a long-lived Ring 3 process with its own CR3, guarded stack, runtime identity, and opaque console, VFS, lifecycle, and network access. COM1 bytes wake that process through the normal input path. The shell owns its eight-command history and executes `help`, `echo`, `uname`, `net`, `clear`, `ls`, `cat`, `stat`, `touch`, `write`, `append`, `mkdir`, `rm`, `run init [hold]`, `ps`, `kill JOB`, and `wait JOB`. ABI 15 preserves the capability-based filesystem and process contracts while adding validated, bounded UDP and TCP exchanges.
+GenOS 0.49 boots `SHELL.ELF` as a long-lived Ring 3 process with its own CR3, guarded stack, runtime identity, and opaque console, VFS, lifecycle, and network access. COM1 bytes wake that process through the normal input path. The shell owns its eight-command history and executes `help`, `echo`, `uname`, `net`, `clear`, `ls`, `cat`, `stat`, `touch`, `write`, `append`, `mkdir`, `rm`, `run init [hold]`, `ps`, `kill JOB`, and `wait JOB`. ABI 17 preserves generation-safe UDP/TCP client objects, exclusive TCP port binding, bounded listener backlogs, non-blocking accept, and accepted-child capabilities. One exact listener can now complete a bounded passive handshake, receive one bounded request through the accepted Ring 3 handle, return one bounded response, and complete an orderly half-close.
 
 Normal filesystem and process-control commands now stay out of Ring 0. If the Ring 3 shell is not live, a separate emergency parser accepts only `help`, `status`, `mem`, `reboot`, and `shutdown`; every normal shell command is rejected at the kernel boundary.
 
@@ -116,7 +116,19 @@ The Stage 3 runtime coordinator now owns task scheduling, process polling, lifec
 
 Stage 3 closes with transactional failure cleanup, 257 sequential real process launches across PID reuse, and a fresh-QEMU transcript through the actual Ring 3 console path. Stage 4 is complete in GenOS 0.41: PCI discovers the IDE controller, a bounds-checked MBR partition holds alternating 20 KiB `GFS2` snapshots, and an eight-sector write-back cache flushes successful `/USER/` mutations before returning success. The host can inspect or conservatively repair an image, torn generations fall back safely, fully corrupt media is surfaced to Ring 3, explicit read-only recovery preserves files while denying mutation, and `/TMP/SESSION.TXT` remains session-only. See [the storage notes](docs/STORAGE.md) for the exact format and recovery policy.
 
-Stage 5 is complete in GenOS 0.42. The NE2000 path obtains DHCP configuration, resolves next hops with ARP, echoes ICMP, resolves DNS over UDP, and completes a TCP/HTTP exchange from Ring 3. Parsers reject malformed and checksum-invalid packets, and all DHCP, ARP, UDP, and TCP waits have a three-attempt bounded failure policy. See [the networking notes](docs/NETWORKING.md) for the exact protocol and ABI scope.
+Stage 5.1 is complete in GenOS 0.43. QEMU now exposes only the modern VirtIO 1.x PCI interface by default; GenOS negotiates `VIRTIO_F_VERSION_1`, configures independent split RX/TX virtqueues, and transfers frames through bounded DMA-visible buffers. The protocol stack sits behind a frame-device boundary, with NE2000 retained only as an explicitly labelled legacy recovery fallback. DHCP, ARP, ICMP, DNS, TCP, and the Ring 3 HTTP/1.1 proof all run on VirtIO, and the smoke test requires the exact modern-driver marker so fallback cannot produce a false pass. See [the networking notes](docs/NETWORKING.md) for the exact contract and remaining socket, IPv6, TCP, and TLS milestones.
+
+Stage 5.2 is complete in GenOS 0.44. ABI 16 socket handles are typed, process-local, generation-safe objects with fixed queue budgets, observable readiness, `WOULD_BLOCK` backpressure, partial receive preservation, half-close state, close revocation, and process-exit cleanup. Ring 3 proves the lifecycle and authority checks during every modern-network smoke boot.
+
+Stage 5.3 is complete in GenOS 0.45. The runtime moves one UDP datagram at a time from a process queue into an exact request identity, then performs bounded ARP resolution, transmission, response demultiplexing, retry, timeout, and cancellation outside the syscall. Ring 3 resolves DNS through the ABI 16 socket itself, and both network boots require transport-start, completion, timeout, and stale-request cancellation markers. At that milestone boundary TCP queue progress, listeners, multi-socket fairness, interrupt-driven VirtIO completion, production loss recovery, IPv6, and TLS were deliberately left open.
+
+Stage 5.4A is complete in GenOS 0.46. ABI 16 TCP client requests now progress through ARP, SYN/SYN-ACK, request data, bounded ordered response, ACK, FIN, reset, retry, timeout, and cancellation states outside the syscall. The deterministic QEMU server accepts both the new socket transaction and the retained ABI 15 compatibility exchange; the modern-network gate requires the TCP socket response to reach Ring 3, while the no-server gate requires clean RST failure. At that milestone boundary listener authority and all server-side wire behavior remained open.
+
+Stage 5.4B is complete in GenOS 0.47. ABI 17 adds capability-scoped `socket_bind`, `socket_listen`, and non-blocking `socket_accept`, exclusive local-port ownership across live processes, a fixed two-connection backlog budget, generation-safe accepted-child objects, typed-handle rollback, and close/exit port release. Ring 3 proves low-port denial, forged-handle denial, empty accept, duplicate-bind refusal, and close/rebind cleanup on every boot. At that milestone boundary the listener was an authority foundation only; Stage 5.4C adds the first wire-backed backlog admission while concurrent host clients and long-lived accepted streams remain open work.
+
+Stage 5.4C is complete in GenOS 0.48. The scheduler-driven receive path validates an exact checksum-protected IPv4/TCP SYN for a live bound listener, sends a bounded SYN-ACK with retry and timeout, validates the final ACK tuple and sequence numbers, and admits the peer through that listener's fixed backlog. The deterministic QEMU gate connects through host forwarding and requires the passive SYN, completed handshake, and Ring 3 accepted-capability markers; the ordinary no-host boot must still complete. At that milestone boundary accepted children were deliberately non-writable; Stage 5.4D adds the first bounded stream transaction.
+
+Stage 5.4D is complete in GenOS 0.49. The established peer's MAC, address, ports, and initial sequence state now travel unchanged through the listener backlog into the accepted capability. The runtime admits an exact ACK-protected 10-byte request into the socket receive queue, binds the 10-byte response to a nonzero request identity, retries until its exact ACK, handles the peer half-close, sends FIN, and waits for wire acknowledgment before exposing `Closed`. QEMU verifies `GENOS_PING` → `GENOS_PONG` plus EOF through the real Ring 3 handle. This remains one statically bounded transaction and one passive stream; simultaneous clients, arbitrary long-lived byte streams, production recovery, and fair service are still open.
 
 GenOS 0.16 makes messaging a capability instead of a PID. A process publishes exactly one receive endpoint with `create_endpoint`; every other process must obtain its own send handle with `connect_endpoint` before it can send anything, and holding a raw PID grants nothing. Handles are opaque values that encode a dedicated endpoint tag, the owner PID, a per-process generation, and a slot in a four-entry table, so a guessed, foreign, or stale handle is rejected rather than resolved. The kernel fills in the sender PID of every delivered message, so Ring 3 cannot forge an identity. Each endpoint queue holds four messages and admits at most one per producer, which is what keeps a single noisy producer from starving its peers. A receive on an empty queue leaves the runnable set entirely and is woken by a later send that copies straight into its already-validated buffer. Closing the receive handle unpublishes the endpoint and revokes every remote send handle naming that generation; normal exit, a Ring 3 fault, `kill`, and reap run the same release path.
 
@@ -137,8 +149,9 @@ GenOS kernel
     |-- ELF loader              bounded parser / W^X segment mapping
     |-- userspace               async lifecycle / file I/O / endpoints / Ring 3 shell
     |-- runtime                 scheduler / process table / VFS service queues
-    |-- input                    PS/2 queue / filters / desktop-or-Ring-3 routing
-    |-- storage                  MBR + ATA cache + durable /USER snapshots + RAM /TMP
+    |-- input                    bounded event queues / current PS/2 fallback transport
+    |-- storage                  durable /USER snapshots + RAM /TMP / current ATA fallback
+    |-- networking               VirtIO 1.x PCI queues / bounded frame-device boundary
     |-- tasks                    registry / state / accounting
     |-- display                  backbuffer / dirty regions / text
     `-- desktop                  windows / apps / taskbar / runtime-update renderer
@@ -226,7 +239,13 @@ tools/xtask/      Build image, initrd, QEMU, and smoke-test automation
 - [x] **Processes and userspace:** private address spaces, Ring 3, ELF loading, preemption, capability-based file, directory, endpoint, console, and lifecycle I/O, plus a persistent Ring 3 shell with safe `/USER/` file mutation and job control
 - [x] **Runtime cleanup and console-first system:** desktop-independent services, one lifecycle authority, unified handles, and a composable command-line userland
 - [x] **Persistent storage:** PCI-discovered ATA block I/O, MBR partitioning, write-back caching, durable `/USER/` snapshots, conservative repair, and read-only recovery
-- [x] **Networking:** NE2000, packet ownership, Ethernet, ARP, IPv4/ICMP, UDP/DHCP/DNS, TCP, Ring 3 exchanges, and diagnostics
+- [x] **Modern network transport:** VirtIO 1.x PCI, split queues, bounded DMA ownership, Ethernet, ARP, IPv4/ICMP, UDP/DHCP/DNS, TCP, Ring 3 exchanges, and diagnostics
+- [x] **Socket capability foundation:** ABI 17 generation-safe handles, bounded queues, readiness, backpressure, shutdown, cancellation, listener authority, and Ring 3 proof
+- [x] **Asynchronous UDP sockets:** exact request identity, scheduler-driven ARP/UDP, Ring 3 DNS, bounded timeout, and cancellation
+- [x] **Asynchronous TCP client sockets:** scheduler-driven handshake/request/response, exact completion, RST handling, retry, timeout, and cancellation
+- [x] **Passive TCP admission:** exact listener lookup, bounded SYN/SYN-ACK/ACK, backlog admission, and real Ring 3 accept
+- [x] **Bounded accepted stream:** exact request receive, response ACK, peer half-close, guest FIN, and Ring 3 close proof
+- [ ] **Mature networking:** long-lived streams, fair concurrent service, interrupt-driven completion, production congestion/loss behavior, IPv6 dual stack, TLS 1.3, and HTTPS
 - [ ] **Security model:** identities, capabilities, isolation, secure update design
 - [ ] **Application platform:** stable SDK, packages, compositor, richer graphics
 - [ ] **Hardware expansion:** ACPI, SMP, USB, NVMe, audio, broader GPU support

@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
-    net::TcpListener,
+    net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
@@ -29,6 +29,8 @@ const SLOT_BYTES: usize = SLOT_SECTORS * 512;
 const SLOT_OFFSETS: [usize; 2] = [1, 1 + SLOT_SECTORS];
 const SNAPSHOT_HEADER_BYTES: usize = 64;
 const SNAPSHOT_CHECKSUM_OFFSET: usize = 20;
+const MODERN_NETWORK_DEVICE: &str =
+    "virtio-net-pci,disable-legacy=on,netdev=net0,mac=52:54:00:12:34:56";
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -109,7 +111,7 @@ fn run() -> Result<(), String> {
         .arg("-netdev")
         .arg("user,id=net0")
         .arg("-device")
-        .arg("ne2k_isa,netdev=net0,mac=52:54:00:12:34:56,iobase=0x300,irq=9")
+        .arg(MODERN_NETWORK_DEVICE)
         .arg("-display")
         .arg("none")
         .arg("-serial")
@@ -607,7 +609,7 @@ fn smoke_serial_terminal_input() -> Result<(), String> {
             }
             if command_sent
                 && output.contains("SERIAL_RX_OK")
-                && output.contains("ring3-shell x86_64 ABI 15")
+                && output.contains("GenOS v0.49 ring3-shell x86_64 ABI 17")
             {
                 passed = true;
                 break;
@@ -632,6 +634,13 @@ fn smoke_serial_terminal_input() -> Result<(), String> {
 }
 
 fn smoke_network_qemu() -> Result<(), String> {
+    let inbound_reservation = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("failed to reserve inbound TCP probe port: {error}"))?;
+    let inbound_host_port = inbound_reservation
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    drop(inbound_reservation);
     let listener = TcpListener::bind("0.0.0.0:18080")
         .map_err(|error| format!("failed to bind network smoke server: {error}"))?;
     listener
@@ -640,17 +649,38 @@ fn smoke_network_qemu() -> Result<(), String> {
     let (server_sender, server_receiver) = mpsc::channel();
     let server = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(45);
+        let mut accepted = 0usize;
+        let mut all_valid = true;
         while Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let mut request = [0u8; 512];
-                    let read = stream.read(&mut request).unwrap_or(0);
-                    let valid = request[..read].starts_with(b"GET / HTTP/1.0");
-                    let response = b"HTTP/1.0 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nGENOS_OK";
+                    let mut read = 0usize;
+                    while read < request.len() {
+                        match stream.read(&mut request[read..]) {
+                            Ok(0) => break,
+                            Ok(bytes) => {
+                                read += bytes;
+                                if request[..read].windows(4).any(|end| end == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let valid = request[..read].starts_with(b"GET / HTTP/1.1")
+                        && request[..read]
+                            .windows(18)
+                            .any(|line| line == b"Host: genos.test\r\n");
+                    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nGENOS_OK";
                     let wrote = stream.write_all(response).is_ok() && stream.flush().is_ok();
-                    let _ = server_sender.send(valid && wrote);
-                    return;
+                    all_valid &= valid && wrote;
+                    accepted += 1;
+                    if accepted == 2 {
+                        let _ = server_sender.send(all_valid);
+                        return;
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(20));
@@ -685,9 +715,11 @@ fn smoke_network_qemu() -> Result<(), String> {
         .arg("-device")
         .arg("ide-hd,drive=genos-data,bus=genos-storage.0,unit=0")
         .arg("-netdev")
-        .arg("user,id=net0")
+        .arg(format!(
+            "user,id=net0,hostfwd=tcp:127.0.0.1:{inbound_host_port}-:18081"
+        ))
         .arg("-device")
-        .arg("ne2k_isa,netdev=net0,mac=52:54:00:12:34:56,iobase=0x300,irq=9")
+        .arg(MODERN_NETWORK_DEVICE)
         .arg("-display")
         .arg("none")
         .arg("-serial")
@@ -697,8 +729,39 @@ fn smoke_network_qemu() -> Result<(), String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("failed to launch network QEMU smoke test: {error}"))?;
+    let (inbound_trigger_sender, inbound_trigger_receiver) = mpsc::channel();
+    let (inbound_sender, inbound_receiver) = mpsc::channel();
+    let inbound_client = thread::spawn(move || {
+        if inbound_trigger_receiver
+            .recv_timeout(Duration::from_secs(45))
+            .is_err()
+        {
+            let _ = inbound_sender.send(false);
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, inbound_host_port));
+        while Instant::now() < deadline {
+            if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(200))
+            {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                let wrote = stream.write_all(b"GENOS_PING").is_ok()
+                    && stream.flush().is_ok()
+                    && stream.shutdown(Shutdown::Write).is_ok();
+                let mut response = [0u8; 10];
+                let read = stream.read_exact(&mut response).is_ok();
+                let mut trailing = [0u8; 1];
+                let closed = matches!(stream.read(&mut trailing), Ok(0));
+                let _ = inbound_sender.send(wrote && read && closed && &response == b"GENOS_PONG");
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let _ = inbound_sender.send(false);
+    });
     let required = [
-        "NETWORK_DEVICE_READY",
+        "NETWORK_DEVICE_READY driver=virtio-net-pci transport=modern-pci",
         "PACKET_OWNERSHIP_READY",
         "NETWORK_DHCP_READY",
         "ETHERNET_ARP_IPV4_UDP_READY",
@@ -706,6 +769,26 @@ fn smoke_network_qemu() -> Result<(), String> {
         "USER_DNS_RESOLVE_OK",
         "USER_HTTP_REQUEST_OK",
         "USER_SOCKET_API_READY",
+        "USER_SOCKET_CAPABILITY_READY abi=17",
+        "USER_SOCKET_LISTENER_CAPABILITY_READY abi=17",
+        "TCP_PASSIVE_SYN_ACCEPTED",
+        "TCP_PASSIVE_HANDSHAKE_OK",
+        "USER_SOCKET_PASSIVE_ACCEPT_READY",
+        "TCP_PASSIVE_STREAM_RX_OK",
+        "TCP_PASSIVE_STREAM_TX_OK",
+        "TCP_PASSIVE_STREAM_PEER_FIN_OK",
+        "TCP_PASSIVE_STREAM_FIN_OK",
+        "USER_SOCKET_PASSIVE_STREAM_READY",
+        "USER_SOCKET_TRANSPORT_STARTED protocol=udp",
+        "USER_SOCKET_TRANSPORT_COMPLETE protocol=udp",
+        "USER_SOCKET_UDP_ASYNC_READY",
+        "USER_SOCKET_UDP_TIMEOUT",
+        "USER_SOCKET_STALE_REQUEST_DROPPED",
+        "USER_SOCKET_TRANSPORT_STARTED protocol=tcp",
+        "USER_SOCKET_TRANSPORT_COMPLETE protocol=tcp",
+        "USER_SOCKET_TCP_ASYNC_READY",
+        "TCP_ASYNC_RESET",
+        "USER_SOCKET_STALE_REQUEST_DROPPED protocol=tcp",
         "USER_NETWORK_TIMEOUT_OK",
         "USER_NETWORK_DIAGNOSTICS_READY",
         "USER_SHELL_READY",
@@ -714,12 +797,18 @@ fn smoke_network_qemu() -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(45);
     let mut output = String::new();
     let mut passed = false;
+    let mut inbound_triggered = false;
     while Instant::now() < deadline {
         output.clear();
         if let Ok(mut file) = File::open(serial_log) {
             let _ = file.read_to_string(&mut output);
             if output.contains("KERNEL PANIC") || output.contains("_FAILED") {
                 break;
+            }
+            if !inbound_triggered && output.contains("USER_SOCKET_LISTENER_CAPABILITY_READY abi=17")
+            {
+                let _ = inbound_trigger_sender.send(());
+                inbound_triggered = true;
             }
             if required.iter().all(|marker| output.contains(marker)) {
                 passed = true;
@@ -736,9 +825,15 @@ fn smoke_network_qemu() -> Result<(), String> {
     let server_ok = server_receiver
         .recv_timeout(Duration::from_secs(2))
         .unwrap_or(false);
+    let inbound_ok = inbound_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or(false);
     let _ = server.join();
-    if passed && server_ok {
-        println!("network smoke passed: DHCP, ICMP, DNS, TCP/HTTP, and timeout policy");
+    let _ = inbound_client.join();
+    if passed && server_ok && inbound_ok {
+        println!(
+            "network smoke passed: DHCP, ICMP, DNS, TCP/HTTP, passive stream, and timeout policy"
+        );
         Ok(())
     } else {
         Err(format!("network smoke failed; serial:\n{output}"))
@@ -772,7 +867,7 @@ fn smoke_network_without_http_server() -> Result<(), String> {
         .arg("-netdev")
         .arg("user,id=net0")
         .arg("-device")
-        .arg("ne2k_isa,netdev=net0,mac=52:54:00:12:34:56,iobase=0x300,irq=9")
+        .arg(MODERN_NETWORK_DEVICE)
         .arg("-display")
         .arg("none")
         .arg("-serial")
@@ -783,8 +878,20 @@ fn smoke_network_without_http_server() -> Result<(), String> {
         .spawn()
         .map_err(|error| format!("failed to launch normal network boot test: {error}"))?;
     let required = [
+        "NETWORK_DEVICE_READY driver=virtio-net-pci transport=modern-pci",
         "NETWORK_DHCP_READY",
         "USER_DNS_RESOLVE_OK",
+        "USER_SOCKET_CAPABILITY_READY abi=17",
+        "USER_SOCKET_LISTENER_CAPABILITY_READY abi=17",
+        "USER_SOCKET_TRANSPORT_STARTED protocol=udp",
+        "USER_SOCKET_TRANSPORT_COMPLETE protocol=udp",
+        "USER_SOCKET_UDP_ASYNC_READY",
+        "USER_SOCKET_UDP_TIMEOUT",
+        "USER_SOCKET_STALE_REQUEST_DROPPED",
+        "USER_SOCKET_TRANSPORT_STARTED protocol=tcp",
+        "TCP_ASYNC_RESET",
+        "USER_SOCKET_TCP_ERROR",
+        "USER_SOCKET_STALE_REQUEST_DROPPED protocol=tcp",
         "USER_SHELL_READY",
         "GENOS_READY",
     ];
@@ -810,7 +917,12 @@ fn smoke_network_without_http_server() -> Result<(), String> {
     }
     let _ = child.kill();
     let _ = child.wait();
-    if passed && !output.contains("USER_HTTP_REQUEST_OK") {
+    if passed
+        && !output.contains("USER_HTTP_REQUEST_OK")
+        && !output.contains("USER_SOCKET_TCP_ASYNC_READY")
+        && !output.contains("USER_SOCKET_PASSIVE_ACCEPT_READY")
+        && !output.contains("USER_SOCKET_PASSIVE_STREAM_READY")
+    {
         println!("normal network boot passed without the test-only HTTP server");
         Ok(())
     } else {
@@ -1180,6 +1292,8 @@ fn smoke_markers_ready(output: &str) -> bool {
         "USER_SHELL_PROCESS_CONTROL_OK",
         "USER_SHELL_NAMESPACE_OK",
         "USER_SHELL_HISTORY_OK",
+        "USER_SOCKET_CAPABILITY_READY abi=17",
+        "USER_SOCKET_LISTENER_CAPABILITY_READY abi=17",
         "USER_SHELL_READY",
         "USER_STORAGE_STATUS_VISIBLE_OK",
         "USER_RAMFS_TEMP_APP_OK",
@@ -1205,6 +1319,8 @@ fn smoke_markers_ready(output: &str) -> bool {
         && markers_in_order(
             output,
             &[
+                "USER_SOCKET_LISTENER_CAPABILITY_READY abi=17",
+                "USER_SOCKET_CAPABILITY_READY abi=17",
                 "USER_PROCESS_LAUNCHED",
                 "USER_PROCESS_STATUS",
                 "USER_PROCESS_KILLED",
@@ -1258,7 +1374,7 @@ mod tests {
     fn smoke_requires_async_lifecycle_and_reclaim_markers() {
         assert!(smoke_markers_ready(concat!(
             "RAMFS_TEMP_CLEAN_OK\nRAMFS_TEMP_READY\nRAMFS_TEMPORARY_READY\nPCI_STORAGE_CONTROLLER_READY\nPARTITION_DISCOVERED\nBLOCK_CACHE_READY\nBLOCK_CACHE_HIT_OK\nUSER_STORAGE_STATUS_VISIBLE_OK\nUSER_RAMFS_TEMP_APP_OK\nUSER_DURABLE_RESTORE_OK\n",
-            "IRQ_READY\nRECOVERY_BOUNDARY_OK\nVFS_READY\nTASKS_READY\nSCHED_READY\nRUNTIME_COORDINATOR_READY\nHEADLESS_RUNTIME_READY\nPROCESS_SNAPSHOT_READY\nUNIFIED_HANDLE_TABLE_READY\nASYNC_REQUEST_IDENTITY_READY\nSCHED_DISPATCH_BENCH_OK\nSCHED_CONTEXT_BENCH_OK\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_ASYNC_REQUEST_ID_OK\nUSER_ASYNC_CANCELLATION_OK\nUSER_ASYNC_ONE_SHOT_OK\nUSER_SUPERVISOR_CLEANUP_OK mode=exit\nUSER_SUPERVISOR_CLEANUP_OK mode=fault\nUSER_SUPERVISOR_CLEANUP_OK mode=kill\nUSER_SUPERVISOR_NO_STALE_TASKS_OK\nUSER_SUPERVISOR_NO_STALE_HANDLES_OK\nUSER_SUPERVISOR_PENDING_CANCEL_OK\nSUPERVISOR_CLEANUP_READY\nUSER_ROLLBACK_FULL_TABLE_OK\nUSER_ROLLBACK_LAUNCH_REFUSED_OK\nUSER_ROLLBACK_COPYOUT_OK\nUSER_ROLLBACK_CANCELLATION_OK\nRUNTIME_ROLLBACK_READY\nUSER_PROCESS_GENERATION_STRESS_OK launches=257\nUSER_PID_REUSE_SAFE_OK\nUSER_STALE_PROCESS_HANDLE_REJECTED_OK\nPROCESS_GENERATION_STRESS_READY\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_HANDLE_TRUNCATE_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_PROCESS_LAUNCHED\nUSER_PROCESS_STATUS\nUSER_PROCESS_KILLED\nUSER_PROCESS_REAPED\nUSER_SHELL_PROCESS_CONTROL_OK\nUSER_SHELL_NAMESPACE_OK\nUSER_SHELL_HISTORY_OK\nUSER_DIRECTORY_READ_OK\nUSER_SHELL_READY\nUSER_CONSOLE_TRANSCRIPT_OK commands=2\nUSER_CONSOLE_HEADLESS_OK\nCONSOLE_TRANSCRIPT_READY\nPERSISTENT_STORAGE_RESTORED\nPERSISTENT_STORAGE_READY\nUSER_ISOLATION_OK\nUSERMODE_READY\nSERVER_TERMINAL_READY\nSERIAL_TERMINAL_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nTERMINAL_IDLE_OK\n"
+            "IRQ_READY\nRECOVERY_BOUNDARY_OK\nVFS_READY\nTASKS_READY\nSCHED_READY\nRUNTIME_COORDINATOR_READY\nHEADLESS_RUNTIME_READY\nPROCESS_SNAPSHOT_READY\nUNIFIED_HANDLE_TABLE_READY\nASYNC_REQUEST_IDENTITY_READY\nSCHED_DISPATCH_BENCH_OK\nSCHED_CONTEXT_BENCH_OK\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_ASYNC_REQUEST_ID_OK\nUSER_ASYNC_CANCELLATION_OK\nUSER_ASYNC_ONE_SHOT_OK\nUSER_SUPERVISOR_CLEANUP_OK mode=exit\nUSER_SUPERVISOR_CLEANUP_OK mode=fault\nUSER_SUPERVISOR_CLEANUP_OK mode=kill\nUSER_SUPERVISOR_NO_STALE_TASKS_OK\nUSER_SUPERVISOR_NO_STALE_HANDLES_OK\nUSER_SUPERVISOR_PENDING_CANCEL_OK\nSUPERVISOR_CLEANUP_READY\nUSER_ROLLBACK_FULL_TABLE_OK\nUSER_ROLLBACK_LAUNCH_REFUSED_OK\nUSER_ROLLBACK_COPYOUT_OK\nUSER_ROLLBACK_CANCELLATION_OK\nRUNTIME_ROLLBACK_READY\nUSER_PROCESS_GENERATION_STRESS_OK launches=257\nUSER_PID_REUSE_SAFE_OK\nUSER_STALE_PROCESS_HANDLE_REJECTED_OK\nPROCESS_GENERATION_STRESS_READY\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_HANDLE_TRUNCATE_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_SOCKET_LISTENER_CAPABILITY_READY abi=17\nUSER_SOCKET_CAPABILITY_READY abi=17\nUSER_PROCESS_LAUNCHED\nUSER_PROCESS_STATUS\nUSER_PROCESS_KILLED\nUSER_PROCESS_REAPED\nUSER_SHELL_PROCESS_CONTROL_OK\nUSER_SHELL_NAMESPACE_OK\nUSER_SHELL_HISTORY_OK\nUSER_DIRECTORY_READ_OK\nUSER_SHELL_READY\nUSER_CONSOLE_TRANSCRIPT_OK commands=2\nUSER_CONSOLE_HEADLESS_OK\nCONSOLE_TRANSCRIPT_READY\nPERSISTENT_STORAGE_RESTORED\nPERSISTENT_STORAGE_READY\nUSER_ISOLATION_OK\nUSERMODE_READY\nSERVER_TERMINAL_READY\nSERIAL_TERMINAL_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nTERMINAL_IDLE_OK\n"
         )));
         assert!(!smoke_markers_ready("GENOS_READY\n"));
         assert!(!smoke_markers_ready(
@@ -1517,20 +1633,56 @@ mod tests {
     fn network_harness_covers_real_protocols_and_bounded_failure() {
         let xtask = include_str!("main.rs");
         let driver = include_str!("../../../kernel/src/network.rs");
+        let device = include_str!("../../../kernel/src/network_device.rs");
         let protocol = include_str!("../../../kernel/src/net.rs");
         let shell = include_str!("../../../userspace/shell/src/main.rs");
-        assert!(xtask.contains("ne2k_isa"));
+        assert!(xtask.contains("virtio-net-pci"));
+        assert!(xtask.contains("disable-legacy=on"));
+        assert!(!MODERN_NETWORK_DEVICE.contains("ne2k"));
         assert!(xtask.contains("TcpListener::bind"));
+        assert!(xtask.contains("hostfwd=tcp:127.0.0.1"));
+        assert!(xtask.contains("TcpStream::connect_timeout"));
+        assert!(xtask.contains("TCP_PASSIVE_HANDSHAKE_OK"));
+        assert!(xtask.contains("USER_SOCKET_PASSIVE_ACCEPT_READY"));
+        assert!(xtask.contains("GENOS_PING"));
+        assert!(xtask.contains("GENOS_PONG"));
+        assert!(xtask.contains("Shutdown::Write"));
+        assert!(xtask.contains("TCP_PASSIVE_STREAM_RX_OK"));
+        assert!(xtask.contains("TCP_PASSIVE_STREAM_TX_OK"));
+        assert!(xtask.contains("TCP_PASSIVE_STREAM_FIN_OK"));
+        assert!(xtask.contains("USER_SOCKET_PASSIVE_STREAM_READY"));
         assert!(xtask.contains("USER_HTTP_REQUEST_OK"));
         assert!(driver.contains("PacketOwner"));
+        assert!(driver.contains("NetworkDevice"));
         assert!(driver.contains("const RETRIES: usize = 3"));
         assert!(driver.contains("dhcp_attempt"));
         assert!(driver.contains("resolve_arp"));
+        assert!(driver.contains("start_udp_async"));
+        assert!(driver.contains("poll_udp_async"));
+        assert!(driver.contains("start_tcp_async"));
+        assert!(driver.contains("poll_tcp_async"));
+        assert!(driver.contains("poll_tcp_passive"));
+        assert!(driver.contains("poll_tcp_passive_stream"));
+        assert!(driver.contains("start_tcp_passive_stream_send"));
+        assert!(driver.contains("PASSIVE_TCP_STREAM_IDLE_TICKS"));
+        assert!(driver.contains("ASYNC_UDP_RX_POLLS_PER_TICK"));
+        assert!(driver.contains("ASYNC_TCP_RX_POLLS_PER_TICK"));
         assert!(driver.contains("NETWORK_ICMP_ECHO_OK"));
+        assert!(device.contains("VIRTIO_F_VERSION_1"));
+        assert!(device.contains("VIRTIO_PCI_CAP_COMMON_CFG"));
+        assert!(device.contains("VIRTIO_RX_QUEUE_MEMORY"));
+        assert!(device.contains("ne2000-pio-legacy-fallback"));
         assert!(protocol.contains("transport_checksum_valid"));
+        assert!(protocol.contains("parse_arp_reply"));
+        assert!(protocol.contains("passive_tcp_handshake_requires_exact_bounded_packets"));
         assert!(protocol.contains("malformed_packets_are_rejected_without_indexing_past_bounds"));
         assert!(shell.contains("runtime::udp_exchange"));
         assert!(shell.contains("runtime::tcp_exchange"));
+        assert!(shell.contains("runtime::socket_receive"));
+        assert!(shell.contains("asynchronous UDP socket ready"));
+        assert!(shell.contains("asynchronous TCP socket ready"));
+        assert!(shell.contains("passive TCP accept ready"));
+        assert!(shell.contains("passive TCP stream ready"));
         assert!(shell.contains("network diagnostics ready"));
     }
 

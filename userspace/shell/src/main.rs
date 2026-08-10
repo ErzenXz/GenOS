@@ -10,7 +10,7 @@ const LINE_CAPACITY: usize = runtime::CONSOLE_TEXT_MAX;
 const READY: &[u8] = b"SHELL.ELF ready - filesystem, network, and process control run in Ring 3";
 const HELP: &[u8] =
     b"help clear echo uname net ls cat stat touch write append mkdir rm run ps kill wait";
-const UNAME: &[u8] = b"GenOS v0.42 ring3-shell x86_64 ABI 15";
+const UNAME: &[u8] = b"GenOS v0.49 ring3-shell x86_64 ABI 17";
 const UNKNOWN: &[u8] = b"unknown userspace command";
 const DIRECTORY_ERROR: &[u8] = b"directory unavailable";
 const FILE_ERROR: &[u8] = b"file unavailable";
@@ -52,6 +52,7 @@ struct ShellData {
     file_stat: runtime::UserFileStat,
     directory_entry: runtime::UserDirectoryEntry,
     process_status: runtime::UserProcessStatus,
+    socket_status: runtime::UserSocketStatus,
     jobs: [Job; JOB_CAPACITY],
     next_job_id: u64,
     file_buffer: [u8; runtime::FILE_READ_MAX],
@@ -73,6 +74,7 @@ static mut DATA: ShellData = ShellData {
     file_stat: runtime::UserFileStat::empty(),
     directory_entry: runtime::UserDirectoryEntry::empty(),
     process_status: runtime::UserProcessStatus::empty(),
+    socket_status: runtime::UserSocketStatus::empty(),
     jobs: [Job::empty(); JOB_CAPACITY],
     next_job_id: 1,
     file_buffer: [0; runtime::FILE_READ_MAX],
@@ -134,6 +136,9 @@ pub extern "C" fn _start(console: u64, supervisor: u64) -> ! {
     if !prove_history() {
         runtime::exit(244);
     }
+    if !prove_socket_capabilities(console) {
+        runtime::exit(241);
+    }
     if !prove_network(console) {
         runtime::exit(242);
     }
@@ -167,6 +172,397 @@ pub extern "C" fn _start(console: u64, supervisor: u64) -> ! {
             runtime::exit(252);
         }
     }
+}
+
+fn prove_socket_capabilities(console: u64) -> bool {
+    let config = unsafe { &mut *addr_of_mut!(DATA.network_config) };
+    let network_available = match runtime::network_config(config) {
+        runtime::ERROR_UNAVAILABLE => false,
+        length if length == core::mem::size_of::<runtime::UserNetworkConfig>() as u64 => true,
+        _ => return false,
+    };
+    let udp = runtime::socket_open(runtime::SOCKET_PROTOCOL_UDP);
+    let udp_target = if network_available { config.dns } else { 1 };
+    if handle_error(udp) || runtime::socket_connect(udp, udp_target, 53) != 0 {
+        return false;
+    }
+    let status = unsafe { &mut *addr_of_mut!(DATA.socket_status) };
+    if runtime::socket_status(udp, status)
+        != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        || status.protocol != runtime::SOCKET_PROTOCOL_UDP
+        || status.state != runtime::SOCKET_STATE_ESTABLISHED
+        || status.readiness & runtime::SOCKET_READY_CONNECTED == 0
+        || runtime::socket_status(udp ^ (1 << 8), status) != runtime::ERROR_INVALID_ARGUMENT
+    {
+        return false;
+    }
+
+    if network_available {
+        let query = [
+            0x47, 0x45, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e',
+            b'x', b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00,
+            0x01,
+        ];
+        if runtime::socket_send(udp, &query) != query.len() as u64 {
+            return false;
+        }
+        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
+        let mut received = None;
+        for _ in 0..200 {
+            let result = runtime::socket_receive(udp, buffer);
+            if result == runtime::ERROR_WOULD_BLOCK {
+                if runtime::sleep(1) != 0 {
+                    return false;
+                }
+                continue;
+            }
+            if handle_error(result) || result as usize > buffer.len() {
+                return false;
+            }
+            received = Some(result as usize);
+            break;
+        }
+        let Some(length) = received else {
+            return false;
+        };
+        if dns_first_a(&buffer[..length]).is_none() {
+            return false;
+        }
+        let message = b"asynchronous UDP socket ready";
+        if runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
+            != message.len() as u64
+        {
+            return false;
+        }
+    }
+    if runtime::socket_close(udp) != 0
+        || runtime::socket_status(udp, status) != runtime::ERROR_INVALID_ARGUMENT
+    {
+        return false;
+    }
+
+    if network_available && !prove_socket_timeout_and_cancellation(config, status) {
+        return false;
+    }
+
+    if !prove_async_tcp(console, network_available.then_some(&*config), status) {
+        return false;
+    }
+    if !prove_listener_authority(console, status) {
+        return false;
+    }
+    if network_available && !prove_passive_tcp_accept(console, status) {
+        return false;
+    }
+    let message = b"nonblocking socket capabilities ready";
+    runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS) == message.len() as u64
+}
+
+fn prove_listener_authority(console: u64, status: &mut runtime::UserSocketStatus) -> bool {
+    const PORT: u16 = 18081;
+    let listener = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    if handle_error(listener)
+        || runtime::socket_bind(listener, runtime::SOCKET_LISTENER_PORT_MIN as u16 - 1)
+            != runtime::ERROR_INVALID_ARGUMENT
+        || runtime::socket_bind(listener ^ (1 << 8), PORT) != runtime::ERROR_INVALID_ARGUMENT
+        || runtime::socket_bind(listener, PORT) != 0
+        || runtime::socket_status(listener, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        || status.state != runtime::SOCKET_STATE_BOUND
+        || status.readiness & runtime::SOCKET_READY_WRITABLE != 0
+        || runtime::socket_listen(listener, runtime::SOCKET_LISTENER_BACKLOG_CAPACITY + 1)
+            != runtime::ERROR_INVALID_ARGUMENT
+        || runtime::socket_listen(listener, runtime::SOCKET_LISTENER_BACKLOG_CAPACITY) != 0
+        || runtime::socket_status(listener, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        || status.state != runtime::SOCKET_STATE_LISTENING
+        || status.readiness & (runtime::SOCKET_READY_READABLE | runtime::SOCKET_READY_ACCEPT) != 0
+        || runtime::socket_accept(listener) != runtime::ERROR_WOULD_BLOCK
+        || runtime::socket_listen(listener ^ (1 << 8), 1) != runtime::ERROR_INVALID_ARGUMENT
+    {
+        return false;
+    }
+
+    let duplicate = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    if handle_error(duplicate)
+        || runtime::socket_bind(duplicate, PORT) != runtime::ERROR_UNAVAILABLE
+        || runtime::socket_close(duplicate) != 0
+        || runtime::socket_close(listener) != 0
+        || runtime::socket_accept(listener) != runtime::ERROR_INVALID_ARGUMENT
+    {
+        return false;
+    }
+
+    let rebound = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    if handle_error(rebound)
+        || runtime::socket_bind(rebound, PORT) != 0
+        || runtime::socket_listen(rebound, 1) != 0
+        || runtime::socket_close(rebound) != 0
+    {
+        return false;
+    }
+    let message = b"listener capability authority ready";
+    runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS) == message.len() as u64
+}
+
+fn prove_passive_tcp_accept(console: u64, status: &mut runtime::UserSocketStatus) -> bool {
+    const PORT: u16 = 18081;
+    const REQUEST: &[u8] = b"GENOS_PING";
+    const RESPONSE: &[u8] = b"GENOS_PONG";
+    let listener = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    if handle_error(listener)
+        || runtime::socket_bind(listener, PORT) != 0
+        || runtime::socket_listen(listener, 1) != 0
+    {
+        return false;
+    }
+    for _ in 0..80 {
+        let accepted = runtime::socket_accept(listener);
+        if accepted == runtime::ERROR_WOULD_BLOCK {
+            if runtime::sleep(1) != 0 {
+                return false;
+            }
+            continue;
+        }
+        if handle_error(accepted)
+            || runtime::socket_status(accepted, status)
+                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+            || status.protocol != runtime::SOCKET_PROTOCOL_TCP_STREAM
+            || !matches!(
+                status.state,
+                runtime::SOCKET_STATE_ESTABLISHED | runtime::SOCKET_STATE_READ_CLOSED
+            )
+        {
+            return false;
+        }
+        let accepted_message = b"passive TCP accept ready";
+        if runtime::console_write(console, accepted_message, runtime::CONSOLE_LINE_STATUS)
+            != accepted_message.len() as u64
+        {
+            return false;
+        }
+        let file_buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
+        let input = &mut file_buffer[..runtime::SOCKET_BUFFER_CAPACITY as usize];
+        let mut received = None;
+        for _ in 0..80 {
+            let result = runtime::socket_receive(accepted, input);
+            if result == runtime::ERROR_WOULD_BLOCK {
+                if runtime::sleep(1) != 0 {
+                    return false;
+                }
+                continue;
+            }
+            if handle_error(result) || result as usize > input.len() {
+                return false;
+            }
+            received = Some(result as usize);
+            break;
+        }
+        if received != Some(REQUEST.len()) || &input[..REQUEST.len()] != REQUEST {
+            return false;
+        }
+        if runtime::socket_send(accepted, RESPONSE) != RESPONSE.len() as u64 {
+            return false;
+        }
+        let mut sent = false;
+        for _ in 0..80 {
+            if runtime::socket_status(accepted, status)
+                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+            {
+                return false;
+            }
+            if status.queued_send == 0 {
+                sent = true;
+                break;
+            }
+            if runtime::sleep(1) != 0 {
+                return false;
+            }
+        }
+        if !sent || runtime::socket_shutdown(accepted, runtime::SOCKET_SHUTDOWN_WRITE) != 0 {
+            return false;
+        }
+        let mut closed = false;
+        for _ in 0..80 {
+            if runtime::socket_status(accepted, status)
+                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+            {
+                return false;
+            }
+            if status.state == runtime::SOCKET_STATE_CLOSED
+                && status.readiness & runtime::SOCKET_READY_CLOSED != 0
+            {
+                closed = true;
+                break;
+            }
+            if runtime::sleep(1) != 0 {
+                return false;
+            }
+        }
+        if !closed || runtime::socket_close(accepted) != 0 || runtime::socket_close(listener) != 0 {
+            return false;
+        }
+        let message = b"passive TCP stream ready";
+        return runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
+            == message.len() as u64;
+    }
+    runtime::socket_close(listener) == 0
+}
+
+fn prove_async_tcp(
+    console: u64,
+    config: Option<&runtime::UserNetworkConfig>,
+    status: &mut runtime::UserSocketStatus,
+) -> bool {
+    let tcp = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    let target = config.map_or(0x0a00_0202, |config| config.gateway);
+    if handle_error(tcp)
+        || runtime::socket_connect(tcp, target, 18080) != 0
+        || runtime::socket_status(tcp, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        || status.state != runtime::SOCKET_STATE_CONNECTING
+    {
+        return false;
+    }
+    let Some(config) = config else {
+        return runtime::socket_close(tcp) == 0;
+    };
+
+    let request = b"GET / HTTP/1.1\r\nHost: genos.test\r\nConnection: close\r\n\r\n";
+    if runtime::socket_send(tcp, request) != request.len() as u64 {
+        return false;
+    }
+    let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
+    let mut completed = false;
+    for _ in 0..160 {
+        let result = runtime::socket_receive(tcp, buffer);
+        if result != runtime::ERROR_WOULD_BLOCK {
+            if handle_error(result)
+                || result as usize > buffer.len()
+                || !buffer[..result as usize].starts_with(b"HTTP/1.1 200")
+                || !contains_bytes(&buffer[..result as usize], b"GENOS_OK")
+            {
+                return false;
+            }
+            completed = true;
+            break;
+        }
+        if runtime::socket_status(tcp, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        {
+            return false;
+        }
+        if status.state == runtime::SOCKET_STATE_FAILED {
+            break;
+        }
+        if runtime::sleep(1) != 0 {
+            return false;
+        }
+    }
+    if runtime::socket_close(tcp) != 0 {
+        return false;
+    }
+    if completed {
+        let message = b"asynchronous TCP socket ready";
+        if runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
+            != message.len() as u64
+        {
+            return false;
+        }
+    }
+
+    let refused = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    if handle_error(refused)
+        || runtime::socket_connect(refused, config.gateway, 1) != 0
+        || runtime::socket_send(refused, b"refused") != 7
+    {
+        return false;
+    }
+    let mut failed = false;
+    for _ in 0..100 {
+        if runtime::socket_status(refused, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        {
+            return false;
+        }
+        if status.state == runtime::SOCKET_STATE_FAILED {
+            failed = status.readiness & runtime::SOCKET_READY_ERROR != 0;
+            break;
+        }
+        if runtime::sleep(1) != 0 {
+            return false;
+        }
+    }
+    if !failed || runtime::socket_close(refused) != 0 {
+        return false;
+    }
+
+    let mut canceled_target = config.address.to_be_bytes();
+    canceled_target[3] = 253;
+    let canceled = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
+    if handle_error(canceled)
+        || runtime::socket_connect(canceled, u32::from_be_bytes(canceled_target), 9) != 0
+        || runtime::socket_send(canceled, b"cancel") != 6
+        || runtime::socket_shutdown(canceled, runtime::SOCKET_SHUTDOWN_WRITE) != 0
+        || runtime::sleep(1) != 0
+        || runtime::socket_status(canceled, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        || status.state != runtime::SOCKET_STATE_WRITE_CLOSED
+        || status.queued_send != 0
+        || runtime::socket_close(canceled) != 0
+    {
+        return false;
+    }
+    true
+}
+
+fn prove_socket_timeout_and_cancellation(
+    config: &runtime::UserNetworkConfig,
+    status: &mut runtime::UserSocketStatus,
+) -> bool {
+    let timeout = runtime::socket_open(runtime::SOCKET_PROTOCOL_UDP);
+    if handle_error(timeout)
+        || runtime::socket_connect(timeout, config.gateway, 1) != 0
+        || runtime::socket_send(timeout, b"timeout") != 7
+    {
+        return false;
+    }
+    let mut timed_out = false;
+    for _ in 0..160 {
+        if runtime::socket_status(timeout, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        {
+            return false;
+        }
+        if status.state == runtime::SOCKET_STATE_FAILED {
+            timed_out = status.readiness & runtime::SOCKET_READY_ERROR != 0;
+            break;
+        }
+        if runtime::sleep(1) != 0 {
+            return false;
+        }
+    }
+    if !timed_out || runtime::socket_close(timeout) != 0 {
+        return false;
+    }
+
+    let mut canceled_target = config.address.to_be_bytes();
+    canceled_target[3] = 254;
+    let canceled = runtime::socket_open(runtime::SOCKET_PROTOCOL_UDP);
+    if handle_error(canceled)
+        || runtime::socket_connect(canceled, u32::from_be_bytes(canceled_target), 9) != 0
+        || runtime::socket_send(canceled, b"cancel") != 6
+        || runtime::socket_shutdown(canceled, runtime::SOCKET_SHUTDOWN_WRITE) != 0
+        || runtime::sleep(1) != 0
+        || runtime::socket_status(canceled, status)
+            != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+        || status.state != runtime::SOCKET_STATE_WRITE_CLOSED
+        || status.queued_send != 0
+        || runtime::socket_close(canceled) != 0
+    {
+        return false;
+    }
+    true
 }
 
 fn prove_storage_status(console: u64) -> Option<StorageMode> {
@@ -254,11 +650,11 @@ fn prove_network(console: u64) -> bool {
         return false;
     }
 
-    let request = b"GET / HTTP/1.0\r\nHost: genos.test\r\nConnection: close\r\n\r\n";
+    let request = b"GET / HTTP/1.1\r\nHost: genos.test\r\nConnection: close\r\n\r\n";
     let http_len = runtime::tcp_exchange(config.gateway, 18080, request, buffer);
     if handle_error(http_len)
         || http_len as usize > buffer.len()
-        || !buffer[..http_len as usize].starts_with(b"HTTP/1.0 200")
+        || !buffer[..http_len as usize].starts_with(b"HTTP/1.1 200")
         || !contains_bytes(&buffer[..http_len as usize], b"GENOS_OK")
     {
         return true;

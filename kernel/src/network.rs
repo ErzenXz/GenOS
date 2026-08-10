@@ -1,253 +1,161 @@
 use core::ptr::addr_of_mut;
 
 use genos_abi::UserNetworkConfig;
-use kernel::net::{self, parse_ipv4_frame, parse_tcp, parse_udp};
+use kernel::{
+    net::{self, parse_ipv4_frame, parse_tcp, parse_udp},
+    socket::TcpServerPeer,
+};
 
-use crate::{arch, serial};
+use crate::{
+    network_device::{NetworkDevice, PacketBuffer, PacketOwner, MAX_FRAME},
+    serial,
+};
 
-const IO_BASE: u16 = 0x300;
-const DATA_PORT: u16 = IO_BASE + 0x10;
-const RESET_PORT: u16 = IO_BASE + 0x1f;
-const TX_PAGE: u8 = 0x40;
-const RX_START: u8 = 0x46;
-const RX_STOP: u8 = 0x80;
-const MAX_FRAME: usize = 1518;
 const POLL_LIMIT: usize = 800_000;
 const RETRIES: usize = 3;
+const ASYNC_UDP_RETRY_TICKS: u64 = 25;
+const ASYNC_UDP_RX_POLLS_PER_TICK: usize = 4_096;
+const ASYNC_UDP_BUFFER_CAPACITY: usize = genos_abi::USER_SOCKET_BUFFER_CAPACITY as usize;
+const ASYNC_TCP_RETRY_TICKS: u64 = 25;
+const ASYNC_TCP_RX_POLLS_PER_TICK: usize = 4_096;
+const ASYNC_TCP_BUFFER_CAPACITY: usize = genos_abi::USER_SOCKET_BUFFER_CAPACITY as usize;
+const PASSIVE_TCP_RETRY_TICKS: u64 = 25;
+const PASSIVE_TCP_RX_POLLS_PER_TICK: usize = 4_096;
+const PASSIVE_TCP_STREAM_IDLE_TICKS: u64 = 200;
+const PASSIVE_TCP_STREAM_BUFFER_CAPACITY: usize = genos_abi::USER_SOCKET_BUFFER_CAPACITY as usize;
 
-const CR: u16 = IO_BASE;
-const PSTART: u16 = IO_BASE + 0x01;
-const PSTOP: u16 = IO_BASE + 0x02;
-const BNRY: u16 = IO_BASE + 0x03;
-const TPSR: u16 = IO_BASE + 0x04;
-const TBCR0: u16 = IO_BASE + 0x05;
-const TBCR1: u16 = IO_BASE + 0x06;
-const ISR: u16 = IO_BASE + 0x07;
-const RSAR0: u16 = IO_BASE + 0x08;
-const RSAR1: u16 = IO_BASE + 0x09;
-const RBCR0: u16 = IO_BASE + 0x0a;
-const RBCR1: u16 = IO_BASE + 0x0b;
-const RCR: u16 = IO_BASE + 0x0c;
-const TCR: u16 = IO_BASE + 0x0d;
-const DCR: u16 = IO_BASE + 0x0e;
-const IMR: u16 = IO_BASE + 0x0f;
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum PacketOwner {
-    Free,
-    Driver,
-    Stack,
+#[derive(Clone, Copy)]
+enum AsyncUdpPhase {
+    Resolve,
+    Response { mac: [u8; 6] },
 }
 
 #[derive(Clone, Copy)]
-struct PacketBuffer {
-    bytes: [u8; MAX_FRAME],
-    len: usize,
-    owner: PacketOwner,
+struct AsyncUdpOperation {
+    target: [u8; 4],
+    next_hop: [u8; 4],
+    remote_port: u16,
+    local_port: u16,
+    request: [u8; ASYNC_UDP_BUFFER_CAPACITY],
+    request_len: usize,
+    phase: AsyncUdpPhase,
+    attempts: usize,
+    deadline: u64,
 }
 
-impl PacketBuffer {
-    const fn empty() -> Self {
-        Self {
-            bytes: [0; MAX_FRAME],
-            len: 0,
-            owner: PacketOwner::Free,
-        }
-    }
+pub enum AsyncUdpProgress {
+    Idle,
+    Pending,
+    Complete {
+        bytes: [u8; ASYNC_UDP_BUFFER_CAPACITY],
+        len: usize,
+    },
+    Failed,
 }
 
-struct Ne2000 {
-    mac: [u8; 6],
-    next_rx: u8,
+#[derive(Clone, Copy)]
+enum AsyncTcpPhase {
+    Resolve,
+    Syn {
+        mac: [u8; 6],
+    },
+    Response {
+        mac: [u8; 6],
+        local_seq: u32,
+        remote_seq: u32,
+        bytes: [u8; ASYNC_TCP_BUFFER_CAPACITY],
+        len: usize,
+    },
 }
 
-impl Ne2000 {
-    const fn new() -> Self {
-        Self {
-            mac: [0; 6],
-            next_rx: RX_START + 1,
-        }
-    }
+#[derive(Clone, Copy)]
+struct AsyncTcpOperation {
+    target: [u8; 4],
+    next_hop: [u8; 4],
+    remote_port: u16,
+    local_port: u16,
+    initial_seq: u32,
+    request: [u8; ASYNC_TCP_BUFFER_CAPACITY],
+    request_len: usize,
+    phase: AsyncTcpPhase,
+    attempts: usize,
+    deadline: u64,
+}
 
-    fn init(&mut self) -> bool {
-        let reset = unsafe { arch::inb(RESET_PORT) };
-        if reset == 0xff {
-            return false;
-        }
-        unsafe { arch::outb(RESET_PORT, reset) };
-        if !wait_register(ISR, 0x80) {
-            return false;
-        }
-        write(CR, 0x21);
-        write(DCR, 0x49);
-        write(RBCR0, 0);
-        write(RBCR1, 0);
-        write(RCR, 0x20);
-        write(TCR, 0x02);
-        write(PSTART, RX_START);
-        write(BNRY, RX_START);
-        write(PSTOP, RX_STOP);
-        write(ISR, 0xff);
-        write(IMR, 0);
+pub enum AsyncTcpProgress {
+    Idle,
+    Pending,
+    Complete {
+        bytes: [u8; ASYNC_TCP_BUFFER_CAPACITY],
+        len: usize,
+    },
+    Failed,
+}
 
-        let mut prom = [0u8; 32];
-        if !self.remote_read(0, &mut prom) {
-            return false;
-        }
-        for (index, byte) in self.mac.iter_mut().enumerate() {
-            *byte = prom[index * 2];
-        }
-        if self.mac == [0; 6] || self.mac == [0xff; 6] {
-            return false;
-        }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PassiveTcpSyn {
+    pub target: u32,
+    pub remote_port: u16,
+    pub local_port: u16,
+    remote_sequence: u32,
+    source_mac: [u8; 6],
+}
 
-        write(CR, 0x61);
-        for (index, byte) in self.mac.iter().copied().enumerate() {
-            write(IO_BASE + 1 + index as u16, byte);
-        }
-        write(IO_BASE + 7, self.next_rx);
-        for offset in 8..=15 {
-            write(IO_BASE + offset, 0);
-        }
-        write(CR, 0x22);
-        write(TCR, 0);
-        write(RCR, 0x04);
-        write(ISR, 0xff);
-        true
-    }
+#[derive(Clone, Copy)]
+struct PassiveTcpOperation {
+    target: [u8; 4],
+    remote_port: u16,
+    local_port: u16,
+    remote_sequence: u32,
+    local_sequence: u32,
+    source_mac: [u8; 6],
+    attempts: usize,
+    deadline: u64,
+}
 
-    fn transmit(&mut self, frame: &[u8]) -> bool {
-        if frame.len() > MAX_FRAME {
-            return false;
-        }
-        let wire_len = frame.len().max(60);
-        let mut padded = [0u8; MAX_FRAME];
-        padded[..frame.len()].copy_from_slice(frame);
-        if !self.remote_write(u16::from(TX_PAGE) << 8, &padded[..wire_len]) {
-            return false;
-        }
-        write(TPSR, TX_PAGE);
-        write(TBCR0, wire_len as u8);
-        write(TBCR1, (wire_len >> 8) as u8);
-        write(ISR, 0x0a);
-        write(CR, 0x26);
-        for _ in 0..POLL_LIMIT {
-            let status = read(ISR);
-            if status & 0x02 != 0 {
-                write(ISR, 0x02);
-                return true;
-            }
-            if status & 0x08 != 0 {
-                write(ISR, 0x08);
-                return false;
-            }
-        }
-        false
-    }
+#[derive(Clone, Copy)]
+struct PassiveTcpStreamOperation {
+    peer: TcpServerPeer,
+    remote_sequence: u32,
+    local_sequence: u32,
+    receive: [u8; PASSIVE_TCP_STREAM_BUFFER_CAPACITY],
+    receive_len: usize,
+    send: [u8; PASSIVE_TCP_STREAM_BUFFER_CAPACITY],
+    send_len: usize,
+    send_completed: bool,
+    fin_sent: bool,
+    fin_acked: bool,
+    peer_fin: bool,
+    peer_fin_pending: bool,
+    attempts: usize,
+    deadline: u64,
+}
 
-    fn receive(&mut self, packet: &mut PacketBuffer) -> bool {
-        write(CR, 0x62);
-        let current = read(IO_BASE + 7);
-        write(CR, 0x22);
-        if self.next_rx == current {
-            return false;
-        }
-        let mut header = [0u8; 4];
-        if !self.ring_read(u16::from(self.next_rx) << 8, &mut header) {
-            return false;
-        }
-        let next = header[1];
-        let recorded = usize::from(u16::from_le_bytes([header[2], header[3]]));
-        if header[0] & 0x01 == 0
-            || !(RX_START..RX_STOP).contains(&next)
-            || !(4..=MAX_FRAME + 4).contains(&recorded)
-        {
-            self.reset_ring(current);
-            return false;
-        }
-        let len = recorded - 4;
-        packet.owner = PacketOwner::Driver;
-        if !self.ring_read((u16::from(self.next_rx) << 8) + 4, &mut packet.bytes[..len]) {
-            packet.owner = PacketOwner::Free;
-            return false;
-        }
-        packet.len = len;
-        packet.owner = PacketOwner::Stack;
-        self.next_rx = next;
-        let boundary = if next == RX_START {
-            RX_STOP - 1
-        } else {
-            next - 1
-        };
-        write(BNRY, boundary);
-        true
-    }
+pub enum PassiveTcpProgress {
+    Idle,
+    Syn(PassiveTcpSyn),
+    Pending,
+    Established(TcpServerPeer),
+    Failed,
+}
 
-    fn reset_ring(&mut self, current: u8) {
-        self.next_rx = if (RX_START..RX_STOP).contains(&current) {
-            current
-        } else {
-            RX_START + 1
-        };
-        let boundary = if self.next_rx == RX_START {
-            RX_STOP - 1
-        } else {
-            self.next_rx - 1
-        };
-        write(BNRY, boundary);
-    }
-
-    fn ring_read(&mut self, address: u16, output: &mut [u8]) -> bool {
-        let ring_end = u16::from(RX_STOP) << 8;
-        if address + output.len() as u16 <= ring_end {
-            return self.remote_read(address, output);
-        }
-        let first = usize::from(ring_end - address);
-        self.remote_read(address, &mut output[..first])
-            && self.remote_read(u16::from(RX_START) << 8, &mut output[first..])
-    }
-
-    fn remote_read(&mut self, address: u16, output: &mut [u8]) -> bool {
-        let count = (output.len() + 1) & !1;
-        write(CR, 0x22);
-        write(RBCR0, count as u8);
-        write(RBCR1, (count >> 8) as u8);
-        write(RSAR0, address as u8);
-        write(RSAR1, (address >> 8) as u8);
-        write(ISR, 0x40);
-        write(CR, 0x0a);
-        for index in (0..count).step_by(2) {
-            let word = unsafe { arch::inw(DATA_PORT) }.to_le_bytes();
-            if index < output.len() {
-                output[index] = word[0];
-            }
-            if index + 1 < output.len() {
-                output[index + 1] = word[1];
-            }
-        }
-        wait_register(ISR, 0x40)
-    }
-
-    fn remote_write(&mut self, address: u16, input: &[u8]) -> bool {
-        let count = (input.len() + 1) & !1;
-        write(CR, 0x22);
-        write(RBCR0, count as u8);
-        write(RBCR1, (count >> 8) as u8);
-        write(RSAR0, address as u8);
-        write(RSAR1, (address >> 8) as u8);
-        write(ISR, 0x40);
-        write(CR, 0x12);
-        for index in (0..count).step_by(2) {
-            let low = input.get(index).copied().unwrap_or(0);
-            let high = input.get(index + 1).copied().unwrap_or(0);
-            unsafe { arch::outw(DATA_PORT, u16::from_le_bytes([low, high])) };
-        }
-        wait_register(ISR, 0x40)
-    }
+pub enum PassiveTcpStreamProgress {
+    Idle,
+    Pending,
+    Received {
+        peer: TcpServerPeer,
+        bytes: [u8; PASSIVE_TCP_STREAM_BUFFER_CAPACITY],
+        len: usize,
+    },
+    SendComplete(TcpServerPeer),
+    PeerClosed(TcpServerPeer),
+    Closed(TcpServerPeer),
+    Reset(TcpServerPeer),
+    Failed(TcpServerPeer),
 }
 
 struct NetworkStack {
-    device: Ne2000,
+    device: NetworkDevice,
     available: bool,
     address: [u8; 4],
     subnet: [u8; 4],
@@ -256,12 +164,16 @@ struct NetworkStack {
     next_port: u16,
     ip_id: u16,
     rx: PacketBuffer,
+    async_udp: Option<AsyncUdpOperation>,
+    async_tcp: Option<AsyncTcpOperation>,
+    passive_tcp: Option<PassiveTcpOperation>,
+    passive_stream: Option<PassiveTcpStreamOperation>,
 }
 
 impl NetworkStack {
     const fn new() -> Self {
         Self {
-            device: Ne2000::new(),
+            device: NetworkDevice::new(),
             available: false,
             address: [0; 4],
             subnet: [0; 4],
@@ -270,6 +182,10 @@ impl NetworkStack {
             next_port: 49152,
             ip_id: 1,
             rx: PacketBuffer::empty(),
+            async_udp: None,
+            async_tcp: None,
+            passive_tcp: None,
+            passive_stream: None,
         }
     }
 
@@ -290,7 +206,7 @@ impl NetworkStack {
     fn dhcp_attempt(&mut self) -> Option<DhcpConfig> {
         let xid = 0x4745_4e4f;
         let mut payload = [0u8; 300];
-        let discover_len = build_dhcp(&mut payload, self.device.mac, xid, 1, None, None)?;
+        let discover_len = build_dhcp(&mut payload, self.device.mac(), xid, 1, None, None)?;
         self.send_udp_raw(
             [0xff; 6],
             [0, 0, 0, 0],
@@ -302,7 +218,7 @@ impl NetworkStack {
         let offer = self.wait_dhcp(xid, 2)?;
         let request_len = build_dhcp(
             &mut payload,
-            self.device.mac,
+            self.device.mac(),
             xid,
             3,
             Some(offer.address),
@@ -585,35 +501,1006 @@ impl NetworkStack {
         })
     }
 
-    fn resolve_arp(&mut self, target: [u8; 4]) -> Option<[u8; 6]> {
+    fn route_next_hop(&self, destination: [u8; 4]) -> [u8; 4] {
+        let same_subnet = (0..4).all(|index| {
+            destination[index] & self.subnet[index] == self.address[index] & self.subnet[index]
+        });
+        if same_subnet {
+            destination
+        } else {
+            self.gateway
+        }
+    }
+
+    fn start_udp_async(&mut self, target: [u8; 4], port: u16, request: &[u8], tick: u64) -> bool {
+        if !self.available
+            || self.async_udp.is_some()
+            || self.async_tcp.is_some()
+            || self.passive_tcp.is_some()
+            || self.passive_stream.is_some()
+            || target == [0; 4]
+            || port == 0
+            || request.is_empty()
+            || request.len() > ASYNC_UDP_BUFFER_CAPACITY
+        {
+            return false;
+        }
+        let mut payload = [0u8; ASYNC_UDP_BUFFER_CAPACITY];
+        payload[..request.len()].copy_from_slice(request);
+        self.async_udp = Some(AsyncUdpOperation {
+            target,
+            next_hop: self.route_next_hop(target),
+            remote_port: port,
+            local_port: self.allocate_port(),
+            request: payload,
+            request_len: request.len(),
+            phase: AsyncUdpPhase::Resolve,
+            attempts: 0,
+            deadline: tick,
+        });
+        true
+    }
+
+    fn poll_udp_async(&mut self, tick: u64) -> AsyncUdpProgress {
+        let Some(mut operation) = self.async_udp.take() else {
+            return AsyncUdpProgress::Idle;
+        };
+
+        let mut received = false;
+        for _ in 0..ASYNC_UDP_RX_POLLS_PER_TICK {
+            if self.device.receive(&mut self.rx) {
+                received = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if received {
+            let frame = &self.rx.bytes[..self.rx.len];
+            match operation.phase {
+                AsyncUdpPhase::Resolve => {
+                    if let Some(mac) = net::parse_arp_reply(frame, operation.next_hop, self.address)
+                    {
+                        if self
+                            .send_udp_raw(
+                                mac,
+                                self.address,
+                                operation.target,
+                                operation.local_port,
+                                operation.remote_port,
+                                &operation.request[..operation.request_len],
+                            )
+                            .is_none()
+                        {
+                            self.rx.owner = PacketOwner::Free;
+                            return AsyncUdpProgress::Failed;
+                        }
+                        operation.phase = AsyncUdpPhase::Response { mac };
+                        operation.attempts = 1;
+                        operation.deadline = tick.saturating_add(ASYNC_UDP_RETRY_TICKS);
+                    }
+                }
+                AsyncUdpPhase::Response { .. } => {
+                    let result = parse_ipv4_frame(frame)
+                        .filter(|ip| {
+                            ip.protocol == 17
+                                && ip.source == operation.target
+                                && ip.destination == self.address
+                                && net::transport_checksum_valid(
+                                    ip.source,
+                                    ip.destination,
+                                    ip.protocol,
+                                    ip.payload,
+                                )
+                        })
+                        .and_then(|ip| parse_udp(ip.payload))
+                        .filter(|udp| {
+                            udp.source_port == operation.remote_port
+                                && udp.destination_port == operation.local_port
+                        });
+                    if let Some(udp) = result {
+                        let mut bytes = [0u8; ASYNC_UDP_BUFFER_CAPACITY];
+                        let len = udp.payload.len().min(bytes.len());
+                        bytes[..len].copy_from_slice(&udp.payload[..len]);
+                        self.rx.owner = PacketOwner::Free;
+                        return AsyncUdpProgress::Complete { bytes, len };
+                    }
+                }
+            }
+            self.rx.owner = PacketOwner::Free;
+        }
+
+        if tick >= operation.deadline {
+            if operation.attempts >= RETRIES {
+                return AsyncUdpProgress::Failed;
+            }
+            let sent = match operation.phase {
+                AsyncUdpPhase::Resolve => self.send_arp_request(operation.next_hop),
+                AsyncUdpPhase::Response { mac } => self
+                    .send_udp_raw(
+                        mac,
+                        self.address,
+                        operation.target,
+                        operation.local_port,
+                        operation.remote_port,
+                        &operation.request[..operation.request_len],
+                    )
+                    .is_some(),
+            };
+            if !sent {
+                return AsyncUdpProgress::Failed;
+            }
+            operation.attempts += 1;
+            operation.deadline = tick.saturating_add(ASYNC_UDP_RETRY_TICKS);
+        }
+        self.async_udp = Some(operation);
+        AsyncUdpProgress::Pending
+    }
+
+    fn start_tcp_async(&mut self, target: [u8; 4], port: u16, request: &[u8], tick: u64) -> bool {
+        if !self.available
+            || self.async_udp.is_some()
+            || self.async_tcp.is_some()
+            || self.passive_tcp.is_some()
+            || self.passive_stream.is_some()
+            || target == [0; 4]
+            || port == 0
+            || request.is_empty()
+            || request.len() > ASYNC_TCP_BUFFER_CAPACITY
+        {
+            return false;
+        }
+        let local_port = self.allocate_port();
+        let mut payload = [0u8; ASYNC_TCP_BUFFER_CAPACITY];
+        payload[..request.len()].copy_from_slice(request);
+        self.async_tcp = Some(AsyncTcpOperation {
+            target,
+            next_hop: self.route_next_hop(target),
+            remote_port: port,
+            local_port,
+            initial_seq: 0x5060_7080u32
+                ^ u32::from(local_port)
+                ^ (request.len() as u32).rotate_left(16),
+            request: payload,
+            request_len: request.len(),
+            phase: AsyncTcpPhase::Resolve,
+            attempts: 0,
+            deadline: tick,
+        });
+        true
+    }
+
+    fn poll_tcp_async(&mut self, tick: u64) -> AsyncTcpProgress {
+        let Some(mut operation) = self.async_tcp.take() else {
+            return AsyncTcpProgress::Idle;
+        };
+
+        let mut received = false;
+        for _ in 0..ASYNC_TCP_RX_POLLS_PER_TICK {
+            if self.device.receive(&mut self.rx) {
+                received = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if received {
+            match operation.phase {
+                AsyncTcpPhase::Resolve => {
+                    let mac = net::parse_arp_reply(
+                        &self.rx.bytes[..self.rx.len],
+                        operation.next_hop,
+                        self.address,
+                    );
+                    self.rx.owner = PacketOwner::Free;
+                    if let Some(mac) = mac {
+                        if self
+                            .send_tcp(
+                                mac,
+                                operation.target,
+                                operation.local_port,
+                                operation.remote_port,
+                                operation.initial_seq,
+                                0,
+                                0x02,
+                                &[],
+                            )
+                            .is_none()
+                        {
+                            return AsyncTcpProgress::Failed;
+                        }
+                        operation.phase = AsyncTcpPhase::Syn { mac };
+                        operation.attempts = 1;
+                        operation.deadline = tick.saturating_add(ASYNC_TCP_RETRY_TICKS);
+                    }
+                }
+                AsyncTcpPhase::Syn { mac } => {
+                    let packet = self.decode_tcp_reply(
+                        operation.target,
+                        operation.remote_port,
+                        operation.local_port,
+                    );
+                    self.rx.owner = PacketOwner::Free;
+                    if let Some(packet) = packet {
+                        if packet.flags & 0x04 != 0 {
+                            serial::println("TCP_ASYNC_RESET");
+                            return AsyncTcpProgress::Failed;
+                        }
+                        if packet.flags & 0x12 == 0x12
+                            && packet.acknowledgment == operation.initial_seq.wrapping_add(1)
+                        {
+                            let request_seq = operation.initial_seq.wrapping_add(1);
+                            let remote_seq = packet.sequence.wrapping_add(1);
+                            if self
+                                .send_tcp(
+                                    mac,
+                                    operation.target,
+                                    operation.local_port,
+                                    operation.remote_port,
+                                    request_seq,
+                                    remote_seq,
+                                    0x10,
+                                    &[],
+                                )
+                                .is_none()
+                                || self
+                                    .send_tcp(
+                                        mac,
+                                        operation.target,
+                                        operation.local_port,
+                                        operation.remote_port,
+                                        request_seq,
+                                        remote_seq,
+                                        0x18,
+                                        &operation.request[..operation.request_len],
+                                    )
+                                    .is_none()
+                            {
+                                return AsyncTcpProgress::Failed;
+                            }
+                            operation.phase = AsyncTcpPhase::Response {
+                                mac,
+                                local_seq: request_seq.wrapping_add(operation.request_len as u32),
+                                remote_seq,
+                                bytes: [0; ASYNC_TCP_BUFFER_CAPACITY],
+                                len: 0,
+                            };
+                            operation.attempts = 1;
+                            operation.deadline = tick.saturating_add(ASYNC_TCP_RETRY_TICKS);
+                        }
+                    }
+                }
+                AsyncTcpPhase::Response {
+                    mac,
+                    local_seq,
+                    mut remote_seq,
+                    mut bytes,
+                    mut len,
+                } => {
+                    let packet = self.decode_tcp_reply(
+                        operation.target,
+                        operation.remote_port,
+                        operation.local_port,
+                    );
+                    self.rx.owner = PacketOwner::Free;
+                    if let Some(packet) = packet {
+                        if packet.flags & 0x04 != 0 {
+                            serial::println("TCP_ASYNC_RESET");
+                            return AsyncTcpProgress::Failed;
+                        }
+                        if packet.flags & 0x10 != 0 && packet.acknowledgment != local_seq {
+                            // Ignore an ACK for another send sequence. The exact
+                            // request remains in flight and its deadline governs retry.
+                        } else if packet.sequence != remote_seq {
+                            if self
+                                .send_tcp(
+                                    mac,
+                                    operation.target,
+                                    operation.local_port,
+                                    operation.remote_port,
+                                    local_seq,
+                                    remote_seq,
+                                    0x10,
+                                    &[],
+                                )
+                                .is_none()
+                            {
+                                return AsyncTcpProgress::Failed;
+                            }
+                        } else {
+                            if len.saturating_add(packet.len) > bytes.len() {
+                                return AsyncTcpProgress::Failed;
+                            }
+                            bytes[len..len + packet.len]
+                                .copy_from_slice(&packet.payload[..packet.len]);
+                            len += packet.len;
+                            remote_seq = remote_seq.wrapping_add(packet.len as u32);
+                            let fin = packet.flags & 0x01 != 0;
+                            if fin {
+                                remote_seq = remote_seq.wrapping_add(1);
+                            }
+                            if packet.len != 0 || fin {
+                                if self
+                                    .send_tcp(
+                                        mac,
+                                        operation.target,
+                                        operation.local_port,
+                                        operation.remote_port,
+                                        local_seq,
+                                        remote_seq,
+                                        0x10,
+                                        &[],
+                                    )
+                                    .is_none()
+                                {
+                                    return AsyncTcpProgress::Failed;
+                                }
+                                operation.deadline = tick.saturating_add(ASYNC_TCP_RETRY_TICKS);
+                            }
+                            if fin {
+                                if len == 0
+                                    || self
+                                        .send_tcp(
+                                            mac,
+                                            operation.target,
+                                            operation.local_port,
+                                            operation.remote_port,
+                                            local_seq,
+                                            remote_seq,
+                                            0x11,
+                                            &[],
+                                        )
+                                        .is_none()
+                                {
+                                    return AsyncTcpProgress::Failed;
+                                }
+                                return AsyncTcpProgress::Complete { bytes, len };
+                            }
+                        }
+                    }
+                    operation.phase = AsyncTcpPhase::Response {
+                        mac,
+                        local_seq,
+                        remote_seq,
+                        bytes,
+                        len,
+                    };
+                }
+            }
+        }
+
+        if tick >= operation.deadline {
+            if operation.attempts >= RETRIES {
+                serial::println("TCP_ASYNC_TIMEOUT");
+                return AsyncTcpProgress::Failed;
+            }
+            let sent = match operation.phase {
+                AsyncTcpPhase::Resolve => self.send_arp_request(operation.next_hop),
+                AsyncTcpPhase::Syn { mac } => self
+                    .send_tcp(
+                        mac,
+                        operation.target,
+                        operation.local_port,
+                        operation.remote_port,
+                        operation.initial_seq,
+                        0,
+                        0x02,
+                        &[],
+                    )
+                    .is_some(),
+                AsyncTcpPhase::Response {
+                    mac,
+                    local_seq,
+                    remote_seq,
+                    len,
+                    ..
+                } => {
+                    if len == 0 {
+                        self.send_tcp(
+                            mac,
+                            operation.target,
+                            operation.local_port,
+                            operation.remote_port,
+                            local_seq.wrapping_sub(operation.request_len as u32),
+                            remote_seq,
+                            0x18,
+                            &operation.request[..operation.request_len],
+                        )
+                        .is_some()
+                    } else {
+                        self.send_tcp(
+                            mac,
+                            operation.target,
+                            operation.local_port,
+                            operation.remote_port,
+                            local_seq,
+                            remote_seq,
+                            0x10,
+                            &[],
+                        )
+                        .is_some()
+                    }
+                }
+            };
+            if !sent {
+                return AsyncTcpProgress::Failed;
+            }
+            operation.attempts += 1;
+            operation.deadline = tick.saturating_add(ASYNC_TCP_RETRY_TICKS);
+        }
+        self.async_tcp = Some(operation);
+        AsyncTcpProgress::Pending
+    }
+
+    fn poll_tcp_passive(&mut self, tick: u64) -> PassiveTcpProgress {
+        if !self.available || self.passive_stream.is_some() {
+            return PassiveTcpProgress::Idle;
+        }
+        let Some(mut operation) = self.passive_tcp.take() else {
+            let mut received = false;
+            for _ in 0..PASSIVE_TCP_RX_POLLS_PER_TICK {
+                if self.device.receive(&mut self.rx) {
+                    received = true;
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            if !received {
+                return PassiveTcpProgress::Idle;
+            }
+            let syn = self.decode_passive_syn();
+            self.rx.owner = PacketOwner::Free;
+            return syn.map_or(PassiveTcpProgress::Idle, PassiveTcpProgress::Syn);
+        };
+
+        let mut received = false;
+        for _ in 0..PASSIVE_TCP_RX_POLLS_PER_TICK {
+            if self.device.receive(&mut self.rx) {
+                received = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if received {
+            let packet = self.decode_tcp_reply(
+                operation.target,
+                operation.remote_port,
+                operation.local_port,
+            );
+            self.rx.owner = PacketOwner::Free;
+            if let Some(packet) = packet {
+                if packet.flags & 0x04 != 0 {
+                    return PassiveTcpProgress::Failed;
+                }
+                if packet.flags & 0x3f == 0x02
+                    && packet.sequence == operation.remote_sequence
+                    && packet.len == 0
+                {
+                    if self.send_passive_syn_ack(operation).is_none() {
+                        return PassiveTcpProgress::Failed;
+                    }
+                    operation.deadline = tick.saturating_add(PASSIVE_TCP_RETRY_TICKS);
+                } else if packet.flags & 0x17 == 0x10
+                    && packet.sequence == operation.remote_sequence.wrapping_add(1)
+                    && packet.acknowledgment == operation.local_sequence.wrapping_add(1)
+                    && packet.len == 0
+                {
+                    return PassiveTcpProgress::Established(TcpServerPeer {
+                        target: u32::from_be_bytes(operation.target),
+                        remote_port: operation.remote_port,
+                        local_port: operation.local_port,
+                        remote_sequence: operation.remote_sequence.wrapping_add(1),
+                        local_sequence: operation.local_sequence.wrapping_add(1),
+                        source_mac: operation.source_mac,
+                    });
+                }
+            }
+        }
+
+        if tick >= operation.deadline {
+            if operation.attempts >= RETRIES || self.send_passive_syn_ack(operation).is_none() {
+                return PassiveTcpProgress::Failed;
+            }
+            operation.attempts += 1;
+            operation.deadline = tick.saturating_add(PASSIVE_TCP_RETRY_TICKS);
+        }
+        self.passive_tcp = Some(operation);
+        PassiveTcpProgress::Pending
+    }
+
+    fn start_tcp_passive(&mut self, syn: PassiveTcpSyn, tick: u64) -> bool {
+        if !self.available
+            || self.async_udp.is_some()
+            || self.async_tcp.is_some()
+            || self.passive_tcp.is_some()
+            || self.passive_stream.is_some()
+            || syn.target == 0
+            || syn.remote_port == 0
+            || syn.local_port == 0
+        {
+            return false;
+        }
+        let target = syn.target.to_be_bytes();
+        let operation = PassiveTcpOperation {
+            target,
+            remote_port: syn.remote_port,
+            local_port: syn.local_port,
+            remote_sequence: syn.remote_sequence,
+            local_sequence: 0x90a0_b0c0u32
+                ^ syn.target
+                ^ (u32::from(syn.local_port) << 16 | u32::from(syn.remote_port))
+                ^ syn.remote_sequence.rotate_left(13),
+            source_mac: syn.source_mac,
+            attempts: 1,
+            deadline: tick.saturating_add(PASSIVE_TCP_RETRY_TICKS),
+        };
+        if self.send_passive_syn_ack(operation).is_none() {
+            return false;
+        }
+        self.passive_tcp = Some(operation);
+        true
+    }
+
+    fn reject_tcp_syn(&mut self, syn: PassiveTcpSyn) {
+        let _ = self.send_tcp(
+            syn.source_mac,
+            syn.target.to_be_bytes(),
+            syn.local_port,
+            syn.remote_port,
+            0,
+            syn.remote_sequence.wrapping_add(1),
+            0x14,
+            &[],
+        );
+    }
+
+    fn reject_tcp_peer(&mut self, peer: TcpServerPeer) {
+        let _ = self.send_tcp(
+            peer.source_mac,
+            peer.target.to_be_bytes(),
+            peer.local_port,
+            peer.remote_port,
+            peer.local_sequence,
+            peer.remote_sequence,
+            0x14,
+            &[],
+        );
+    }
+
+    fn cancel_tcp_passive(&mut self) {
+        if let Some(operation) = self.passive_tcp.take() {
+            let _ = self.send_tcp(
+                operation.source_mac,
+                operation.target,
+                operation.local_port,
+                operation.remote_port,
+                operation.local_sequence.wrapping_add(1),
+                operation.remote_sequence.wrapping_add(1),
+                0x14,
+                &[],
+            );
+        }
+    }
+
+    fn start_tcp_passive_stream(&mut self, peer: TcpServerPeer, tick: u64) -> bool {
+        if !self.available
+            || self.async_udp.is_some()
+            || self.async_tcp.is_some()
+            || self.passive_tcp.is_some()
+            || self.passive_stream.is_some()
+        {
+            return false;
+        }
+        self.passive_stream = Some(PassiveTcpStreamOperation {
+            peer,
+            remote_sequence: peer.remote_sequence,
+            local_sequence: peer.local_sequence,
+            receive: [0; PASSIVE_TCP_STREAM_BUFFER_CAPACITY],
+            receive_len: 0,
+            send: [0; PASSIVE_TCP_STREAM_BUFFER_CAPACITY],
+            send_len: 0,
+            send_completed: false,
+            fin_sent: false,
+            fin_acked: false,
+            peer_fin: false,
+            peer_fin_pending: false,
+            attempts: 0,
+            deadline: tick.saturating_add(PASSIVE_TCP_STREAM_IDLE_TICKS),
+        });
+        true
+    }
+
+    fn poll_tcp_passive_stream(&mut self, tick: u64) -> PassiveTcpStreamProgress {
+        let Some(mut operation) = self.passive_stream.take() else {
+            return PassiveTcpStreamProgress::Idle;
+        };
+        if tick >= operation.deadline
+            && operation.send_len == 0
+            && !(operation.fin_sent && !operation.fin_acked)
+        {
+            let _ = self.send_tcp(
+                operation.peer.source_mac,
+                operation.peer.target.to_be_bytes(),
+                operation.peer.local_port,
+                operation.peer.remote_port,
+                operation.local_sequence,
+                operation.remote_sequence,
+                0x14,
+                &[],
+            );
+            return PassiveTcpStreamProgress::Failed(operation.peer);
+        }
+        if operation.receive_len != 0 {
+            let progress = PassiveTcpStreamProgress::Received {
+                peer: operation.peer,
+                bytes: operation.receive,
+                len: operation.receive_len,
+            };
+            self.passive_stream = Some(operation);
+            return progress;
+        }
+        if operation.send_completed {
+            let peer = operation.peer;
+            self.passive_stream = Some(operation);
+            return PassiveTcpStreamProgress::SendComplete(peer);
+        }
+        if operation.peer_fin && operation.fin_sent && operation.fin_acked {
+            let peer = operation.peer;
+            self.passive_stream = Some(operation);
+            return PassiveTcpStreamProgress::Closed(peer);
+        }
+        if operation.peer_fin_pending {
+            let peer = operation.peer;
+            self.passive_stream = Some(operation);
+            return PassiveTcpStreamProgress::PeerClosed(peer);
+        }
+
+        let mut received = false;
+        for _ in 0..PASSIVE_TCP_RX_POLLS_PER_TICK {
+            if self.device.receive(&mut self.rx) {
+                received = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if received {
+            let packet = self.decode_tcp_reply(
+                operation.peer.target.to_be_bytes(),
+                operation.peer.remote_port,
+                operation.peer.local_port,
+            );
+            self.rx.owner = PacketOwner::Free;
+            if let Some(packet) = packet {
+                if packet.flags & 0x04 != 0 {
+                    return PassiveTcpStreamProgress::Reset(operation.peer);
+                }
+                let mut acknowledgment_valid = false;
+                if packet.flags & 0x10 != 0 {
+                    if packet.acknowledgment == operation.local_sequence {
+                        acknowledgment_valid = true;
+                    } else if operation.send_len != 0
+                        && packet.acknowledgment
+                            == operation
+                                .local_sequence
+                                .wrapping_add(operation.send_len as u32)
+                    {
+                        operation.local_sequence = packet.acknowledgment;
+                        operation.send_len = 0;
+                        operation.send_completed = true;
+                        operation.attempts = 0;
+                        operation.deadline = tick.saturating_add(PASSIVE_TCP_STREAM_IDLE_TICKS);
+                        acknowledgment_valid = true;
+                    } else if operation.fin_sent
+                        && !operation.fin_acked
+                        && packet.acknowledgment == operation.local_sequence.wrapping_add(1)
+                    {
+                        operation.local_sequence = packet.acknowledgment;
+                        operation.fin_acked = true;
+                        operation.attempts = 0;
+                        operation.deadline = tick.saturating_add(PASSIVE_TCP_STREAM_IDLE_TICKS);
+                        acknowledgment_valid = true;
+                    }
+                }
+
+                let mut acknowledge = false;
+                if (packet.len != 0 || packet.flags & 0x01 != 0) && !acknowledgment_valid {
+                    self.passive_stream = Some(operation);
+                    return PassiveTcpStreamProgress::Pending;
+                }
+                if packet.len > operation.receive.len() {
+                    let _ = self.send_tcp(
+                        operation.peer.source_mac,
+                        operation.peer.target.to_be_bytes(),
+                        operation.peer.local_port,
+                        operation.peer.remote_port,
+                        operation.local_sequence,
+                        operation.remote_sequence,
+                        0x14,
+                        &[],
+                    );
+                    return PassiveTcpStreamProgress::Failed(operation.peer);
+                }
+                if packet.len != 0 {
+                    if packet.sequence == operation.remote_sequence
+                        && packet.len <= operation.receive.len()
+                    {
+                        operation.receive[..packet.len].copy_from_slice(packet.payload());
+                        operation.receive_len = packet.len;
+                        operation.remote_sequence =
+                            operation.remote_sequence.wrapping_add(packet.len as u32);
+                        operation.deadline = tick.saturating_add(PASSIVE_TCP_STREAM_IDLE_TICKS);
+                    }
+                    acknowledge = true;
+                }
+                if packet.flags & 0x01 != 0 {
+                    let fin_sequence = packet.sequence.wrapping_add(packet.len as u32);
+                    if fin_sequence == operation.remote_sequence {
+                        operation.remote_sequence = operation.remote_sequence.wrapping_add(1);
+                        operation.peer_fin = true;
+                        operation.peer_fin_pending = true;
+                        operation.deadline = tick.saturating_add(PASSIVE_TCP_STREAM_IDLE_TICKS);
+                    }
+                    acknowledge = true;
+                }
+                if acknowledge
+                    && self
+                        .send_tcp(
+                            operation.peer.source_mac,
+                            operation.peer.target.to_be_bytes(),
+                            operation.peer.local_port,
+                            operation.peer.remote_port,
+                            operation.local_sequence,
+                            operation.remote_sequence,
+                            0x10,
+                            &[],
+                        )
+                        .is_none()
+                {
+                    return PassiveTcpStreamProgress::Failed(operation.peer);
+                }
+            }
+        }
+
+        if tick >= operation.deadline {
+            let retry = if operation.send_len != 0 {
+                Some((0x18, &operation.send[..operation.send_len]))
+            } else if operation.fin_sent && !operation.fin_acked {
+                Some((0x11, &operation.send[..0]))
+            } else {
+                None
+            };
+            if let Some((flags, payload)) = retry {
+                if operation.attempts >= RETRIES
+                    || self
+                        .send_tcp(
+                            operation.peer.source_mac,
+                            operation.peer.target.to_be_bytes(),
+                            operation.peer.local_port,
+                            operation.peer.remote_port,
+                            operation.local_sequence,
+                            operation.remote_sequence,
+                            flags,
+                            payload,
+                        )
+                        .is_none()
+                {
+                    return PassiveTcpStreamProgress::Failed(operation.peer);
+                }
+                operation.attempts += 1;
+                operation.deadline = tick.saturating_add(PASSIVE_TCP_RETRY_TICKS);
+            }
+        }
+
+        self.passive_stream = Some(operation);
+        PassiveTcpStreamProgress::Pending
+    }
+
+    fn start_tcp_passive_stream_send(
+        &mut self,
+        peer: TcpServerPeer,
+        bytes: &[u8],
+        tick: u64,
+    ) -> bool {
+        let Some(mut operation) = self.passive_stream.take() else {
+            return false;
+        };
+        if operation.peer != peer
+            || bytes.is_empty()
+            || bytes.len() > operation.send.len()
+            || operation.send_len != 0
+            || operation.send_completed
+            || operation.fin_sent
+        {
+            self.passive_stream = Some(operation);
+            return false;
+        }
+        operation.send[..bytes.len()].copy_from_slice(bytes);
+        operation.send_len = bytes.len();
+        operation.attempts = 1;
+        operation.deadline = tick.saturating_add(PASSIVE_TCP_RETRY_TICKS);
+        let sent = self
+            .send_tcp(
+                peer.source_mac,
+                peer.target.to_be_bytes(),
+                peer.local_port,
+                peer.remote_port,
+                operation.local_sequence,
+                operation.remote_sequence,
+                0x18,
+                bytes,
+            )
+            .is_some();
+        self.passive_stream = Some(operation);
+        sent
+    }
+
+    fn consume_tcp_passive_stream_receive(&mut self, peer: TcpServerPeer) -> bool {
+        self.passive_stream.as_mut().is_some_and(|operation| {
+            if operation.peer != peer || operation.receive_len == 0 {
+                return false;
+            }
+            operation.receive[..operation.receive_len].fill(0);
+            operation.receive_len = 0;
+            true
+        })
+    }
+
+    fn consume_tcp_passive_stream_send(&mut self, peer: TcpServerPeer) -> bool {
+        self.passive_stream.as_mut().is_some_and(|operation| {
+            if operation.peer != peer || !operation.send_completed {
+                return false;
+            }
+            operation.send.fill(0);
+            operation.send_completed = false;
+            true
+        })
+    }
+
+    fn consume_tcp_passive_peer_close(&mut self, peer: TcpServerPeer) -> bool {
+        self.passive_stream.as_mut().is_some_and(|operation| {
+            if operation.peer != peer || !operation.peer_fin_pending {
+                return false;
+            }
+            operation.peer_fin_pending = false;
+            true
+        })
+    }
+
+    fn start_tcp_passive_stream_close(&mut self, peer: TcpServerPeer, tick: u64) -> bool {
+        let Some(mut operation) = self.passive_stream.take() else {
+            return false;
+        };
+        if operation.peer != peer
+            || operation.send_len != 0
+            || operation.send_completed
+            || operation.fin_sent
+        {
+            self.passive_stream = Some(operation);
+            return false;
+        }
+        operation.fin_sent = true;
+        operation.attempts = 1;
+        operation.deadline = tick.saturating_add(PASSIVE_TCP_RETRY_TICKS);
+        let sent = self
+            .send_tcp(
+                peer.source_mac,
+                peer.target.to_be_bytes(),
+                peer.local_port,
+                peer.remote_port,
+                operation.local_sequence,
+                operation.remote_sequence,
+                0x11,
+                &[],
+            )
+            .is_some();
+        self.passive_stream = Some(operation);
+        sent
+    }
+
+    fn finish_tcp_passive_stream(&mut self, peer: TcpServerPeer) -> bool {
+        if self
+            .passive_stream
+            .is_some_and(|operation| operation.peer == peer)
+        {
+            self.passive_stream = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cancel_tcp_passive_stream(&mut self) {
+        if let Some(operation) = self.passive_stream.take() {
+            let _ = self.send_tcp(
+                operation.peer.source_mac,
+                operation.peer.target.to_be_bytes(),
+                operation.peer.local_port,
+                operation.peer.remote_port,
+                operation.local_sequence,
+                operation.remote_sequence,
+                0x14,
+                &[],
+            );
+        }
+    }
+
+    fn decode_passive_syn(&self) -> Option<PassiveTcpSyn> {
+        let ip = parse_ipv4_frame(&self.rx.bytes[..self.rx.len]).filter(|ip| {
+            ip.protocol == 6
+                && ip.destination == self.address
+                && net::transport_checksum_valid(ip.source, ip.destination, ip.protocol, ip.payload)
+        })?;
+        let tcp = parse_tcp(ip.payload)?;
+        net::is_initial_tcp_syn(&tcp).then_some(PassiveTcpSyn {
+            target: u32::from_be_bytes(ip.source),
+            remote_port: tcp.source_port,
+            local_port: tcp.destination_port,
+            remote_sequence: tcp.sequence,
+            source_mac: ip.source_mac,
+        })
+    }
+
+    fn send_passive_syn_ack(&mut self, operation: PassiveTcpOperation) -> Option<()> {
+        self.send_tcp(
+            operation.source_mac,
+            operation.target,
+            operation.local_port,
+            operation.remote_port,
+            operation.local_sequence,
+            operation.remote_sequence.wrapping_add(1),
+            0x12,
+            &[],
+        )
+    }
+
+    fn decode_tcp_reply(
+        &self,
+        target: [u8; 4],
+        remote_port: u16,
+        local_port: u16,
+    ) -> Option<TcpOwned> {
+        parse_ipv4_frame(&self.rx.bytes[..self.rx.len])
+            .filter(|ip| {
+                ip.protocol == 6
+                    && ip.source == target
+                    && ip.destination == self.address
+                    && net::transport_checksum_valid(
+                        ip.source,
+                        ip.destination,
+                        ip.protocol,
+                        ip.payload,
+                    )
+            })
+            .and_then(|ip| parse_tcp(ip.payload))
+            .filter(|tcp| tcp.source_port == remote_port && tcp.destination_port == local_port)
+            .map(TcpOwned::from_packet)
+    }
+
+    fn send_arp_request(&mut self, target: [u8; 4]) -> bool {
         let mut frame = [0u8; 42];
         frame[..6].fill(0xff);
-        frame[6..12].copy_from_slice(&self.device.mac);
+        frame[6..12].copy_from_slice(&self.device.mac());
         frame[12..14].copy_from_slice(&0x0806u16.to_be_bytes());
         frame[14..16].copy_from_slice(&1u16.to_be_bytes());
         frame[16..18].copy_from_slice(&0x0800u16.to_be_bytes());
         frame[18] = 6;
         frame[19] = 4;
         frame[20..22].copy_from_slice(&1u16.to_be_bytes());
-        frame[22..28].copy_from_slice(&self.device.mac);
+        frame[22..28].copy_from_slice(&self.device.mac());
         frame[28..32].copy_from_slice(&self.address);
         frame[38..42].copy_from_slice(&target);
+        self.device.transmit(&frame)
+    }
+
+    fn resolve_arp(&mut self, target: [u8; 4]) -> Option<[u8; 6]> {
         for _ in 0..RETRIES {
-            if !self.device.transmit(&frame) {
+            if !self.send_arp_request(target) {
                 return None;
             }
             for _ in 0..POLL_LIMIT / RETRIES {
                 if !self.device.receive(&mut self.rx) {
                     continue;
                 }
-                let bytes = &self.rx.bytes[..self.rx.len];
-                let result = (bytes.len() >= 42
-                    && bytes[12..14] == 0x0806u16.to_be_bytes()
-                    && bytes[20..22] == 2u16.to_be_bytes()
-                    && bytes[28..32] == target
-                    && bytes[38..42] == self.address)
-                    .then(|| bytes[22..28].try_into().ok())
-                    .flatten();
+                let result =
+                    net::parse_arp_reply(&self.rx.bytes[..self.rx.len], target, self.address);
                 self.rx.owner = PacketOwner::Free;
                 if result.is_some() {
                     return result;
@@ -669,7 +1556,7 @@ impl NetworkStack {
         }
         let mut frame = [0u8; MAX_FRAME];
         frame[..6].copy_from_slice(&mac);
-        frame[6..12].copy_from_slice(&self.device.mac);
+        frame[6..12].copy_from_slice(&self.device.mac());
         frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
         let ip = &mut frame[14..14 + total];
         ip[0] = 0x45;
@@ -765,12 +1652,17 @@ static mut NETWORK: NetworkStack = NetworkStack::new();
 
 pub fn init() {
     let stack = unsafe { &mut *addr_of_mut!(NETWORK) };
-    if !stack.device.init() {
+    if !stack.device.discover() {
         serial::println("NETWORK_DEVICE_UNAVAILABLE");
         return;
     }
-    serial::println("NETWORK_DEVICE_READY driver=ne2000-pio io=0x300");
-    serial::println("PACKET_OWNERSHIP_READY buffers=1 states=free,driver,stack");
+    serial::print("NETWORK_DEVICE_READY driver=");
+    serial::print(stack.device.driver_name());
+    serial::print(" transport=");
+    serial::println(stack.device.transport_name());
+    serial::print("PACKET_OWNERSHIP_READY buffers=");
+    serial::print_u64(stack.device.receive_buffer_count() as u64);
+    serial::println(" states=free,driver,stack");
     if !stack.configure() {
         serial::println("NETWORK_DHCP_FAILED");
         return;
@@ -799,7 +1691,7 @@ pub fn config() -> Option<UserNetworkConfig> {
         subnet: u32::from_be_bytes(stack.subnet),
         gateway: u32::from_be_bytes(stack.gateway),
         dns: u32::from_be_bytes(stack.dns),
-        mac: stack.device.mac,
+        mac: stack.device.mac(),
         reserved: [0; 2],
     })
 }
@@ -820,6 +1712,104 @@ pub fn tcp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8])
         request,
         response,
     )
+}
+
+pub fn start_udp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.start_udp_async(
+        target.to_be_bytes(),
+        port,
+        request,
+        tick,
+    )
+}
+
+pub fn poll_udp_async(tick: u64) -> AsyncUdpProgress {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_udp_async(tick)
+}
+
+pub fn start_tcp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_async(
+        target.to_be_bytes(),
+        port,
+        request,
+        tick,
+    )
+}
+
+pub fn poll_tcp_async(tick: u64) -> AsyncTcpProgress {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_async(tick)
+}
+
+pub fn poll_tcp_passive(tick: u64) -> PassiveTcpProgress {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_passive(tick)
+}
+
+pub fn start_tcp_passive(syn: PassiveTcpSyn, tick: u64) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive(syn, tick)
+}
+
+pub fn reject_tcp_syn(syn: PassiveTcpSyn) {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.reject_tcp_syn(syn);
+}
+
+pub fn reject_tcp_peer(peer: TcpServerPeer) {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.reject_tcp_peer(peer);
+}
+
+pub fn cancel_tcp_passive() {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.cancel_tcp_passive();
+}
+
+pub fn tcp_passive_active() -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.passive_tcp.is_some()
+}
+
+pub fn start_tcp_passive_stream(peer: TcpServerPeer, tick: u64) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream(peer, tick)
+}
+
+pub fn poll_tcp_passive_stream(tick: u64) -> PassiveTcpStreamProgress {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_passive_stream(tick)
+}
+
+pub fn tcp_passive_stream_peer() -> Option<TcpServerPeer> {
+    unsafe { &mut *addr_of_mut!(NETWORK) }
+        .passive_stream
+        .map(|operation| operation.peer)
+}
+
+pub fn start_tcp_passive_stream_send(peer: TcpServerPeer, bytes: &[u8], tick: u64) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream_send(peer, bytes, tick)
+}
+
+pub fn consume_tcp_passive_stream_receive(peer: TcpServerPeer) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_stream_receive(peer)
+}
+
+pub fn consume_tcp_passive_stream_send(peer: TcpServerPeer) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_stream_send(peer)
+}
+
+pub fn consume_tcp_passive_peer_close(peer: TcpServerPeer) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_peer_close(peer)
+}
+
+pub fn start_tcp_passive_stream_close(peer: TcpServerPeer, tick: u64) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream_close(peer, tick)
+}
+
+pub fn finish_tcp_passive_stream(peer: TcpServerPeer) -> bool {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.finish_tcp_passive_stream(peer)
+}
+
+pub fn cancel_tcp_passive_stream() {
+    unsafe { &mut *addr_of_mut!(NETWORK) }.cancel_tcp_passive_stream();
+}
+
+pub fn cancel_socket_async() {
+    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };
+    stack.async_udp = None;
+    stack.async_tcp = None;
 }
 
 fn build_dhcp(
@@ -932,21 +1922,4 @@ fn print_ip(address: [u8; 4]) {
         }
         serial::print_u64(u64::from(byte));
     }
-}
-
-fn wait_register(port: u16, mask: u8) -> bool {
-    for _ in 0..POLL_LIMIT {
-        if read(port) & mask != 0 {
-            return true;
-        }
-    }
-    false
-}
-
-fn read(port: u16) -> u8 {
-    unsafe { arch::inb(port) }
-}
-
-fn write(port: u16, value: u8) {
-    unsafe { arch::outb(port, value) }
 }
