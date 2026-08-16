@@ -1,712 +1,415 @@
 # GenOS roadmap
 
-This roadmap turns the GenOS vision into testable engineering milestones. Dates are intentionally omitted until the project has enough contributor velocity to forecast responsibly. A milestone is complete only when its acceptance criteria pass in automation or on documented hardware.
+GenOS is a from-scratch Rust operating system. The project is intentionally ambitious, but ambition does not replace evidence. This roadmap defines the order in which GenOS must earn correctness, security, reliability, performance, hardware support, and product quality.
 
-## Guiding rules
+The roadmap is a set of acceptance gates, not a feature wishlist. A stage is complete only when its observable criteria pass in automation or on documented reference hardware. Previous milestone labels describe delivered experimental slices. They do not imply production readiness.
 
-1. Keep `main` bootable.
-2. Build vertical slices that produce observable behavior.
-3. Stabilize contracts before growing ecosystems around them.
-4. Measure claims about speed, memory, latency, and size.
-5. Prefer one supported path over several unfinished paths.
-6. Add hardware breadth only after the abstraction it depends on is proven.
+## Status language
 
-## Modernity and compatibility policy
+- **Delivered:** the scoped behavior exists and has a repeatable proof.
+- **In progress:** implementation or required evidence is incomplete.
+- **Planned:** the contract is defined, but implementation has not started.
+- **Blocked:** work must not become the default path until its dependency gates pass.
+- **Deferred:** intentionally outside the current product path.
 
-GenOS may use a simple or historical device to bootstrap a subsystem, but legacy hardware is never the long-term architecture by accident.
+Dates are omitted until contributor velocity makes forecasts useful.
 
-- Once a modern implementation exists, normal builds and release tests use it by default.
-- A legacy driver may remain only as an isolated, explicitly labelled fallback or compatibility test. It cannot satisfy a modern milestone's acceptance criteria.
-- Protocol and application contracts must sit above device-specific boundaries so replacing hardware does not rewrite the whole subsystem.
-- New virtual-device work targets current VirtIO 1.x interfaces with legacy transport disabled. New physical-storage work targets NVMe; new USB work targets xHCI; new interrupt work targets APIC/x2APIC and MSI/MSI-X; new graphics work targets a userspace compositor and modern display/GPU contracts.
-- IPv4 remains supported, but production networking must be dual-stack IPv4/IPv6. Plaintext HTTP may be used only inside deterministic tests; credentials, packages, updates, and personal data require authenticated TLS 1.3 in userspace.
-- GenOS will not invent cryptographic primitives. Security-sensitive protocols use reviewed implementations, test vectors, explicit trust policy, and negative-path tests.
-- A milestone records the standard or hardware contract it implements, the intentionally unimplemented features, and the evidence proving the default path did not fall back.
+## Engineering rules
 
-## Stage 0 — Boot and kernel foundation
+1. Keep `main` green and bootable.
+2. Fix correctness and security gaps before expanding product surface.
+3. Build one reviewable vertical slice at a time.
+4. Preserve explicit ownership across kernel, runtime, drivers, and userspace.
+5. Treat firmware, devices, files, packets, and userspace pointers as untrusted input.
+6. Make allocation, mutation, and cleanup transactional.
+7. Bound interrupt work and all untrusted-input parsing.
+8. Measure performance before making performance claims.
+9. Keep legacy hardware behind explicit fallback policy.
+10. Prefer a small proven contract over several partial contracts.
 
-**Status: complete**
+## Product goal and comparison policy
 
-Delivered:
+GenOS aims to become a small, coherent, inspectable operating system that can outperform larger systems on carefully defined workloads without sacrificing correctness.
 
-- repo-owned UEFI bootloader;
-- kernel ELF loading;
-- versioned boot information contract;
-- initrd loading;
-- framebuffer handoff;
-- serial diagnostics;
-- x86_64 GDT, TSS, IDT, and interrupt initialization;
-- physical memory discovery and initial frame allocation;
-- repeatable bootable-image generation.
+“Better than Linux in every way” is not a valid engineering claim. Linux supports hardware, workloads, security policies, and compatibility requirements that GenOS does not yet attempt. GenOS may claim an advantage only for a named metric, workload, configuration, and baseline when the repository contains a reproducible harness and the result includes variance and failure cases.
 
-Acceptance criteria:
+Examples of valid future claims:
 
-- [x] QEMU reaches the kernel through the GenOS bootloader.
-- [x] Invalid boot contracts halt safely.
-- [x] The kernel reports readiness over serial.
-- [x] CI can build the bootable image from a clean checkout.
+- lower boot-to-shell time on the same virtual machine configuration;
+- lower idle memory or CPU use for the same reference service;
+- smaller trusted or unsafe code surface for a defined feature set;
+- lower process-launch latency under a published benchmark;
+- simpler recovery behavior under a documented storage fault model.
 
-## Stage 1 — Interactive desktop foundation
+See [the engineering quality plan](docs/ENGINEERING_QUALITY.md) for the evidence format and release levels.
 
-**Status: complete**
+## Current baseline: GenOS 0.49
 
-Delivered:
+The current experimental baseline includes:
 
-- backbuffered framebuffer renderer;
-- dirty-region presentation;
-- vector text rendering;
-- PS/2 keyboard and mouse input;
-- bounded input event queue;
-- native cursor, windows, focus, dragging, closing, and taskbar;
-- terminal with command history and common keyboard modifiers;
-- writable session RAM filesystem;
-- live Files and Task Manager applications;
-- RTC-backed clock;
-- long-running display and interrupt smoke markers.
+- a repo-owned `x86_64` UEFI bootloader and versioned boot contract;
+- a Rust `no_std` monolithic kernel;
+- GDT, TSS, IDT, PIT/PIC interrupt setup, and serial diagnostics;
+- separate Ring 3 address spaces, timer preemption, ELF loading, and ABI 17 syscalls;
+- process-local typed capabilities for files, directories, endpoints, console access, process lifecycle, and sockets;
+- an isolated Ring 3 serial shell and fail-closed emergency kernel console;
+- RAM-backed temporary storage plus bounded persistent `/USER/` snapshots, inspection, repair, and read-only recovery;
+- modern VirtIO 1.x networking with Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, bounded TCP clients, listener authority, one passive handshake, and one bounded accepted request/response transaction;
+- host tests and QEMU smoke proofs for the implemented vertical slices.
 
-Acceptance criteria:
+These are real operating-system mechanisms. They remain constrained by the limitations tracked in [KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
-- [x] The desktop stays responsive after the initial boot.
-- [x] Keyboard and mouse input travel through the kernel event path.
-- [x] Files reflects actual VFS state.
-- [x] Task Manager reflects actual task-registry state.
-- [x] Partial updates do not require presenting the full framebuffer.
-- [x] The QEMU smoke test confirms interrupts continue after boot.
+## Immediate priority: foundation correctness gate
 
-## Stage 2 — Processes and userspace
+**Status: in progress**
 
-**Status: complete**
+This gate blocks production or hardened-release language. It also blocks broad new product features that would deepen unsafe assumptions. Networking correctness work already required to close Stage 5.4 may continue only when it also advances this gate.
 
-Goal: move from kernel-owned demo tasks to isolated executable processes.
+### F0 — Green, reproducible verification
 
-Delivered so far:
+Goal: every proposed change reaches all tests instead of failing early or depending on an undocumented local environment.
 
-- bounded process/task table and PID lifecycle;
-- round-robin scheduler policy and quantum accounting;
-- sleep/wake deadlines and protected system tasks;
-- gap-safe physical frame allocation and a protected kernel address-space clone;
-- initial privilege transition to ring 3;
-- DPL3 syscall entry, scalar argument validation, return, and process exit;
-- separate CR3 roots with private user code, data, guard, and stack mappings;
-- saved general-purpose register and interrupt-return contexts;
-- cooperative user yield, address-space switch, resume, and independent exit;
-- bounded user-buffer validation and copy-in for the first pointer syscall.
-- 100 Hz timer-driven userspace preemption without a cooperative syscall;
-- process-local page-fault classification, termination, and fault status;
-- continued execution of healthy processes after a peer faults.
-- bounded ELF64 header and program-segment validation;
-- page-aligned W^X mapping of independently built userspace executables;
-- initial `no_std` userspace runtime with typed syscall wrappers;
-- initrd packaging for `INIT.ELF` and boot-time executable discovery;
-- asynchronous `run init` launch with fresh CR3, PID, task state, preemption, exit status, and shell output;
-- persistent `run init hold` mode for observable live-process control;
-- `kill PID` and non-blocking `wait PID` for userspace tasks;
-- complete teardown of user leaf pages, page-table branches, and CR3 roots;
-- bounded physical-frame recycling with double-free rejection and reuse tests;
-- ABI 3 validated application output from mapped userspace memory;
-- ABI 4 blocking sleep with scheduler tick deadlines and saved-context wakeup;
-- explicit parent ownership and blocking wait on a specific child PID;
-- bounded four-message per-process inboxes with blocking receive and direct wakeup, superseded by ABI 9 endpoints;
-- `run init sleep` and `run pair` desktop proofs for coordination across isolated ELF instances;
-- ABI 5 stable `UserProcessHeader` and typed `UserSystemInfo` copy-out contracts;
-- mapped-range and physical-ownership validation before kernel-to-user copies;
-- asynchronous `read_file` requests that leave Ring 3 blocked until the desktop VFS completes them;
-- `run init file` proof of an exact 54-byte `/README.TXT` read and userspace verification.
-- ABI 6 process-owned file handles with per-open generation values and read-only rights;
-- blocking `open_file` and offset-aware `read_handle`, plus structured `stat_handle` copy-out;
-- explicit `close_handle`, stale-handle rejection, and automatic handle revocation on termination;
-- two-chunk `run init file` proof with offsets 0 and 17, exact content verification, and close misuse testing.
-- ABI 7 explicit read/write capability rights and a shared 128-byte maximum write contract;
-- protected `/USER/` mutation policy that keeps boot and system files read-only to applications;
-- kernel-owned write payloads, blocking offset-aware VFS mutation, and stat size/offset updates;
-- `run init write` proof covering two writes, protected-path denial, read-only denial, close/reopen, and exact read-back.
-- ABI 8 fixed-layout keyboard and pointer events with stable masks, key codes, button bits, and signed values;
-- one-shot `wait_input` copy-out that removes a blocked process from runnable selection;
-- matching-event routing that leaves non-matching input available to the desktop;
-- deterministic single-waiter ownership with explicit `USER_ERROR_UNAVAILABLE` contention behavior;
-- `run init input` and boot proofs for wait, filter, contention, exact key wakeup, exit, and reclamation.
-- ABI 9 endpoint capabilities replacing direct-PID messaging, with syscalls 19–23 and reserved-but-unassigned numbers 7 and 8;
-- one published receive endpoint per process, process-owned send handles, and tagged generation-checked handles in a four-slot table;
-- `connect_endpoint` discovery by live PID only, with no name service and no handle delegation;
-- fixed-layout 16-byte `UserChannelMessage` carrying a kernel-supplied sender PID that Ring 3 cannot forge;
-- four-message endpoint queues that admit at most one message per producer, so no producer starves its peers;
-- blocking `receive_endpoint` with pre-validated buffers and direct sender-to-waiter copy-out that bypasses the queue;
-- stale-handle rejection plus total revocation on close, exit, fault, kill, and reap;
-- `run fanin` and the boot proof of a real three-process `A1`, `B1`, `A2` fan-in with one fairness denial and one direct wake.
-- ABI 10 console capabilities with bounded line output, editable-input replacement, and clear operations;
-- a separately linked and packaged `SHELL.ELF` with a private writable ABI data page;
-- persistent Ring 3 shell launch with its own address space, task identity, preemption, and `USER_SHELL_READY` boot proof;
-- focused keyboard delivery to the shell while compositor-owned `Escape` and `Tab` remain in Ring 0;
-- queue-preserving input handoff while the one-shot shell waiter rearms, including burst input from QEMU;
-- userspace parsing and execution of `help`, `echo`, `uname`, and `clear` through an opaque process-owned console capability.
-- ABI 11 bounded directory-entry copy-out with cursor-based, direct-child enumeration;
-- blocking directory requests resolved by the desktop VFS service without exposing kernel pointers;
-- Ring 3 `ls` for `/` and named directories, plus handle-backed `cat` with bounded chunk reads;
-- boot-time `USER_DIRECTORY_READ_OK` proof before `SHELL.ELF` announces readiness.
-- ABI 12 process-owned `truncate_handle` with write-right and `/USER/` policy validation;
-- Ring 3 `touch`, `write`, and `append` using blocking read/write file capabilities;
-- boot-time create, truncate, write, reopen, and exact read-back proof from `SHELL.ELF`.
-- ABI 13 shell-only launch authority plus three process-owned, opaque lifecycle handles;
-- Ring 3 `run init [hold]`, `ps`, `kill JOB`, and `wait JOB` with monotonically increasing shell job IDs;
-- exact process-instance status, kill, and consuming reap that reject guessed, foreign, live-reap, and stale handles;
-- boot-time lifecycle proof covering launch, live status, kill status 137, reap, and post-reap rejection.
-- ABI 14 versioned userspace image layout 2, expanding the shell RX budget from four to eight pages while retaining a guarded stack;
-- an explicit directory-management capability right, plus parent-handle `create_directory` and `remove_path` operations;
-- Ring 3 `stat`, `mkdir`, and `rm`, with non-empty-directory rejection and stale file-handle revocation after deletion;
-- an eight-command history owned entirely by `SHELL.ELF`, including Arrow Up and Arrow Down recall.
-- a standalone emergency Ring 0 parser limited to boot status, memory diagnostics, and power controls, with normal commands rejected by unit and boot checks;
-- scheduler ready-to-dispatch latency accounting plus boot-time CR3 switch-pair cycle measurements.
+- [ ] `main` passes formatting, Clippy for every shipped target, workspace tests, image build, and QEMU boot.
+- [ ] The supported Rust toolchain and minimum supported Rust version are explicit and tested.
+- [ ] CI runs debug and release image builds where their behavior differs.
+- [ ] Failure artifacts include serial output and enough configuration to reproduce the run.
+- [ ] Required checks cannot be skipped by an earlier non-behavioral warning.
+- [ ] The normal, no-network, deterministic-network, storage-recovery, and read-only-recovery boots have distinct required markers.
 
-Remaining work:
+### F1 — Complete exception and interrupt entry
 
-- none; further runtime ownership cleanup continues in Stage 3.
+Goal: every architectural entry path constructs a valid frame, preserves required state, and terminates or halts deliberately.
 
-Acceptance criteria:
+- [ ] Replace the catch-all bare `iretq` entry with explicit stubs for exceptions with and without CPU-pushed error codes.
+- [ ] Install handlers for all architecturally relevant x86 exceptions, including divide error, invalid opcode, debug, invalid TSS, segment-not-present, stack fault, alignment check, machine check, and control-protection fault when supported.
+- [ ] Normalize vector, error code, instruction pointer, privilege level, stack, and fault address before entering Rust.
+- [ ] Terminate the exact Ring 3 process for recoverable user exceptions without damaging another process.
+- [ ] Print a complete serial fault record and halt on an unhandled Ring 0 exception.
+- [ ] Handle spurious and unexpected external interrupts without returning through a malformed frame.
+- [ ] Use dedicated interrupt stacks where architectural failure handling requires them.
+- [ ] Make the initialized IDT read-only before enabling untrusted execution.
 
-- [x] Kernel workers receive stable PIDs and reusable lifecycle slots.
-- [x] Round-robin selection, CPU slices, and context-switch accounting are covered by tests.
-- [x] Workers can sleep until a tick deadline, wake early, and terminate without affecting protected system tasks.
-- [x] A boot-time program executes at ring 3 on explicitly exposed code and guarded stack pages.
-- [x] The program crosses a DPL3 syscall gate, receives ABI results, and exits cleanly back to ring 0.
-- [x] Initial syscall numbers and scalar arguments are validated before kernel dispatch.
-- [x] Two independent userspace processes run with separate address spaces.
-- [x] Both processes yield and resume with preserved CPU registers and private memory.
-- [x] A validated user pointer is translated through the owning address space before copy-in.
-- [x] A userspace crash terminates only the failing process.
-- [x] The scheduler demonstrates preemption rather than cooperative polling.
-- [x] Initial userspace pointer and buffer ranges are validated before kernel access.
-- [x] A separately built ELF application is validated, mapped, preempted, and exited in isolated address spaces.
-- [x] The shell can launch the packaged ELF and retain its completed task status.
-- [x] The shell can asynchronously launch, inspect, terminate, and reap a userspace process.
-- [x] Exit, fault, and kill reclaim every owned user image, stack, page-table, and root frame.
-- [x] A userspace application can write bounded validated text to the desktop shell.
-- [x] A sleeping userspace process leaves the runnable set and resumes at its deadline with preserved context.
-- [x] A parent can block only on its own child and receive the child's exit status on wake.
-- [x] Isolated processes can exchange fixed-width values through bounded kernel-owned message queues.
-- [x] The kernel can copy a versioned structure into a validated process-owned writable mapping.
-- [x] A userspace file read blocks without consuming slices and resumes with copied VFS bytes.
-- [x] Cross-layer request identity and the kernel-owned process-header offsets are covered by checks.
-- [x] A process can open a read-only file capability, advance a kernel-owned offset, inspect metadata, and close it.
-- [x] Forged completions and stale handles are rejected without copying bytes or reviving authority.
-- [x] A write-capable process can mutate only `/USER/`, with bounded kernel-owned payloads and offset accounting.
-- [x] Protected paths and read-only handles reject writes, while successful data survives close/reopen inside the session VFS.
-- [x] A userspace application can block on filtered keyboard or pointer input without polling or consuming slices.
-- [x] Non-matching events remain available to the desktop, competing waiters fail explicitly, and one accepted event wakes exactly one process.
-- [x] Messaging authority is a capability: a process must publish an endpoint to receive, and hold a process-owned send handle to send.
-- [x] Handles are opaque, tagged, and generation-checked, so guessed, foreign, and stale values are rejected without granting access.
-- [x] Every delivered message carries a kernel-supplied sender PID that Ring 3 cannot forge.
-- [x] Two independent producers fan into one receiver, which drains them in arrival order with at most one queued message per producer.
-- [x] A producer's second send is refused while its first message is still queued, and is admitted again after the receiver drains it.
-- [x] A blocking receive leaves the runnable set and is woken directly by a later send that copies into its pre-validated buffer.
-- [x] Close, exit, fault, kill, and reap revoke the endpoint and every remote send handle naming its generation.
-- [x] A separately packaged shell runs persistently in Ring 3 and owns focused terminal command parsing.
-- [x] Console mutation requires an exact process-owned capability; zero, guessed, and foreign handles are rejected.
-- [x] Rapid keyboard input remains queued while the shell processes and rearms its one-shot input wait.
-- [x] `help`, `echo`, `uname`, and `clear` execute in `SHELL.ELF` without the kernel command parser.
-- [x] `ls` and `cat` execute in `SHELL.ELF` through blocking ABI 11 directory and file-capability calls.
-- [x] Directory enumeration returns only direct children, has an explicit end cursor, and rejects missing or non-directory paths.
-- [x] `touch`, `write`, and `append` mutate only `/USER/` files from `SHELL.ELF`; replacement truncates stale content before writing.
-- [x] Filesystem and process-control commands execute in userspace through capability-backed APIs.
-- [x] The recovery-only kernel command parser is removed.
-- [x] Scheduler latency and context-switch cost are benchmarked.
+Acceptance proof:
 
-## Stage 3 — Runtime cleanup and console-first system
+- [ ] Deterministic Ring 3 tests exercise `#DE`, `#UD`, `#GP`, and `#PF` and leave a healthy peer running.
+- [ ] Deterministic Ring 0 fault tests produce the expected serial frame and halt rather than looping or triple-faulting.
+- [ ] No installed default entry consists only of `iretq`.
 
-**Status: complete**
+### F2 — Hardware-enforced page protections
 
-Goal: strengthen the operating-system core before adding storage, networking, or a polished desktop. GenOS should first become a dependable console-first system with clean kernel/userspace boundaries. “Linux-like” here means a practical command-line userland, stable process and file abstractions, and composable tools—not Linux source, POSIX compatibility, or a copied Linux ABI.
+Goal: make the page permissions promised by the loader true on the CPU, independent of firmware defaults.
 
-Product direction:
+- [ ] Discover NX, SMEP, SMAP, and related features through CPUID.
+- [ ] Enable and verify `EFER.NXE` before mapping non-executable pages.
+- [ ] Enable and verify `CR0.WP` so supervisor writes respect read-only mappings.
+- [ ] Enable SMEP and SMAP when supported, with explicit guarded user-copy primitives.
+- [ ] Reject writable-and-executable ELF mappings and preserve that invariant across every mapping API.
+- [ ] Keep user stacks and writable data non-executable.
+- [ ] Keep kernel text read-only and executable, kernel read-only data non-writable, and mutable kernel data non-executable once the linker and boot mappings expose those sections.
 
-- keep the serial terminal as the primary GenOS interface until the later graphical rebuild;
-- freeze major visual redesign work during this stage;
-- make system services independent of the old desktop loop and framebuffer availability;
-- return to a real compositor, UI toolkit, and product-quality visual language in the later application and graphics stage.
+Acceptance proof:
 
-Delivered so far:
+- [ ] Executing from Ring 3 data or stack pages terminates only the offending process.
+- [ ] Writing through a kernel read-only mapping faults under `CR0.WP`.
+- [ ] A user mapping cannot execute in supervisor mode under SMEP, and ordinary kernel access cannot bypass SMAP unintentionally.
+- [ ] Boot logs record the detected and enabled protection set without treating an unsupported optional feature as success.
 
-- GenOS 0.23 `RuntimeCoordinator` ownership of the task registry, process manager, RAM VFS, scheduler advancement, lifecycle launch queue, and VFS completion queue;
-- bounded runtime events and immutable task/VFS views for desktop presentation;
-- removal of every lifecycle and VFS completion call from `kernel/src/shell.rs`, enforced by a host-side source-boundary test and the `RUNTIME_COORDINATOR_READY` QEMU marker;
-- architecture notes covering current ownership, capability rights, request completion, cleanup, and the future window-server boundary.
-- GenOS 0.24 removal of userspace lifecycle records from `TaskRegistry`; `ProcessManager` now composes every userspace Task Manager row into an immutable snapshot;
-- boot-time display-disabled execution through real shell VFS and child-launch requests, required by `HEADLESS_RUNTIME_READY`, plus exact process/snapshot agreement required by `PROCESS_SNAPSHOT_READY`.
-- GenOS 0.25 one typed, process-local handle table for file, endpoint, console, lifecycle, and process authority, with exact rights checks, cross-type rejection tests, coordinated revocation, and the required `UNIFIED_HANDLE_TABLE_READY` boot audit.
-- GenOS 0.26 monotonic request IDs for every deferred VFS and lifecycle operation, bound to caller incarnation and operation type, with pre-mutation cancellation gates, one-shot completion, and the required `ASYNC_REQUEST_IDENTITY_READY` boot audit.
-- GenOS 0.27 fail-closed shell supervision: exit, fault, and kill terminate and reap every owned child, cancel pending service work, revoke handles, reclaim address spaces, and remove child task rows through one terminal path, required by `SUPERVISOR_CLEANUP_READY`.
-- GenOS 0.28 transactional runtime failure handling for full process and handle tables, refused launches, failed terminal copy-out, and canceled VFS service work, required by `RUNTIME_ROLLBACK_READY`.
-- GenOS 0.29 a 257-launch real-address-space stress proof that crosses PID wrap, preserves monotonic process incarnations and handle generations, rejects stale authority, and returns every slot and frame, required by `PROCESS_GENERATION_STRESS_READY`.
-- GenOS 0.30 a fresh-QEMU, display-independent transcript that types `echo qemu-console` and `uname` through the actual Ring 3 shell input and console syscalls, required by `CONSOLE_TRANSCRIPT_READY`.
+### F3 — Transactional physical and virtual memory
+
+Goal: every failed allocation leaves the exact pre-operation ownership state.
+
+- [ ] Replace the fixed 256-frame recycle stack with a page-state allocator that can represent every managed frame.
+- [ ] Track frame ownership and reject double free, foreign free, reserved-memory allocation, and aliasing.
+- [ ] Support contiguous or ordered allocations only through an explicit contract.
+- [ ] Roll back partial page-table cloning, user image loading, stack construction, and mapping failures.
+- [ ] Define zeroing policy for newly granted user pages and reclaimed sensitive pages.
+- [ ] Separate early-boot allocation from the normal allocator when their invariants differ.
+- [ ] Publish allocator counters and consistency checks that remain usable without graphics.
+
+Acceptance proof:
+
+- [ ] Fault injection fails each allocation point in process construction and returns to the exact baseline frame count.
+- [ ] Randomized host tests allocate and free across fragmented memory maps without duplicate ownership.
+- [ ] Reclaiming more than 256 frames remains lossless.
+- [ ] A failed address-space clone leaks no page-table frame.
+
+### F4 — Kernel ownership and decomposition
+
+Goal: make subsystem boundaries reviewable before concurrency and feature breadth multiply the state space.
+
+- [ ] Split the current userspace implementation into process, context, scheduler, loader, user-copy, lifecycle, syscall, and typed-handle modules.
+- [ ] Give each mutable state object one documented owner.
+- [ ] Remove presentation code from scheduling, filesystem, lifecycle, and network completion paths.
+- [ ] Inventory every `unsafe` block with its caller obligations and protected invariant.
+- [ ] Replace cross-subsystem mutation through raw globals with narrow interfaces.
+- [ ] Add architecture decision records for public ABI, scheduler, allocator, interrupt, storage-format, and driver-boundary decisions.
+
+Acceptance proof:
+
+- [ ] A source-boundary test prevents presentation code from mutating runtime-owned state.
+- [ ] Module documentation identifies ownership, synchronization, failure behavior, and cleanup.
+- [ ] A contributor can change one typed handle family without editing unrelated process-context or ELF-loader code.
+- [ ] The unsafe inventory is generated or checked in CI and cannot silently shrink its review context.
+
+### F5 — Explicit single-core and concurrency model
+
+Goal: make the current single-core design safe now and prepare a deliberate path to SMP.
+
+- [ ] Detect and reject accidental application-processor startup until SMP support exists.
+- [ ] Document interrupt masking, nesting, preemption, and shared-state rules.
+- [ ] Replace unsynchronized mutable globals with explicit single-core critical sections or IRQ-safe synchronization.
+- [ ] Move current process, active address space, scheduler-local state, and interrupt-local state behind a per-CPU abstraction before starting a second CPU.
+- [ ] Define lock ordering and which locks may be acquired in interrupt context.
+- [ ] Add TLB invalidation and shootdown contracts before sharing address spaces across CPUs.
+
+Acceptance proof:
+
+- [ ] Static or host-side checks find no unguarded mutable global reachable from both normal and interrupt context.
+- [ ] Nested or delayed interrupt tests preserve process and scheduler state.
+- [ ] SMP remains disabled with an explicit diagnostic until per-CPU state and shootdowns pass their tests.
+
+### F6 — Test boot, release boot, fuzzing, and fault injection
+
+Goal: preserve deep validation without making a normal boot run development stress suites.
+
+- [ ] Separate deterministic validation boot from the normal release boot through an explicit build or boot policy.
+- [ ] Keep only cheap invariant checks in the release path.
+- [ ] Move process-generation stress, rollback probes, parser corpora, and protocol fault suites into dedicated test modes.
+- [ ] Add fuzz targets for ELF, boot contracts, filesystem snapshots, partition metadata, network frames, DNS, and TCP classifiers.
+- [ ] Add deterministic allocation, I/O, packet loss, duplication, delay, reordering, reset, and cancellation injection.
+- [ ] Run long boot and lifecycle repetition outside the fast pull-request lane and publish failures as artifacts.
+
+Acceptance proof:
+
+- [ ] A release boot reaches the shell without executing stress probes.
+- [ ] A test boot proves the same subsystem contracts and fails when a required probe is removed.
+- [ ] Fuzz targets retain regression inputs for every fixed crash or invariant violation.
+- [ ] At least 1,000 repeated reference-VM boots and process lifecycles complete without leaked authority or memory before the hardened-preview label.
+
+### F7 — Reviewable delivery process
+
+Goal: make regressions discoverable and architecture decisions reversible.
+
+- [ ] One commit contains one logical behavior or mechanical change.
+- [ ] Every commit in a mergeable series builds and preserves the documented boot contract.
+- [ ] Changes larger than roughly 500 non-generated lines explain why they cannot be split safely.
+- [ ] Public contracts include migration and rollback plans.
+- [ ] Performance changes include the exact command, environment, baseline, result, variance, and raw artifact.
+- [ ] Security-sensitive changes identify the threat, authority boundary, negative tests, and unsafe code touched.
+
+### Foundation gate exit
+
+The foundation gate closes only when F0 through F7 pass on the reference VM and all remaining exceptions are documented as release-specific limitations. Closing it does not make GenOS production-ready. It permits the project to call the reference build **verified** and resume broader feature work on a safer base.
+
+## Delivered experimental vertical slices
+
+The following stages have delivered their scoped demonstrations. Their detailed contracts remain in the subsystem documents and commit history.
+
+| Stage | Delivered scope | Status under this roadmap |
+| --- | --- | --- |
+| 0 | UEFI boot, kernel entry, boot contract, serial diagnostics, initial memory and interrupt setup | delivered experiment; F1-F3 remain release-blocking |
+| 1 | framebuffer desktop, input, windows, terminal, RAM filesystem, task UI | delivered experiment; graphical product path deferred |
+| 2 | Ring 3, address spaces, preemption, ELF loading, ABI, lifecycle, VFS, input, IPC, shell | delivered experiment; F1-F5 remain release-blocking |
+| 3 | runtime ownership, unified typed handles, request identity, cleanup, headless serial path | delivered experiment; F4-F6 remain release-blocking |
+| 4 | PCI-discovered ATA, partitioned bounded snapshots, cache, inspection, repair, read-only recovery | delivered bounded storage experiment |
+| 5-5.3 | VirtIO 1.x, IPv4 stack, diagnostics, socket capabilities, asynchronous UDP | delivered bounded network experiment |
+| 5.4A-D | bounded TCP client, listener authority, one passive handshake, one accepted transaction and close | delivered bounded TCP experiment |
+
+Subsystem references:
+
+- [userspace boundary](docs/USERSPACE.md)
+- [runtime ownership](docs/RUNTIME.md)
+- [storage format and recovery](docs/STORAGE.md)
+- [networking contracts](docs/NETWORKING.md)
+
+## Stage 5.4E — Concurrent and production-oriented TCP
+
+**Status: blocked by the foundation gate; protocol design may continue**
 
 Planned work:
 
-- introduce a kernel runtime coordinator that owns scheduling, processes, tasks, and asynchronous service queues independently of `DisplayManager`;
-- make process state the single source of truth and expose immutable snapshots to Task Manager instead of maintaining a second lifecycle;
-- remove VFS and process-completion orchestration from the desktop shell loop;
-- split the monolithic userspace kernel module into process, scheduler, syscall, capability, IPC, VFS-request, and boot-proof modules;
-- evolve userspace image layout 2 only through explicit versioned contracts as executables grow;
-- keep the explicit emergency recovery console separate from the normal Ring 3 command path;
-- establish a small console userland with executable discovery, arguments, environment, standard input/output/error, exit status, and bounded composition between tools;
-- document which interfaces intentionally resemble Unix and which remain native GenOS contracts.
+- multiple simultaneous handshakes and accepted clients;
+- fair listener and cross-process socket service;
+- readiness waits and cancellation-aware scheduler wakeups;
+- segmented long-lived streams, out-of-order reassembly, duplicate handling, half-close, and reset behavior;
+- RTT estimation, retransmission timers, dynamic windows, congestion control, and bounded resource accounting;
+- interrupt-driven VirtIO RX/TX through MSI-X, with polling only as bounded recovery;
+- deterministic loss, delay, duplication, reordering, zero-window, slow-reader, reset, and exhaustion tests;
+- reproducible throughput, latency, CPU-cost, recovery, and queue-occupancy budgets.
 
 Acceptance criteria:
 
-- [x] Userspace scheduling, process lifecycle, and VFS completions continue working when desktop rendering is disabled.
-- [x] `ProcessManager` or its replacement is the sole lifecycle authority; Task Manager reads snapshots and cannot drift from runtime state.
-- [x] No VFS or process request is completed by `kernel/src/shell.rs` or `DisplayManager`.
-- [x] Every handle resolves through one typed caller-owned table with explicit rights and tested cross-type rejection.
-- [x] Every asynchronous completion is bound to an exact process incarnation and request ID, and canceled work cannot mutate external state.
-- [x] Shell exit, fault, and kill terminate or transfer every owned child according to a documented policy and leave no stale task record.
-- [x] Full tables, failed launches, failed copy-out, and service cancellation roll back without leaking tasks, slots, handles, or frames.
-- [x] More than 256 sequential process launches complete without PID confusion or stale-handle authority.
-- [x] Userspace executables have documented growth headroom or a loader contract that safely supports additional code segments.
-- [x] A fresh QEMU test drives a real console command transcript without depending on mouse interaction or desktop timing.
-- [x] The recovery-only kernel parser is removed from the normal command path.
-- [x] Architecture notes define runtime ownership, handle rights, request lifecycle, process cleanup, and the later window-server boundary.
-
-## Stage 4 — Persistent storage
-
-**Status: complete**
-
-Goal: preserve user data across boots without weakening filesystem correctness.
-
-Planned work:
-
-- PCI discovery needed by the first storage controller;
-- choose and implement one initial virtualized block device;
-- partition-table discovery;
-- block cache and writeback policy;
-- durable filesystem format;
-- mount model integrated with the VFS;
-- crash-consistency strategy;
-- filesystem repair and inspection tool;
-- read-only boot/recovery path.
-
-Delivered so far:
-
-- GenOS 0.31 a dedicated ATA-backed QEMU data image with a versioned, checksum-protected bounded record, host-side raw-image inspection, and a two-boot proof that restores `/USER/PERSIST.TXT`; the remaining VFS stays RAM-backed.
-- GenOS 0.32 replaces the single record with two committed generation slots and restores the newest valid snapshot.
-- GenOS 0.33 adds an independent `cargo xtask inspect-data` decoder plus checksum, bounds, duplicate-path, payload, and RAMFS-separation tests.
-- GenOS 0.34 publishes healthy, recovered, or error state through read-only `/STORAGE.STATUS`; the Ring 3 shell proves both status reads and rejected write-capable opens.
-- GenOS 0.35 recreates `/TMP/SESSION.TXT` in RAM on every boot and completes four QEMU phases: first commit, clean restore, torn newer-slot recovery, and corrupted-device failure.
-- GenOS 0.36 adds an 8 MiB data disk with a bounds-checked MBR partition of type `0x7f`; the kernel discovers its start and length before any filesystem-sector access, and the host inspector rejects missing, malformed, or out-of-range partitions.
-- GenOS 0.37 adds an eight-sector LRU write-back cache and mounts a two-generation `GFS2` snapshot containing general `/USER/` files and directories. Ring 3 file, truncate, directory-create, and remove operations synchronously commit before success is returned; `/USER/SHELL.TXT` is created by the shell, independently inspected on the host, and restored on the next QEMU boot.
-- GenOS 0.38 makes the system server-first: the boot contract selects `console=serial ui=off`, the bootloader no longer requires GOP, QEMU runs without a display, and host-driven COM1 input reaches the Ring 3 shell.
-- GenOS 0.39 discovers the PCI IDE controller, derives its compatibility or native I/O registers, enables PCI I/O space, and boots the persistent disk through the discovered controller.
-- GenOS 0.40 adds `cargo xtask repair-data`, which reconstructs one damaged or blank snapshot only from the sole valid generation, verifies the resulting image, no-ops on healthy media, and refuses to invent data when neither generation is trustworthy.
-- GenOS 0.41 adds partition type `0x7e` for explicit read-only recovery. The kernel restores the newest valid snapshot, advertises `state=readonly`, and rejects Ring 3 write and namespace-management authority while keeping files and `/TMP/` readable.
-
-Acceptance criteria:
-
-- [x] A file created in one QEMU session survives reboot.
-- [x] Power interruption cannot silently corrupt unrelated files.
-- [x] Filesystem images have host-side inspection tests.
-- [x] Read/write failures are surfaced to applications.
-- [x] The RAM filesystem remains available for temporary data.
-- [x] The storage controller is discovered through PCI rather than assumed by the mount path.
-- [x] A host repair writer restores snapshot redundancy without overwriting the only trustworthy generation.
-- [x] Read-only recovery preserves readable files and denies persistent mutation end to end.
-
-## Stage 5 — Network protocol foundation
-
-**Status: complete**
-
-Goal: establish a small, testable network stack before exposing broad application APIs. The original device was a bootstrap target, not the permanent virtual-hardware contract.
-
-Planned work:
-
-- one emulated network-device driver;
-- packet-buffer ownership model;
-- Ethernet framing;
-- ARP;
-- IPv4 and ICMP;
-- UDP;
-- DHCP;
-- DNS resolver;
-- TCP state machine;
-- bounded userspace exchange API as a precursor to socket objects;
-- network diagnostics application.
-
-Delivered:
-
-- GenOS 0.42 a bootstrap QEMU NE2000 PIO driver with explicit free, driver, and stack packet-buffer ownership and no borrowed frame surviving a receive iteration;
-- bounded Ethernet II, ARP, IPv4, ICMP, UDP, and TCP parsing with IPv4 and transport checksum validation, fragment rejection, and truncation-safe host tests;
-- DHCP discover/request/ack configuration with assigned address, subnet, gateway, and DNS state;
-- ARP next-hop resolution and ICMP echo against the QEMU host gateway;
-- ABI 15 `network_config`, `udp_exchange`, and `tcp_exchange` calls with validated user buffers and bounded request/response sizes;
-- a Ring 3 DNS query for `example.com`, userspace answer parsing, and a TCP/HTTP request to a deterministic host test server;
-- the Ring 3 `net` diagnostics command plus boot-visible DNS, HTTP, socket API, and timeout markers;
-- three-attempt DHCP, ARP, UDP, TCP handshake, and initial-data retry policy with a bounded refused-connection proof.
-
-Acceptance criteria:
-
-- [x] GenOS obtains an address through DHCP.
-- [x] ICMP echo works against the QEMU host network.
-- [x] A userspace program resolves DNS and completes an HTTP request.
-- [x] Malformed-packet tests do not panic or corrupt memory.
-- [x] Packet loss and connection timeout behavior are defined.
-
-## Stage 5.1 — Modern virtual network transport
-
-**Status: complete**
-
-Goal: make the supported virtual-machine network path standards-based, replaceable, and impossible to confuse with the legacy bootstrap driver.
-
-Delivered:
-
-- GenOS 0.43 a device-independent frame boundary used by the existing protocol stack;
-- PCI discovery of VirtIO network functions and traversal of modern vendor capabilities;
-- required `VIRTIO_F_VERSION_1` and MAC feature negotiation with the full status handshake and `FEATURES_OK` verification;
-- independent eight-entry split RX and TX virtqueues with aligned descriptor, available, used, and DMA-buffer memory;
-- the modern 12-byte `virtio_net_hdr`, bounded descriptor validation, explicit volatile DMA access, and acquire/release publication fences;
-- QEMU `virtio-net-pci` with `disable-legacy=on` for normal and test boots;
-- exact smoke markers that reject a false pass through any fallback path;
-- NE2000 moved behind the device boundary and labelled as a legacy recovery fallback only;
-- HTTP/1.1 with a required `Host` header for the deterministic Ring 3 test exchange.
-
-Acceptance criteria:
-
-- [x] Normal boot uses a VirtIO 1.x PCI network device with its legacy interface disabled.
-- [x] DHCP, ICMP, DNS, TCP, and Ring 3 HTTP complete through VirtIO.
-- [x] RX and TX descriptor ownership is bounded and observable.
-- [x] The modern smoke suite fails if the kernel selects NE2000 or another fallback.
-- [x] Boot remains healthy when no network device or deterministic HTTP server is present.
-
-## Stage 5.2 — Non-blocking socket capability foundation
-
-**Status: complete**
-
-Goal: establish the process-owned object and queue contract before attaching applications to an asynchronous packet scheduler. This stage deliberately does not relabel the ABI 15 one-shot exchanges as sockets or claim production TCP.
-
-Delivered:
-
-- GenOS 0.44 and ABI 16 generation-safe, process-owned UDP and TCP-stream handles in the unified typed capability table;
-- validated `socket_open`, `socket_connect`, `socket_send`, `socket_receive`, `socket_status`, `socket_shutdown`, and `socket_close` calls;
-- explicit open, connecting, established, half-closed, closed, and failed states plus readable, writable, connected, closed, and error readiness bits;
-- fixed four-handle and 128-byte-per-direction budgets, exact queued-byte accounting, partial receive preservation, `WOULD_BLOCK` backpressure, and no allocation on the syscall path;
-- shutdown cancellation that clears the selected bounded queue, full close revocation, stale-generation rejection, forged-handle rejection, and process-exit owner cleanup;
-- a Ring 3 lifecycle proof required by modern-network and normal-boot smoke tests, plus host tests for isolation, saturation, partial reads, failure visibility, cancellation, and reclamation;
-- ABI 15 exchange compatibility retained only while the transport scheduler is built.
-
-Acceptance criteria:
-
-- [x] Socket handles are opaque, generation-safe, process-local capabilities and cannot be spent as another handle type.
-- [x] Queue memory is statically bounded and saturation returns `WOULD_BLOCK` without overwriting admitted bytes.
-- [x] Readiness, connecting state, partial receive behavior, half-close, close, stale handles, and owner cleanup have deterministic tests.
-- [x] Ring 3 exercises the ABI 16 lifecycle on a modern-only VirtIO boot, including forged-handle denial and queued-work cancellation.
-- [x] Documentation bounded this foundation separately from packet transport and kept production TCP as a release gate.
-
-## Stage 5.3 — Asynchronous UDP socket transport
-
-**Status: complete**
-
-Goal: attach ABI 16 UDP queues to scheduler-driven packet progress without spinning inside the socket syscall, while preserving exact process and request authority across completion, timeout, and cancellation.
-
-Delivered:
-
-- GenOS 0.45 scheduler-owned UDP request extraction from process queues with a nonzero monotonic request ID bound to the exact process slot, incarnation, task, PID, socket handle, and in-flight datagram;
-- one bounded coordinator transport slot that performs ARP resolution, UDP transmission, exact address/port/checksum demultiplexing, and receive-queue completion outside the syscall path;
-- three-attempt deadlines, bounded per-tick NIC recovery polling, failed-socket readiness, queue-full refusal, shutdown cancellation, and stale completion rejection;
-- a real Ring 3 DNS A query sent and received through the ABI 16 socket API on modern-only VirtIO, while the ABI 15 exchange remains as a compatibility proof;
-- required QEMU markers for transport start, successful completion, timeout, and cancellation in both deterministic-server and normal no-server network boots;
-- host tests that bind completion to the exact in-flight request and reject every truncation of an ARP reply.
-
-Acceptance criteria:
-
-- [x] A UDP socket queue makes wire progress without spinning in its syscall or blocking the kernel scheduler for an unbounded wait.
-- [x] Only the exact live process incarnation, capability, request ID, and datagram can receive a completion.
-- [x] DNS completes through ABI 16 sockets on modern-only VirtIO, and the smoke gate requires the exact asynchronous markers.
-- [x] Timeout marks the socket failed and readable as an error; write shutdown cancels an in-flight request without later delivery.
-- [x] Queue memory, retries, receive polling, response copies, and the coordinator transport slot are statically bounded.
-
-Explicit boundary: this stage does not claim TCP socket transport, listeners, multi-socket fairness, interrupt-driven VirtIO completion, IPv6, or production Internet security. TX still uses bounded VirtIO completion polling, and RX uses bounded recovery polling once per coordinator tick until MSI-X work replaces it.
-
-## Stage 5.4 — TCP socket transport, listeners, and production TCP
-
-**Status: in progress; bounded clients plus one passive request/response stream complete; concurrency and production gates remain**
-
-Goal: add server authority and make TCP correct under real loss, reordering, and flow-control pressure while replacing recovery polling with normal interrupt-driven packet completion.
-
-### Stage 5.4A — Asynchronous TCP client transport
-
-**Status: complete**
-
-Delivered:
-
-- GenOS 0.46 typed UDP/TCP in-flight requests using the same exact process-incarnation, capability, request-ID, payload, timeout, and cancellation authority checks;
-- a bounded scheduler-driven TCP client transaction with ARP, SYN, exact SYN-ACK validation, ACK, request data, ordered response buffering, duplicate/out-of-order acknowledgment, FIN acknowledgment, active close, and RST failure;
-- three-attempt deadlines for ARP, SYN, request retransmission, and final response progress, plus fixed 128-byte request/response storage and bounded NIC recovery polling;
-- a real Ring 3 HTTP/1.1 request and 65-byte response through ABI 16 `socket_send` and `socket_receive`, while the no-server boot proves real RST failure without preventing boot;
-- TCP in-flight write-shutdown cancellation with a protocol-specific stale-request marker and no later completion;
-- mandatory modern-VirtIO QEMU markers for TCP transport start, completion, Ring 3 success, RST failure, and cancellation, plus host tests for protocol- and request-bound completion.
-
-Acceptance criteria:
-
-- [x] TCP connect, request, response, and close progress outside the socket syscall with bounded work per coordinator tick.
-- [x] Only the exact live process, typed TCP capability, request ID, and admitted bytes can receive completion.
-- [x] A deterministic HTTP response reaches Ring 3 through ABI 16 TCP sockets on modern-only VirtIO.
-- [x] RST, timeout, response overflow, malformed tuples/checksums, and cancellation fail closed within fixed memory and retry budgets.
-
-Explicit boundary: this client transaction supports one bounded request and response, not a general long-lived byte stream. It does not yet provide listeners, concurrent connections, fair cross-process scheduling, dynamic windows, congestion control, selective acknowledgments, full out-of-order reassembly, or interrupt-driven VirtIO completion.
-
-### Stage 5.4B — TCP listener authority foundation
-
-**Status: complete**
-
-Delivered:
-
-- GenOS 0.47 and ABI 17 `socket_bind`, `socket_listen`, and non-blocking `socket_accept` calls gated by the exact process-owned typed socket capability;
-- TCP-only local ports from 1024 through 65535, with one exclusive owner across every live process and immediate release on close or process cleanup;
-- `Bound` and `Listening` states, an explicit accept-readiness bit, and a fixed per-listener backlog of at most two pending peers;
-- FIFO accepted-child creation as a fresh generation-safe TCP capability, with allocation failure preserving the pending peer and typed-handle registration failure rolling the child back;
-- Ring 3 proof of low-port rejection, forged-handle rejection, empty non-blocking accept, oversized-backlog rejection, duplicate-bind refusal, stale-listener rejection, and close/rebind cleanup;
-- host tests for global port exclusivity, bounded backlog refusal, FIFO accepted children, ownership isolation, readiness, capacity, and reclamation.
-
-Acceptance criteria:
-
-- [x] Bind, listen, and accept require an exact live TCP capability; UDP, forged, foreign, stale, low-port, and invalid-state requests fail closed.
-- [x] A local port has one owner across live processes and becomes reusable after close or owner cleanup.
-- [x] Listener and accepted-child memory is statically bounded, backlog saturation refuses new peers, and allocation failure does not consume queued work.
-- [x] Every accepted child receives separately revocable typed authority and cannot be spent by another process.
-
-Explicit boundary: the backlog is an internal bounded object-model contract only. The receive path does not yet perform passive TCP handshake processing or queue wire peers, so `socket_accept` returns `WOULD_BLOCK` in the current Ring 3 boot proof. This stage does not claim a working inbound server, concurrent host clients, fair listener wakeups, or long-lived accepted streams.
-
-### Stage 5.4C — Bounded passive handshake and Ring 3 accept
-
-**Status: complete**
-
-Delivered:
-
-- GenOS 0.48 scheduler-driven passive TCP receive processing for one exact live listener, with checksum, IPv4 destination, port, peer tuple, flags, and sequence validation;
-- bounded SYN-ACK retransmission and timeout, duplicate-SYN handling, RST failure, explicit refusal for missing listeners or saturated backlogs, and cancellation when listener authority disappears;
-- final-ACK admission through the exact process slot, incarnation, PID, typed listener handle, local port, and fixed backlog before Ring 3 can accept a fresh child capability;
-- a deterministic QEMU host-forwarded connection to guest port 18081 requiring `TCP_PASSIVE_SYN_ACCEPTED`, `TCP_PASSIVE_HANDSHAKE_OK`, and `USER_SOCKET_PASSIVE_ACCEPT_READY`;
-- a separate no-host QEMU boot proving the optional listener window does not stall normal startup;
-- host tests for truncated passive SYN frames, TCP checksum corruption, exact SYN/final-ACK classification, and the rule that accepted children cannot accidentally enter the outbound client transport.
-
-Acceptance criteria:
-
-- [x] A real host SYN reaches only the listener owning its destination port and completes a bounded SYN/SYN-ACK/ACK exchange.
-- [x] The established peer enters only that listener's backlog and becomes a separately revocable Ring 3 capability through non-blocking accept.
-- [x] Missing, stale, closed, or saturated listeners fail closed without granting a child or keeping an unbounded handshake alive.
-- [x] The deterministic passive proof and ordinary no-host boot both pass on modern-only VirtIO 1.x.
-
-Explicit boundary at completion: Stage 5.4C proved one passive handshake and capability admission, not a TCP server data path. Accepted children exposed connected identity but remained deliberately non-writable; Stage 5.4D supplies the first bounded payload/close transaction while multiple simultaneous handshakes, fair listener wakeups, and long-lived service remain open.
-
-### Stage 5.4D — Bounded accepted-stream transaction and close
-
-**Status: complete**
-
-Delivered:
-
-- GenOS 0.49 carries the exact peer MAC, IPv4 address, remote/local ports, and initial sequence state from the completed handshake through backlog admission into the accepted child;
-- one fixed 128-byte passive receive buffer and one fixed 128-byte send buffer, with exact tuple, checksum, sequence, and acknowledgment validation before queue mutation;
-- Ring 3 receive through the accepted capability, response admission under a nonzero request identity bound to the exact process slot, incarnation, task, PID, handle, peer, and byte count, plus ACK-gated completion;
-- bounded response and FIN retransmission, duplicate/out-of-order acknowledgment, oversized-segment reset/failure, peer RST failure, peer half-close, guest FIN, and wire-ACK completion before the socket enters `Closed`;
-- stale listener, accepted capability, or send identity cancellation with an on-wire reset and no later delivery;
-- a QEMU host-forwarded `GENOS_PING` → `GENOS_PONG` exchange that verifies the response and EOF, while the no-host boot still completes without passive success markers.
-
-Acceptance criteria:
-
-- [x] Ring 3 receives bounded peer bytes only through the exact accepted child and can queue a bounded response through that same capability.
-- [x] Send completion requires the exact peer ACK and the socket does not report `Closed` until the guest FIN is acknowledged on the wire.
-- [x] Peer half-close, reset, stale capability, timeout, malformed acknowledgment, and oversized payload paths fail closed within fixed memory and retry budgets.
-- [x] Deterministic modern-VirtIO QEMU proves request, response, peer FIN, guest FIN, and normal no-host degradation.
-
-Explicit boundary: Stage 5.4D is one bounded request and response on one passive stream. It does not provide simultaneous handshakes, multiple accepted clients, arbitrary stream-length segmentation/reassembly, fair listener wakeups, dynamic windows, congestion control, production loss recovery, or an application server framework.
-
-### Remaining Stage 5.4 work
-
-- simultaneous passive handshakes, concurrent accepted-client lifecycle, long-lived segmented streams, and fair listener service;
-- scheduler wakeups, readiness waits, request cancellation, fair queue service, and cross-process resource budgets;
-- retransmission timers, RTT estimation, dynamic send/receive windows, congestion control, out-of-order reassembly, duplicate handling, reset handling, and TCP half-close on the wire;
-- deterministic packet loss, duplication, delay, reordering, zero-window, reset, slow-reader, cancellation, and resource-exhaustion tests;
-- interrupt-driven VirtIO completion, MSI-X, queue recovery, and measured batching before optional offload negotiation.
-
-Acceptance criteria:
-
-- [x] TCP socket queues make progress without spinning in a syscall or blocking the kernel scheduler for an unbounded wait.
-- [x] One bounded passive handshake feeds the exact listener backlog and produces a Ring 3 accepted capability.
-- [x] One accepted capability completes a bounded request, response, peer half-close, guest FIN, and wire-acknowledged close.
-- [ ] A listening service survives concurrent clients, cancellation, peer resets, and slow readers without sharing raw port authority.
-- [ ] TCP transfers remain correct under deterministic loss and reordering and respect bounded memory budgets.
-- [ ] VirtIO RX/TX normally completes through interrupts; polling remains only a bounded recovery mechanism.
-- [ ] Throughput, latency, packet-loss recovery, CPU cost, and queue occupancy have reproducible regression budgets.
+- [ ] Independent clients cannot share authority, bytes, readiness, or completion identity.
+- [ ] One slow or malicious peer cannot starve another process or exhaust unbounded kernel memory.
+- [ ] Transfers remain correct under the deterministic network fault matrix.
+- [ ] Normal RX and TX completion is interrupt-driven.
+- [ ] Published benchmarks identify payload size, concurrency, loss model, CPU cost, and memory use.
 
 ## Stage 5.5 — IPv6 dual stack
 
-**Status: planned; required before production networking**
-
-Goal: make IPv6 a first-class path while preserving explicitly tested IPv4 compatibility.
+**Status: planned; required before production-network language**
 
 Planned work:
 
-- IPv6 packet validation, extension-header policy, routing, and path-MTU handling;
+- IPv6 validation, routing, extension-header policy, and path-MTU behavior;
 - ICMPv6, neighbor discovery, duplicate-address detection, router advertisements, and SLAAC;
-- DNS AAAA resolution and address-selection policy;
-- IPv6-capable UDP and TCP sockets with dual-stack bind/connect semantics;
-- deterministic IPv4-only, IPv6-only, and dual-stack QEMU networks.
+- DNS AAAA handling and address-selection policy;
+- IPv4/IPv6 socket semantics without hiding address-family differences;
+- deterministic IPv4-only, IPv6-only, and dual-stack reference networks.
 
 Acceptance criteria:
 
-- [ ] GenOS configures a usable IPv6 address and default route without a hard-coded guest address.
-- [ ] DNS and TCP complete on IPv6-only and dual-stack reference networks.
-- [ ] Malformed extension headers, neighbor advertisements, and ICMPv6 packets fail closed.
-- [ ] IPv4 and IPv6 behavior share socket contracts without hiding address-family differences.
+- [ ] GenOS configures a usable IPv6 address and route without a hard-coded guest address.
+- [ ] DNS, UDP, and TCP complete on IPv6-only and dual-stack networks.
+- [ ] Malformed extension headers, advertisements, fragments, and ICMPv6 messages fail closed.
+- [ ] IPv4 behavior remains covered by the same regression matrix.
 
-## Stage 6 — Security and identity
+## Stage 6 — Security, identity, and trusted distribution
 
-Goal: make isolation and authority visible parts of the system architecture.
+**Status: planned; depends on the foundation gate**
 
 Planned work:
 
-- user and service identities;
-- capability or handle-based authority model;
-- filesystem permissions;
-- process sandbox profiles;
-- entropy and random-number subsystem;
-- isolated userspace TLS 1.3 with reviewed cryptography, certificate-path validation, hostname verification, a versioned trust store, and secure time policy;
-- HTTPS for packages, updates, credentials, tokens, and personal data, with plaintext network authority denied to those applications;
-- signed package and update metadata;
-- secure-boot research and measured-boot hooks;
-- secrets storage design;
-- security audit checklist and threat model.
+- cryptographic entropy and a documented CSPRNG reseed policy;
+- user, service, and session identities;
+- filesystem permissions and capability delegation with attenuation;
+- process sandbox profiles and explicit device/network authority;
+- a versioned trust store and secure time policy;
+- userspace TLS 1.3 using reviewed cryptography and test vectors;
+- certificate path and hostname verification with negative interoperability tests;
+- signed packages, update metadata, rollback protection, and transactional install;
+- secure-boot research, measured-boot hooks, and secrets storage;
+- threat models for every trusted boundary.
 
 Acceptance criteria:
 
 - [ ] Applications receive only explicitly granted resources.
-- [ ] A compromised unprivileged process cannot read another process's memory.
-- [ ] Package and update signatures are verified before installation.
-- [ ] TLS 1.3 interoperability and negative certificate tests pass without custom cryptographic primitives.
-- [ ] No credential, package, update, or personal-data flow can silently downgrade to plaintext.
-- [ ] The project publishes a threat model for each trusted boundary.
-- [ ] Security-sensitive unsafe code has dedicated review coverage.
+- [ ] A compromised unprivileged process cannot read or modify another process, kernel memory, storage outside its authority, or unrelated network endpoints.
+- [ ] Credentials, packages, updates, and personal data cannot silently downgrade to plaintext.
+- [ ] Package and update signatures are verified before mutation.
+- [ ] The release publishes threat models and an unsafe-code review report.
 
-## Stage 7 — Application and graphics platform
+## Stage 7 — Stable application and service platform
 
-Goal: make native GenOS software practical to build, distribute, and run.
+**Status: planned**
 
 Planned work:
 
-- stable application ABI or versioned compatibility contract;
-- window-server/compositor boundary;
-- shared-memory graphics surfaces;
-- structured UI toolkit;
-- text shaping and scalable fonts;
-- clipboard and drag-and-drop contracts;
-- application manifest and package format;
-- SDK, templates, and documentation;
-- package repository design;
-- accessibility primitives;
-- application lifecycle and background-execution policy.
+- a versioned application ABI and compatibility policy;
+- file-descriptor or stream abstractions where they improve composability without weakening capabilities;
+- service discovery and capability delegation without raw PID authority;
+- shared-memory and event primitives with explicit ownership;
+- application manifests, packages, transactions, and SDK tooling;
+- resource accounting, quotas, background-execution policy, and service supervision;
+- an external application build that does not depend on private repository internals.
 
 Acceptance criteria:
 
-- [ ] An application can be built outside the main repository using the SDK.
-- [ ] Old applications receive a clear compatibility guarantee or failure mode.
-- [ ] Applications cannot draw into another application's surface.
-- [ ] Keyboard-only navigation works across reference system applications.
-- [ ] Package installation is transactional and verifiable.
+- [ ] An application builds outside this repository with the published SDK.
+- [ ] ABI incompatibility produces a deterministic error or supported migration path.
+- [ ] Installation and removal are transactional and verifiable.
+- [ ] Service failure does not corrupt another service's state or authority.
 
-## Stage 8 — Hardware and daily-use expansion
+## Stage 8 — Modern hardware, SMP, and power management
 
-Goal: grow beyond a virtual-machine reference platform without losing reliability.
+**Status: planned; depends on F5**
 
-Required modern baseline:
+Required baseline:
 
-- ACPI-based discovery and power control;
-- SMP and multi-core scheduler support;
-- local APIC/x2APIC, I/O APIC, and MSI/MSI-X interrupt routing, with the 8259 PIC retained only for bootstrap fallback;
-- xHCI USB host controller and USB HID, with PS/2 retained only as a labelled compatibility fallback;
-- NVMe as the primary physical-storage contract, with ATA PIO retained only for recovery and simple-emulator coverage;
-- IOMMU research and explicit DMA isolation policy before untrusted-device support;
-- PCIe capability, hotplug, power-state, and error-reporting policy;
-
-Expansion after the baseline:
-
-- audio stack;
-- virtio-gpu for the reference VM and a documented modern physical-GPU strategy behind the Stage 7 userspace compositor;
-- Wi-Fi research;
-- laptop power and battery reporting;
-- suspend and resume;
-- installer and recovery environment.
-
-Legacy-only boot is not sufficient to complete this stage. Hardware support will be introduced through documented reference machines with device reports, fault injection, suspend/resume cycles, and regression tests. “Works on my machine” is not an acceptance criterion.
+- ACPI discovery and power control;
+- local APIC/x2APIC, I/O APIC, MSI, and MSI-X;
+- SMP startup, per-CPU state, scheduler scaling, and TLB shootdowns;
+- modern VirtIO block, network, console, and GPU devices in the reference VM;
+- NVMe for the first physical-storage reference;
+- xHCI and USB HID for the first physical-input reference;
+- IOMMU and DMA-isolation policy before untrusted-device support;
+- PCIe capability, reset, power-state, hotplug, and error policy;
+- suspend, resume, battery, thermal, and idle-state support.
 
 Acceptance criteria:
 
-- [ ] The reference VM boots with modern VirtIO network, block, console, and GPU interfaces and rejects unintended legacy fallback in release tests.
-- [ ] A documented x86_64 reference machine boots from NVMe, routes interrupts through APIC/MSI-X, and uses xHCI for input and removable media.
-- [ ] DMA-capable drivers validate descriptor ownership, lengths, device reset, timeout, and surprise-removal paths.
-- [ ] Suspend/resume, power loss, hotplug, and device-failure tests preserve filesystem and process isolation guarantees.
-- [ ] Legacy compatibility drivers are build-time or boot-policy choices with explicit diagnostics, never silent defaults.
+- [ ] The reference VM uses modern interfaces without silent legacy fallback.
+- [ ] A documented physical `x86_64` machine boots from NVMe, routes interrupts through APIC/MSI-X, and uses xHCI input.
+- [ ] Multi-core stress preserves scheduling, memory ownership, capabilities, and storage consistency.
+- [ ] Device reset, timeout, malformed DMA completion, surprise removal, suspend, and resume have repeatable tests.
 
-## Stage 9 — Graphical experience rebuild
+## Stage 9 — Userspace graphics and product experience
 
-**Status: deferred; the serial terminal is the primary interface until this stage**
-
-Goal: replace the current experimental desktop with a deliberately designed graphical system after the kernel, storage, networking, security, application, and hardware contracts are stable. The existing framebuffer desktop is not a quality target and is not required for server-mode readiness.
+**Status: deferred until Stages 6-8 establish the required contracts**
 
 Planned work:
 
-- remove or replace the current desktop composition and visual language;
-- define a cohesive interaction model, information architecture, and design system before implementation;
-- build the graphical shell on the Stage 7 userspace window-server boundary instead of placing product UI in Ring 0;
-- create a real terminal application that preserves every server-console workflow;
-- add scalable typography, layout, theming, accessibility, keyboard navigation, and input-method contracts;
-- provide reference Files, Tasks, Settings, recovery, and application-launch surfaces;
-- establish screenshot, interaction, accessibility, and performance regression suites;
-- validate the complete experience at multiple resolutions and on reference physical hardware.
+- a userspace window server and compositor;
+- isolated shared-memory surfaces;
+- virtio-gpu for the reference VM and a documented physical-GPU path;
+- scalable text shaping, fonts, layout, themes, input methods, and accessibility primitives;
+- clipboard and drag-and-drop capabilities;
+- userspace terminal, Files, Tasks, Settings, recovery, and launcher applications;
+- visual, interaction, accessibility, memory, and frame-latency regression suites.
 
 Acceptance criteria:
 
-- [ ] The framebuffer desktop contains no product UI implemented directly in the kernel.
-- [ ] The graphical shell and reference applications run as isolated userspace processes.
-- [ ] Every administrative workflow remains possible from the serial terminal without graphics.
-- [ ] Keyboard-only and screen-reader-oriented navigation pass documented reference flows.
-- [ ] Visual regression tests cover supported resolutions, scaling factors, focus states, errors, and recovery.
-- [ ] Real-device testing proves input, rendering, launch, suspend, and recovery behavior.
+- [ ] Product UI no longer executes in Ring 0.
+- [ ] Applications cannot draw into or read another application's surface.
+- [ ] Administrative and recovery workflows remain possible through the serial terminal.
+- [ ] Keyboard-only and screen-reader-oriented reference flows pass.
+- [ ] Supported resolutions, scaling factors, focus states, errors, and recovery states have visual regression coverage.
 
-## Cross-cutting tracks
+## Stage 10 — Hardened preview and daily-use qualification
 
-These tracks continue throughout every stage.
+**Status: planned**
 
-### Reliability
+This stage converts individual subsystem proofs into a supported reference product.
 
-- deterministic host-side tests where hardware is not required;
-- QEMU smoke coverage for every boot-critical subsystem;
-- fault injection for allocation, I/O, and malformed-input paths;
-- panic diagnostics that remain useful without the desktop.
+Acceptance criteria:
 
-### Performance
+- [ ] The verified and hardened-preview release definitions in `docs/ENGINEERING_QUALITY.md` pass.
+- [ ] Upgrade, rollback, recovery, and data-backup procedures are tested from prior supported versions.
+- [ ] The project publishes supported hardware, known limitations, security support period, and compatibility policy.
+- [ ] Long-duration stress covers memory pressure, process churn, storage faults, network faults, suspend/resume, and device reset.
+- [ ] Independent reviewers can reproduce the release image and benchmark artifacts.
+- [ ] No universal superiority claim appears in release material; every comparison links to reproducible evidence.
 
-- publish boot-time, memory, binary-size, input-latency, and idle-work baselines;
-- define regression budgets before optimizing benchmarks;
-- document benchmark hardware and QEMU configuration;
-- avoid performance claims without reproducible evidence.
+## Cross-cutting scorecard
 
-### Developer experience
+Each release records the following. A missing measurement is reported as missing, not silently treated as zero.
 
-- keep `make build`, `make run`, and `make test` reliable;
-- provide architecture decision records for major contracts;
-- label approachable issues with realistic scope;
-- keep contributor setup documented for macOS and Linux hosts.
+| Dimension | Required evidence |
+| --- | --- |
+| Correctness | invariant tests, fault injection, parser corpora, cleanup accounting, repeated boots |
+| Security | threat models, isolation tests, unsafe inventory, protection-bit proof, fuzz results |
+| Reliability | crash and power-loss recovery, timeout/reset behavior, long-duration stress |
+| Performance | boot time, idle CPU, idle memory, binary size, syscall/process latency, storage/network throughput |
+| Maintainability | module ownership, public contracts, reviewable patches, warning-free builds, architecture records |
+| Hardware | exact VM configuration and exact physical reference-machine reports |
+| Compatibility | ABI/version policy, migration tests, rollback behavior, supported application set |
+| Accessibility | keyboard operation, focus behavior, text alternatives, assistive-technology contracts |
 
-### Documentation
+## Benchmarking against Linux or another system
 
-- maintain a boot-flow diagram;
-- document unsafe invariants next to their implementation;
-- add subsystem design notes before interfaces become public contracts;
-- keep current limitations visible in the main README.
+Every comparison must publish:
+
+1. the exact GenOS commit and build profile;
+2. the exact comparison-system version, configuration, services, and kernel command line;
+3. identical hardware or an identical pinned virtual-machine definition;
+4. the workload source and commands;
+5. warm-up policy, sample count, raw results, variance, and failure count;
+6. memory, CPU, storage, and network measurement method;
+7. known advantages or missing features that affect the result;
+8. a reproducible artifact or script in the repository.
+
+A result applies only to that experiment. It does not imply that either operating system is universally better.
 
 ## How roadmap changes are made
 
-Roadmap changes should be proposed through an issue or pull request that explains:
+A roadmap change must explain:
 
 1. the user or developer problem;
-2. why the work belongs in the current stage;
+2. why the work belongs in the proposed stage;
 3. the smallest useful vertical slice;
-4. acceptance criteria;
-5. new security, compatibility, and maintenance costs.
+4. success and negative-path acceptance criteria;
+5. security, compatibility, performance, and maintenance costs;
+6. dependencies and rollback behavior;
+7. which documentation and measurements must change.
 
-The roadmap is a planning tool, not a promise to merge every listed idea. Working code, clear contracts, and long-term maintainability decide priority.
+Major architectural changes should use an architecture proposal issue and an architecture decision record. Working code, clear contracts, repeatable evidence, and long-term maintainability decide priority.
