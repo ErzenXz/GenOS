@@ -155,6 +155,10 @@ impl TaskSnapshotSet {
         self.len
     }
 
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn task(&self, index: usize) -> Option<&TaskSnapshot> {
         self.tasks.get(index).filter(|_| index < self.len)
     }
@@ -199,10 +203,13 @@ pub struct SchedulerMetrics {
 
 impl SchedulerMetrics {
     pub const fn average_latency_milliticks(self) -> u64 {
-        if self.dispatches == 0 {
-            0
-        } else {
-            self.total_dispatch_latency_ticks.saturating_mul(1_000) / self.dispatches
+        match self
+            .total_dispatch_latency_ticks
+            .saturating_mul(1_000)
+            .checked_div(self.dispatches)
+        {
+            Some(value) => value,
+            None => 0,
         }
     }
 }
@@ -690,6 +697,7 @@ mod tests {
         let snapshot = registry.snapshot();
         registry.mark_running(desktop, 1);
 
+        assert!(!snapshot.is_empty());
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot.task(0).unwrap().state, TaskState::Ready);
         assert_eq!(registry.find(desktop).unwrap().state, TaskState::Running);
