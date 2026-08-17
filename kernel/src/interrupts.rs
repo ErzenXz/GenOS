@@ -16,6 +16,7 @@ static FALLBACK_SPINS: AtomicU64 = AtomicU64::new(0);
 static KEYBOARD_IRQS: AtomicU64 = AtomicU64::new(0);
 static MOUSE_IRQS: AtomicU64 = AtomicU64::new(0);
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct InterruptStats {
     pub ticks: u64,
@@ -200,6 +201,8 @@ pub fn poll_fallback_tick() -> u64 {
     ticks()
 }
 
+#[allow(dead_code)]
+// Retained for the deferred graphical diagnostics surface.
 pub fn stats() -> InterruptStats {
     InterruptStats {
         ticks: ticks(),

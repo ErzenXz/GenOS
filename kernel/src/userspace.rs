@@ -360,6 +360,7 @@ pub enum ManagedState {
     Killed,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct ProcessUpdate {
     pub task_id: u32,
@@ -484,6 +485,7 @@ pub struct ProcessLaunchCompletion {
     pub owner: ProcessUpdate,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub enum ConsoleUpdate {
     Write { kind: LineKind, text: FixedText },
@@ -2134,6 +2136,9 @@ impl ProcessManager {
                     if text.as_str() == "listener capability authority ready" {
                         crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=17");
                     }
+                    if text.as_str() == "passive TCP listener ready" {
+                        crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
+                    }
                     if text.as_str() == "passive TCP accept ready" {
                         crate::serial::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
                     }
@@ -2329,13 +2334,13 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| {
-                managed
-                    .sockets
-                    .connect(socket_owner(managed), handle, target, port)
-            })
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed
+                .sockets
+                .connect(socket_owner(managed), handle, target, port)
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
         managed.state = ManagedState::Ready;
     }
@@ -2375,13 +2380,13 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| {
-                managed
-                    .sockets
-                    .listen(socket_owner(managed), handle, backlog as usize)
-            })
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed
+                .sockets
+                .listen(socket_owner(managed), handle, backlog as usize)
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
         managed.state = ManagedState::Ready;
     }
@@ -2392,9 +2397,11 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| managed.sockets.accept(owner, handle))
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed.sockets.accept(owner, handle)
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = match result {
             Ok(accepted)
                 if managed
@@ -2421,13 +2428,13 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| {
-                managed
-                    .sockets
-                    .send(socket_owner(managed), handle, data.as_slice())
-            })
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed
+                .sockets
+                .send(socket_owner(managed), handle, data.as_slice())
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = result.map_or_else(socket_error_code, |length| {
             if server_stream {
                 crate::serial::print("USER_SOCKET_PASSIVE_SEND_QUEUED bytes=");
@@ -2449,15 +2456,15 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| {
-                managed.sockets.receive(
-                    socket_owner(managed),
-                    handle,
-                    &mut output[..capacity as usize],
-                )
-            })
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed.sockets.receive(
+                socket_owner(managed),
+                handle,
+                &mut output[..capacity as usize],
+            )
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = match result {
             Ok(length) if copy_to_user_data(&managed.process, address, &output[..length]) => {
                 if server_stream {
@@ -2483,9 +2490,11 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| managed.sockets.status(socket_owner(managed), handle))
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed.sockets.status(socket_owner(managed), handle)
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = match result {
             Ok(status) => {
                 let status = UserSocketStatus {
@@ -2519,16 +2528,16 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| {
-                managed.sockets.shutdown(
-                    socket_owner(managed),
-                    handle,
-                    direction & USER_SOCKET_SHUTDOWN_READ != 0,
-                    direction & USER_SOCKET_SHUTDOWN_WRITE != 0,
-                )
-            })
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed.sockets.shutdown(
+                socket_owner(managed),
+                handle,
+                direction & USER_SOCKET_SHUTDOWN_READ != 0,
+                direction & USER_SOCKET_SHUTDOWN_WRITE != 0,
+            )
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = result.map_or_else(socket_error_code, |_| 0);
         managed.state = ManagedState::Ready;
     }
@@ -2538,9 +2547,11 @@ impl ProcessManager {
         let allowed = managed
             .handles
             .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
-        let result = allowed
-            .then(|| managed.sockets.close(socket_owner(managed), handle))
-            .unwrap_or(Err(SocketError::InvalidHandle));
+        let result = if allowed {
+            managed.sockets.close(socket_owner(managed), handle)
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
         managed.process.context.rax = match result {
             Ok(()) if managed.handles.unregister(handle, HandleKind::Socket) => 0,
             Ok(()) => syscall::error_code(syscall::SyscallError::InvalidArgument),
@@ -4974,6 +4985,8 @@ pub fn register_shell_elf(elf_bytes: &'static [u8]) {
     }
 }
 
+#[allow(dead_code)]
+// Retained as explicit probe telemetry while validation and release boot remain combined.
 pub fn probe_passed() -> bool {
     PROBE_PASSED.load(Ordering::Acquire)
 }
@@ -6505,7 +6518,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 directory_entry_size: core::mem::size_of::<UserDirectoryEntry>() as u64,
                 max_path_length: USER_PATH_MAX as u64,
                 process_status_size: core::mem::size_of::<UserProcessStatus>() as u64,
-                process_handle_capacity: USER_PROCESS_HANDLE_CAPACITY as u64,
+                process_handle_capacity: USER_PROCESS_HANDLE_CAPACITY,
                 image_layout_version: USER_IMAGE_LAYOUT_VERSION,
                 executable_page_capacity: USER_EXECUTABLE_PAGE_CAPACITY,
                 socket_handle_capacity: USER_SOCKET_HANDLE_CAPACITY,

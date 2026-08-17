@@ -1,0 +1,126 @@
+name: Architecture proposal
+description: Propose a durable kernel, runtime, ABI, storage, network, driver, security, package, or product contract
+title: "[Architecture]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for decisions that are expensive to reverse or affect a public boundary. Read ROADMAP.md, docs/ENGINEERING_QUALITY.md, docs/KNOWN_LIMITATIONS.md, and the relevant subsystem document first.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete user, developer, correctness, security, reliability, performance, or maintenance problem needs a decision?
+      placeholder: Describe current behavior, evidence, and why this matters now.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Boot and firmware
+        - Exceptions, interrupts, and architecture
+        - Physical memory and paging
+        - Processes, scheduling, and concurrency
+        - Syscalls, capabilities, and application ABI
+        - Runtime services and ownership
+        - Storage format and block I/O
+        - Networking and sockets
+        - Drivers, DMA, and hardware
+        - Security, identity, trust, and updates
+        - Application platform and packages
+        - Graphics, input, and desktop
+        - Build, CI, release, and compatibility
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current contract and evidence
+      description: What does GenOS do now? Link code, tests, serial markers, measurements, limitations, and prior decisions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contract
+      description: Define ownership, interfaces, success, denial, malformed input, exhaustion, timeout, cancellation, close, exit, fault, reset, rollback, recovery, versioning, and fallback behavior where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants
+      description: List properties that must always hold and can be tested or audited.
+      placeholder: One frame has one owner; stale generations never regain authority; interrupt work is bounded; and so on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include the current design when keeping it is realistic. Explain benefits, costs, and failure modes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure, cleanup, and recovery
+      description: Explain partial construction, OOM, malformed input, timeout, cancellation, process termination, I/O failure, device reset, power loss, rollback, and restart behavior where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Security, compatibility, performance, and maintenance impact
+      description: Identify authority changes, unsafe code, ABI or format changes, migration, downgrade, resource budgets, and long-term complexity.
+    validations:
+      required: true
+
+  - type: textarea
+    id: slice
+    attributes:
+      label: Smallest useful vertical slice
+      description: What is the smallest reviewable implementation that proves the contract without leaving a false success path?
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Acceptance evidence
+      description: List positive, negative, cleanup, exhaustion, fault-injection, QEMU, hardware, fuzz, long-run, and benchmark evidence required before acceptance.
+    validations:
+      required: true
+
+  - type: textarea
+    id: migration
+    attributes:
+      label: Migration and rollback
+      description: How will existing ABI, storage, wire, boot, driver, package, configuration, or user-visible behavior move to the new contract? How can the change be reverted safely?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Proposal checklist
+      options:
+        - label: I searched existing issues, pull requests, subsystem documents, and ADRs.
+          required: true
+        - label: I identified the affected roadmap gate and known limitation.
+          required: true
+        - label: I described remaining scope rather than implying this proposal solves the whole subsystem.
+          required: true
+        - label: I will add or update an ADR if the decision is accepted.
+          required: true

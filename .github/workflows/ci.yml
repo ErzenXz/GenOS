@@ -10,48 +10,168 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-boot:
-    name: Build, test, and boot
+  static-analysis:
+    name: Static analysis
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
-
-      - name: Install Rust targets and components
+      - name: Activate pinned Rust toolchain
         run: |
+          rustup show active-toolchain
           rustup target add x86_64-unknown-none x86_64-unknown-uefi
           rustup component add clippy rustfmt
+          rustc -Vv
+          cargo -V
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run Clippy
+      - name: Lint host-side ABI and build tooling
+        run: |
+          cargo clippy -p genos_abi -- -D warnings
+          cargo clippy -p xtask -- -D warnings
+
+      - name: Lint UEFI bootloader
+        run: cargo clippy -p bootloader --target x86_64-unknown-uefi -- -D warnings
+
+      - name: Lint complete kernel
         run: |
           cargo clippy -p kernel --lib -- -D warnings
           cargo clippy -p kernel --bin kernel --target x86_64-unknown-none -- -D warnings
+
+      - name: Lint userspace targets
+        run: |
           cargo clippy -p genos-user-runtime --target x86_64-unknown-none -- -D warnings
           cargo clippy -p genos-init --profile userspace --target x86_64-unknown-none -- -D warnings
           cargo clippy -p genos-shell --profile userspace --target x86_64-unknown-none -- -D warnings
 
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Activate pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none x86_64-unknown-uefi
+          rustc -Vv
+          cargo -V
+
       - name: Run workspace tests
         run: cargo test --workspace
 
-      - name: Build and boot GenOS
+  release-checks:
+    name: Release target checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Activate pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none x86_64-unknown-uefi
+          rustc -Vv
+          cargo -V
+
+      - name: Check release bootloader and kernel targets
+        run: |
+          cargo check -p bootloader --release --target x86_64-unknown-uefi
+          cargo check -p kernel --release --target x86_64-unknown-none
+
+      - name: Check userspace release profile
+        run: |
+          cargo check -p genos-user-runtime --profile userspace --target x86_64-unknown-none
+          cargo check -p genos-init --profile userspace --target x86_64-unknown-none
+          cargo check -p genos-shell --profile userspace --target x86_64-unknown-none
+
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate repository-local Markdown links
+        run: python3 tools/check_docs.py
+
+  build-and-boot:
+    name: Build and boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+
+      - name: Activate pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none x86_64-unknown-uefi
+          rustc -Vv
+          cargo -V
+
+      - name: Build image and run multi-phase QEMU suite
         run: make test
 
-      - name: Upload serial log on failure
-        if: failure()
+      - name: Write CI evidence manifest
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            rustc -Vv || true
+            cargo -V || true
+            qemu-system-x86_64 --version | head -n 1 || true
+            dpkg-query -W -f='${Package}=${Version}\n' ovmf qemu-system-x86 mtools 2>/dev/null || true
+            if [[ -f build/genos.img ]]; then
+              sha256sum build/genos.img
+            else
+              echo "build/genos.img missing"
+            fi
+            echo "build files:"
+            find build -maxdepth 1 -type f -printf '%f %s bytes\n' | sort || true
+          } > build/ci-manifest.txt
+
+      - name: Upload QEMU evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: genos-serial-log
-          path: build/serial.log
-          if-no-files-found: ignore
+          name: genos-qemu-evidence
+          path: |
+            build/ci-manifest.txt
+            build/serial*.log
+          if-no-files-found: warn
+          retention-days: 14

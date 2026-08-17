@@ -27,6 +27,8 @@ pub fn init(boot_info: &BootInfo) {
     crate::serial::println("");
 }
 
+#[allow(dead_code)]
+// Retained for deferred diagnostics and allocator telemetry.
 pub fn usable_bytes() -> u64 {
     unsafe { (*core::ptr::addr_of!(ALLOCATOR)).usable_bytes() }
 }
@@ -43,6 +45,8 @@ pub fn allocated_frames() -> u64 {
     unsafe { (*core::ptr::addr_of!(ALLOCATOR)).allocated_frames() }
 }
 
+#[allow(dead_code)]
+// Retained until F3 replaces the fixed recycle stack with complete page-state accounting.
 pub fn recycled_frames() -> usize {
     unsafe { (*core::ptr::addr_of!(ALLOCATOR)).recycled_frames() }
 }
