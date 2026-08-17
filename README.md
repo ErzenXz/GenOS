@@ -7,7 +7,7 @@
 [![Platform](https://img.shields.io/badge/platform-x86__64-565854.svg)](#build-and-run)
 [![Stage](https://img.shields.io/badge/stage-experimental-d6a752.svg)](#project-status)
 
-GenOS is a from-scratch `x86_64` operating system written in Rust. It boots through its own UEFI loader, enters a `no_std` kernel, creates isolated Ring 3 processes, mounts bounded persistent storage, configures a VirtIO IPv4 network, and opens a serial terminal backed by a userspace shell.
+GenOS is a from-scratch `x86_64` operating system written in Rust. It boots through its own UEFI loader, enters a `no_std` kernel, creates Ring 3 processes with separate address spaces, mounts bounded persistent storage, configures a VirtIO IPv4 network, and opens a serial terminal backed by a userspace shell.
 
 GenOS is **not a Linux distribution** and does not use the Linux kernel. QEMU supplies virtual hardware, not an operating-system runtime. The bootloader, kernel, process model, syscalls, shell, storage, and network stack in the image are GenOS code.
 
@@ -168,7 +168,7 @@ A successful reference boot writes `SERVER_TERMINAL_READY`, `SERIAL_TERMINAL_REA
 
 ### Requirements
 
-- Rust 1.93 or newer;
+- Rust 1.97.0, pinned by `rust-toolchain.toml`;
 - `x86_64-unknown-uefi` and `x86_64-unknown-none` Rust targets;
 - QEMU with EDK2/OVMF firmware;
 - `mtools`.
@@ -199,10 +199,23 @@ make run
 # Run workspace tests, rebuild, and execute the QEMU smoke suite
 make test
 
-# Run focused static checks
+# Run the current pull-request checks
 cargo fmt --all -- --check
+python3 tools/check_docs.py
+cargo clippy -p genos_abi -- -D warnings
+cargo clippy -p xtask -- -D warnings
+cargo clippy -p bootloader --target x86_64-unknown-uefi -- -D warnings
 cargo clippy -p kernel --lib -- -D warnings
+cargo clippy -p kernel --bin kernel --target x86_64-unknown-none -- -D warnings
+cargo clippy -p genos-user-runtime --target x86_64-unknown-none -- -D warnings
+cargo clippy -p genos-init --profile userspace --target x86_64-unknown-none -- -D warnings
+cargo clippy -p genos-shell --profile userspace --target x86_64-unknown-none -- -D warnings
 cargo test --workspace
+cargo check -p bootloader --release --target x86_64-unknown-uefi
+cargo check -p kernel --release --target x86_64-unknown-none
+cargo check -p genos-user-runtime --profile userspace --target x86_64-unknown-none
+cargo check -p genos-init --profile userspace --target x86_64-unknown-none
+cargo check -p genos-shell --profile userspace --target x86_64-unknown-none
 
 # Remove generated artifacts
 make clean

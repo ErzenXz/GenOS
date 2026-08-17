@@ -691,6 +691,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_snapshots_and_zero_dispatch_metrics_are_explicit() {
+        let snapshot = TaskSnapshotSet::new();
+        assert!(snapshot.is_empty());
+        assert_eq!(snapshot.len(), 0);
+
+        let metrics = SchedulerMetrics {
+            dispatches: 0,
+            total_dispatch_latency_ticks: u64::MAX,
+            max_dispatch_latency_ticks: u64::MAX,
+        };
+        assert_eq!(metrics.average_latency_milliticks(), 0);
+    }
+
+    #[test]
     fn task_snapshots_are_immutable_copies_of_registry_state() {
         let mut registry = TaskRegistry::new();
         let desktop = registry.register("desktop", TaskState::Ready, 32);

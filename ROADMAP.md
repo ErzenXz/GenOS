@@ -355,7 +355,7 @@ Acceptance criteria:
 - [ ] Keyboard-only and screen-reader-oriented reference flows pass.
 - [ ] Supported resolutions, scaling factors, focus states, errors, and recovery states have visual regression coverage.
 
-## Stage 10 — Hardened preview and daily-use qualification
+## Stage 10 — Production candidate and daily-use qualification
 
 **Status: planned**
 
@@ -381,9 +381,8 @@ Each release records the following. A missing measurement is reported as missing
 | Reliability | crash and power-loss recovery, timeout/reset behavior, long-duration stress |
 | Performance | boot time, idle CPU, idle memory, binary size, syscall/process latency, storage/network throughput |
 | Maintainability | module ownership, public contracts, reviewable patches, warning-free builds, architecture records |
-| Hardware | exact VM configuration and exact physical reference-machine reports |
-| Compatibility | ABI/version policy, migration tests, rollback behavior, supported application set |
-| Accessibility | keyboard operation, focus behavior, text alternatives, assistive-technology contracts |
+| Hardware behavior | exact VM configuration and exact physical reference-machine reports |
+| Product behavior | ABI and compatibility policy, migration and rollback tests, supported applications, keyboard operation, focus behavior, text alternatives, and assistive-technology contracts |
 
 ## Benchmarking against Linux or another system
 

@@ -233,6 +233,8 @@ pub fn halt_loop() -> ! {
     }
 }
 
+#[allow(dead_code)]
+// Retained for the legacy recovery console until ROADMAP F4 isolates that path.
 pub fn reboot() -> ! {
     unsafe {
         loop {
@@ -243,6 +245,8 @@ pub fn reboot() -> ! {
     }
 }
 
+#[allow(dead_code)]
+// Retained for the legacy recovery console until ROADMAP F4 isolates that path.
 pub fn shutdown() -> ! {
     unsafe {
         outw(0x604, 0x2000);

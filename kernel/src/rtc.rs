@@ -1,10 +1,15 @@
+// RTC presentation remains part of the dormant framebuffer path tracked by ROADMAP F4.
+
 use kernel::display::FixedText;
 
 use crate::arch;
 
+#[allow(dead_code)]
 const CMOS_ADDRESS: u16 = 0x70;
+#[allow(dead_code)]
 const CMOS_DATA: u16 = 0x71;
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct RtcTime {
     pub year: u16,
@@ -16,6 +21,7 @@ pub struct RtcTime {
 }
 
 impl RtcTime {
+    #[allow(dead_code)]
     pub fn format_clock(self) -> FixedText {
         let mut text = FixedText::empty();
         push_two(&mut text, self.hour);
@@ -26,6 +32,7 @@ impl RtcTime {
         text
     }
 
+    #[allow(dead_code)]
     pub fn format_date_time(self) -> FixedText {
         let mut text = FixedText::from_str("rtc ");
         text.push_u64(self.year as u64);
@@ -43,6 +50,7 @@ impl RtcTime {
     }
 }
 
+#[allow(dead_code)]
 pub fn read() -> RtcTime {
     let mut second = read_register(0x00);
     let mut minute = read_register(0x02);
@@ -82,6 +90,7 @@ pub fn read() -> RtcTime {
     }
 }
 
+#[allow(dead_code)]
 fn read_register(register: u8) -> u8 {
     unsafe {
         arch::outb(CMOS_ADDRESS, register);
@@ -89,10 +98,12 @@ fn read_register(register: u8) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 fn bcd_to_binary(value: u8) -> u8 {
     (value & 0x0f) + ((value / 16) * 10)
 }
 
+#[allow(dead_code)]
 fn push_two(text: &mut FixedText, value: u8) {
     text.push_str(core::str::from_utf8(&[b'0' + (value / 10)]).unwrap_or(""));
     text.push_str(core::str::from_utf8(&[b'0' + (value % 10)]).unwrap_or(""));

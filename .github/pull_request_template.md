@@ -19,12 +19,21 @@ Describe observable behavior before the change and the exact behavior after it. 
 Commands run:
 
 - [ ] `cargo fmt --all -- --check`
+- [ ] `python3 tools/check_docs.py`
+- [ ] `cargo clippy -p genos_abi -- -D warnings`
+- [ ] `cargo clippy -p xtask -- -D warnings`
+- [ ] `cargo clippy -p bootloader --target x86_64-unknown-uefi -- -D warnings`
 - [ ] `cargo clippy -p kernel --lib -- -D warnings`
 - [ ] `cargo clippy -p kernel --bin kernel --target x86_64-unknown-none -- -D warnings`
 - [ ] `cargo clippy -p genos-user-runtime --target x86_64-unknown-none -- -D warnings`
 - [ ] `cargo clippy -p genos-init --profile userspace --target x86_64-unknown-none -- -D warnings`
 - [ ] `cargo clippy -p genos-shell --profile userspace --target x86_64-unknown-none -- -D warnings`
 - [ ] `cargo test --workspace`
+- [ ] `cargo check -p bootloader --release --target x86_64-unknown-uefi`
+- [ ] `cargo check -p kernel --release --target x86_64-unknown-none`
+- [ ] `cargo check -p genos-user-runtime --profile userspace --target x86_64-unknown-none`
+- [ ] `cargo check -p genos-init --profile userspace --target x86_64-unknown-none`
+- [ ] `cargo check -p genos-shell --profile userspace --target x86_64-unknown-none`
 - [ ] `make test`
 
 Additional evidence:
@@ -41,7 +50,7 @@ Additional evidence:
 Paste commands, markers, benchmark artifact paths, or a compact result summary here.
 ```
 
-Do not mark the change verified when a required later stage was skipped because an earlier command failed.
+Do not mark the change verified when a required later stage was skipped because an earlier command failed. The workflow file defines checks enforced now; target lanes in the quality plan remain unverified until implemented.
 
 ## Risk classification
 

@@ -1,3 +1,6 @@
+// The serial-first kernel still compiles the legacy framebuffer and PS/2 path.
+// ROADMAP F4 tracks isolating or removing that path.
+
 use kernel::display::Point;
 use kernel::input::{EventQueue, InputEvent, KeyboardDecoder, MouseDecoder, MouseState};
 
@@ -10,6 +13,7 @@ static mut MOUSE_STATE: MouseState = MouseState::new(Point::new(640, 400));
 static mut MAX_X: i32 = 1279;
 static mut MAX_Y: i32 = 799;
 
+#[allow(dead_code)]
 pub fn init(width: i32, height: i32) {
     unsafe {
         MAX_X = width.saturating_sub(1).max(0);
@@ -46,6 +50,7 @@ pub fn mouse_irq() {
     }
 }
 
+#[allow(dead_code)]
 pub fn poll() {
     unsafe {
         let mut guard = 0;
@@ -70,18 +75,22 @@ pub fn poll() {
     }
 }
 
+#[allow(dead_code)]
 pub fn pop_event() -> Option<InputEvent> {
     unsafe { (*core::ptr::addr_of_mut!(QUEUE)).pop() }
 }
 
+#[allow(dead_code)]
 pub fn peek_event() -> Option<InputEvent> {
     unsafe { (*core::ptr::addr_of!(QUEUE)).peek() }
 }
 
+#[allow(dead_code)]
 pub fn event_depth() -> usize {
     unsafe { (*core::ptr::addr_of!(QUEUE)).len() }
 }
 
+#[allow(dead_code)]
 pub fn mouse_state() -> MouseState {
     unsafe { MOUSE_STATE }
 }
@@ -98,6 +107,7 @@ unsafe fn apply_mouse_event(event: InputEvent) {
     }
 }
 
+#[allow(dead_code)]
 unsafe fn enable_ps2_mouse() {
     wait_write();
     arch::outb(0x64, 0xa8);
@@ -115,6 +125,7 @@ unsafe fn enable_ps2_mouse() {
     let _ = mouse_read_ack();
 }
 
+#[allow(dead_code)]
 unsafe fn mouse_write(byte: u8) {
     wait_write();
     arch::outb(0x64, 0xd4);
@@ -122,11 +133,13 @@ unsafe fn mouse_write(byte: u8) {
     arch::outb(0x60, byte);
 }
 
+#[allow(dead_code)]
 unsafe fn mouse_read_ack() -> u8 {
     wait_read();
     arch::inb(0x60)
 }
 
+#[allow(dead_code)]
 unsafe fn wait_write() {
     let mut spins = 100_000;
     while spins > 0 && arch::inb(0x64) & 0x02 != 0 {
@@ -134,6 +147,7 @@ unsafe fn wait_write() {
     }
 }
 
+#[allow(dead_code)]
 unsafe fn wait_read() {
     let mut spins = 100_000;
     while spins > 0 && arch::inb(0x64) & 0x01 == 0 {

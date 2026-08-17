@@ -242,18 +242,18 @@ Product UI must not become a reason to move service ownership or application log
 
 ## Build, CI, and release process
 
-At the audited baseline, the latest `main` CI run stopped during Clippy, so workspace tests and QEMU boot did not execute. This PR fixes the two reported task-metrics lints, but the branch is not considered verified until the complete pull-request workflow passes.
+At the audited `main` baseline, CI stopped during Clippy, so workspace tests and QEMU boot did not execute. This PR clears the strict kernel-binary diagnostics and replaces the sequential workflow with independent static-analysis, host-test, release-profile, documentation, and QEMU jobs. The supported Rust toolchain is pinned, and the QEMU job retains phase-specific serial logs plus a reproducibility manifest.
 
-The project still needs:
+A green run on this branch proves only the checks implemented in `.github/workflows/ci.yml`. It does not make the branch a verified reference build and does not close F0-F7. The project still needs:
 
-- a declared and tested toolchain policy;
-- complete debug and release build coverage;
-- separate fast, scheduled, and hardware lanes;
-- retained fuzz corpora;
-- generated unsafe inventory;
-- published image hashes and reproducibility metadata;
+- the fixes and negative evidence required by F1-F6;
+- full release-image construction rather than release-profile compilation alone;
+- a separately tested minimum-supported-Rust-version range beyond the pinned toolchain;
+- retained fuzz corpora and changed-parser fuzz smoke;
+- a generated unsafe-code inventory and broader architecture-boundary enforcement;
+- scheduled long-run and physical-hardware lanes;
 - branch protection that requires all release-relevant checks;
-- release artifacts tied to supported configurations and known limitations.
+- reproducible release artifacts, hashes, provenance, signing, and supported-configuration metadata.
 
 Required fix: Roadmap F0, F6, and F7.
 

@@ -40,5 +40,6 @@ Do not silently rewrite an accepted ADR to make history appear cleaner. Small co
 | ADR | Title | Status |
 | --- | --- | --- |
 | 0000 | Template | Template |
+| 0001 | Evidence-gated release and CI policy | Proposed |
 
 Add accepted ADRs to this index in the same pull request.

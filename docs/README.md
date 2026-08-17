@@ -34,7 +34,7 @@ Use an ADR for a durable contract such as exception frames, allocation, scheduli
 | `README.md` | concise current project identity, supported development path, build instructions, and status |
 | `ROADMAP.md` | ordering, dependencies, stage status, and testable acceptance criteria |
 | `KNOWN_LIMITATIONS.md` | material correctness, security, reliability, compatibility, hardware, and release gaps |
-| `ENGINEERING_QUALITY.md` | release levels, invariants, CI, fuzzing, fault injection, benchmarks, and definition of done |
+| `ENGINEERING_QUALITY.md` | release levels, target invariants, currently implemented checks, target CI lanes, fuzzing, fault injection, benchmarks, and definition of done |
 | subsystem document | exact current ownership, ABI, state, bounds, success, failure, and cleanup contract |
 | ADR | reasoning and consequences of one durable architecture decision |
 | `CONTRIBUTING.md` | review and delivery rules |

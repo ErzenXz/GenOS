@@ -29,9 +29,9 @@ A release cannot average these dimensions together. Excellent performance does n
 
 The current project level is **Experimental**.
 
-## Non-negotiable invariants
+## Verified-reference target invariants
 
-These invariants apply before feature-specific acceptance criteria.
+These invariants are mandatory before GenOS may claim the **Verified reference build** level. They also guide new work now: a pull request must not deepen a known violation. Current exceptions remain explicit in `KNOWN_LIMITATIONS.md` until implementation and evidence close the corresponding roadmap gate.
 
 ### Entry and fault handling
 
@@ -177,11 +177,23 @@ A physical-machine result includes:
 
 “Works on my machine” without this report is not an acceptance criterion.
 
-## CI lanes
+## Current implemented checks
+
+The current pull-request workflow in `.github/workflows/ci.yml` is the source of truth for checks enforced now. It runs independent jobs for:
+
+1. formatting and strict Clippy for the ABI, build tool, UEFI bootloader, kernel library, complete kernel binary, userspace runtime, init, and shell;
+2. workspace host tests;
+3. release-profile compilation of the bootloader, kernel, and userspace targets;
+4. repository-local Markdown link validation;
+5. image construction and the current multi-phase QEMU smoke matrix.
+
+The QEMU job retains phase-specific serial logs and a manifest containing the commit, Rust and Cargo versions, QEMU and OVMF information, and the image hash. These checks narrow F0. They do not implement fuzzing, generated unsafe inventory, scheduled repetition, hardware testing, branch protection, or every target listed below.
+
+## Target CI lanes
 
 ### Pull-request lane
 
-Required before merge:
+Target requirement before merge once the corresponding F0 enforcement exists:
 
 1. formatting;
 2. Clippy with warnings denied for every shipped Rust target and profile;
@@ -338,9 +350,9 @@ The title should name the measured result, for example “GenOS 0.xx reaches the
 
 Linux remains a valuable engineering reference for hardware breadth, filesystems, networking, scheduling, observability, security, and review process. GenOS should learn from those strengths while testing whether a smaller, integrated design can win on selected dimensions.
 
-## Definition of done
+## Definition of done for gate-closing changes
 
-A kernel or system change is done when:
+A kernel or system change that closes a roadmap criterion is done when:
 
 - the documented success path works;
 - malformed input and denied authority fail closed;
