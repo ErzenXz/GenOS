@@ -1,6 +1,8 @@
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use kernel::exception::{pic_eoi_policy, process_local, ExceptionFrame};
+
 use crate::{arch, input_hw, userspace};
 
 const PIC1_COMMAND: u16 = 0x20;
@@ -8,6 +10,7 @@ const PIC1_DATA: u16 = 0x21;
 const PIC2_COMMAND: u16 = 0xa0;
 const PIC2_DATA: u16 = 0xa1;
 const PIC_EOI: u8 = 0x20;
+const PIC_READ_ISR: u8 = 0x0b;
 const ENABLE_HARDWARE_INTERRUPTS: bool = true;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
@@ -25,144 +28,28 @@ pub struct InterruptStats {
 }
 
 global_asm!(
-    r#"
-    .macro genos_push_regs
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rbp
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-    .endm
-
-    .macro genos_pop_regs
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbp
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
-    .endm
-
-    .macro genos_call_aligned handler
-    mov rax, rsp
-    and rsp, -16
-    sub rsp, 16
-    mov [rsp], rax
-    call \handler
-    mov rsp, [rsp]
-    .endm
-
-    .global genos_irq0_stub
-genos_irq0_stub:
-    cld
-    genos_push_regs
-    mov rdi, rsp
-    genos_call_aligned genos_irq0_rust
-    test rax, rax
-    jnz genos_leave_userspace
-    genos_pop_regs
-    iretq
-
-    .global genos_irq1_stub
-genos_irq1_stub:
-    cld
-    genos_push_regs
-    genos_call_aligned genos_irq1_rust
-    genos_pop_regs
-    iretq
-
-    .global genos_irq12_stub
-genos_irq12_stub:
-    cld
-    genos_push_regs
-    genos_call_aligned genos_irq12_rust
-    genos_pop_regs
-    iretq
-
-    .global genos_fault_df_stub
-genos_fault_df_stub:
-    cld
-    genos_push_regs
-    mov rdi, 8
-    mov rsi, [rsp + 120]
-    mov rdx, [rsp + 128]
-    xor rcx, rcx
-    mov r8, [rsp + 136]
-    genos_call_aligned genos_fault_rust
-    test rax, rax
-    jnz genos_leave_userspace
-1:
-    hlt
-    jmp 1b
-
-    .global genos_fault_gp_stub
-genos_fault_gp_stub:
-    cld
-    genos_push_regs
-    mov rdi, 13
-    mov rsi, [rsp + 120]
-    mov rdx, [rsp + 128]
-    xor rcx, rcx
-    mov r8, [rsp + 136]
-    genos_call_aligned genos_fault_rust
-    test rax, rax
-    jnz genos_leave_userspace
-2:
-    hlt
-    jmp 2b
-
-    .global genos_fault_pf_stub
-genos_fault_pf_stub:
-    cld
-    genos_push_regs
-    mov rdi, 14
-    mov rsi, [rsp + 120]
-    mov rdx, [rsp + 128]
-    mov rcx, cr2
-    mov r8, [rsp + 136]
-    genos_call_aligned genos_fault_rust
-    test rax, rax
-    jnz genos_leave_userspace
-3:
-    hlt
-    jmp 3b
-"#
+    include_str!("interrupt_entry.S"),
+    error_code_mask = const kernel::exception::ERROR_CODE_MASK,
 );
 
 extern "C" {
     fn genos_irq0_stub();
     fn genos_irq1_stub();
     fn genos_irq12_stub();
-    fn genos_fault_df_stub();
-    fn genos_fault_gp_stub();
-    fn genos_fault_pf_stub();
+    static genos_vector_table: [unsafe extern "C" fn(); 256];
+}
+
+pub fn vector_handler(vector: usize) -> unsafe extern "C" fn() {
+    // SAFETY: the linked assembly emits exactly 256 immutable function pointers.
+    // Array indexing checks the caller's vector before reading the table.
+    unsafe { genos_vector_table[vector] }
 }
 
 pub fn init() {
     arch::disable_interrupts();
+    // SAFETY: BSP initialization, with maskable interrupts disabled, owns IDT
+    // mutation and the legacy PIC/PIT. Every other vector was installed by arch.
     unsafe {
-        arch::set_idt_handler(8, genos_fault_df_stub);
-        arch::set_idt_handler(13, genos_fault_gp_stub);
-        arch::set_idt_handler(14, genos_fault_pf_stub);
         arch::set_idt_handler(32, genos_irq0_stub);
         arch::set_idt_handler(33, genos_irq1_stub);
         arch::set_idt_handler(44, genos_irq12_stub);
@@ -170,6 +57,7 @@ pub fn init() {
         remap_pic();
         init_pit_100hz();
     }
+    crate::serial::println("EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated");
     crate::serial::println("IRQ_READY");
 }
 
@@ -234,29 +122,74 @@ extern "C" fn genos_irq12_rust() {
 }
 
 #[no_mangle]
-extern "C" fn genos_fault_rust(vector: u64, error: u64, rip: u64, cr2: u64, cs: u64) -> u64 {
-    if matches!(vector, 13 | 14)
-        && cs & 3 == 3
-        && userspace::terminate_current_fault(vector as u8, error, rip, cr2)
+extern "C" fn genos_vector_rust(frame: &ExceptionFrame, sampled_cr2: u64) -> u64 {
+    // Entry owns an aligned immutable frame on its TSS stack. Interrupt gates
+    // clear IF. Fatal/NMI/debug stacks do not overlap the ordinary IRQ stack.
+    let cr2 = if frame.vector == 14 { sampled_cr2 } else { 0 };
+    if (32..48).contains(&frame.vector) {
+        unexpected_pic_irq((frame.vector - 32) as u8);
+        return 0;
+    }
+    print_fault(frame, cr2);
+    if process_local(frame.vector, frame.cs)
+        && userspace::terminate_current_fault(frame.vector as u8, frame.error, frame.rip, cr2)
     {
         return 1;
     }
-    match vector {
-        8 => crate::serial::println("FAULT_DF"),
-        13 => crate::serial::println("FAULT_GP"),
-        14 => crate::serial::println("FAULT_PF"),
-        _ => crate::serial::println("FAULT_CPU"),
-    }
-    crate::serial::print("vector=");
-    crate::serial::print_u64(vector);
-    crate::serial::print(" error=0x");
-    crate::serial::print_hex(error);
-    crate::serial::print(" rip=0x");
-    crate::serial::print_hex(rip);
-    crate::serial::print(" cr2=0x");
-    crate::serial::print_hex(cr2);
-    crate::serial::println("");
+    crate::serial::println("EXCEPTION_FATAL_HALT");
+    arch::disable_interrupts();
     arch::halt_loop();
+}
+
+fn print_fault(frame: &ExceptionFrame, cr2: u64) {
+    crate::serial::print("EXCEPTION_FRAME vector=");
+    crate::serial::print_u64(frame.vector);
+    crate::serial::print(" cpl=");
+    crate::serial::print_u64(frame.cs & 3);
+    for (label, value) in [
+        (" error=0x", frame.error),
+        (" rip=0x", frame.rip),
+        (" cs=0x", frame.cs),
+        (" rflags=0x", frame.rflags),
+        (" rsp=0x", frame.rsp),
+        (" ss=0x", frame.ss),
+        (" cr2=0x", cr2),
+    ] {
+        crate::serial::print(label);
+        crate::serial::print_hex(value);
+    }
+    crate::serial::println("");
+}
+
+fn unexpected_pic_irq(irq: u8) {
+    // SAFETY: only the remapped PIC range reaches this function, so irq < 16.
+    // IF is clear on the BSP; command/mask accesses cannot race normal IRQ work.
+    unsafe {
+        let in_service = match irq {
+            7 => {
+                arch::outb(PIC1_COMMAND, PIC_READ_ISR);
+                arch::inb(PIC1_COMMAND) & 0x80 != 0
+            }
+            15 => {
+                arch::outb(PIC2_COMMAND, PIC_READ_ISR);
+                arch::inb(PIC2_COMMAND) & 0x80 != 0
+            }
+            _ => true,
+        };
+        if in_service {
+            // An unowned real IRQ is masked before EOI to prevent a storm.
+            let port = if irq < 8 { PIC1_DATA } else { PIC2_DATA };
+            let mask = arch::inb(port);
+            arch::outb(port, mask | (1 << (irq & 7)));
+        }
+        let (master, slave) = pic_eoi_policy(irq, in_service);
+        if slave {
+            arch::outb(PIC2_COMMAND, PIC_EOI);
+        }
+        if master {
+            arch::outb(PIC1_COMMAND, PIC_EOI);
+        }
+    }
 }
 
 unsafe fn remap_pic() {
@@ -276,7 +209,6 @@ unsafe fn remap_pic() {
     io_wait();
     arch::outb(PIC2_DATA, 0x01);
     io_wait();
-
     arch::outb(PIC1_DATA, 0b1111_1000);
     arch::outb(PIC2_DATA, 0b1110_1111);
 }
