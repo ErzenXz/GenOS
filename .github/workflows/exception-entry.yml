@@ -24,6 +24,28 @@ jobs:
       - name: Reject missing, forged and duplicate fault evidence
         run: python3 -m unittest discover -s tools -p test_exception_harness.py -v
 
+  source-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Export the exact tested source without Git credentials or untracked files
+        run: |
+          mkdir -p build
+          git archive --format=tar HEAD | gzip -n > build/genos-source.tar.gz
+          git rev-parse HEAD > build/source-commit.txt
+          sha256sum build/genos-source.tar.gz > build/source-sha256.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: genos-source-evidence
+          path: |
+            build/genos-source.tar.gz
+            build/source-commit.txt
+            build/source-sha256.txt
+          retention-days: 14
+
   cpu-fault:
     name: CPU fault (${{ matrix.mode }}, ${{ matrix.fault }})
     runs-on: ubuntu-latest

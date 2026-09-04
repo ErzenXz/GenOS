@@ -190,14 +190,18 @@ fn tss_descriptor(base: u64) -> (u64, u64) {
 pub unsafe fn set_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
     if vector < 256 {
         let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr.add(vector).write(IdtEntry::new(vector, handler, false));
+        idt_ptr
+            .add(vector)
+            .write(IdtEntry::new(vector, handler, false));
     }
 }
 
 pub unsafe fn set_user_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
     if vector < 256 {
         let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr.add(vector).write(IdtEntry::new(vector, handler, true));
+        idt_ptr
+            .add(vector)
+            .write(IdtEntry::new(vector, handler, true));
     }
 }
 

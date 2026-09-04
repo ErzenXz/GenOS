@@ -69,3 +69,6 @@ pub const fn pic_eoi_policy(irq: u8, in_service: bool) -> (bool, bool) {
         _ => (false, false),
     }
 }
+
+#[cfg(test)]
+mod tests;

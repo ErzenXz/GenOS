@@ -1,5 +1,5 @@
+use super::{has_error_code, ist_index, pic_eoi_policy, process_local, ExceptionFrame};
 use core::mem::{align_of, offset_of, size_of};
-use kernel::exception::{has_error_code, ist_index, pic_eoi_policy, process_local, ExceptionFrame};
 
 #[test]
 fn frame_matches_the_assembly_stack_exactly() {

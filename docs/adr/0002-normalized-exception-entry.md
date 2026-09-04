@@ -63,7 +63,7 @@ process-local recovery.
 Run:
 
 ```sh
-cargo test -p kernel --test exception
+cargo test -p kernel --lib exception
 python3 -m unittest discover -s tools -p test_exception_harness.py -v
 python3 tools/test_exception_entry.py --mode user --fault de
 python3 tools/test_exception_entry.py --mode user --fault ud
