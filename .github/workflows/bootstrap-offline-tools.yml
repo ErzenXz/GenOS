@@ -1,0 +1,91 @@
+name: Offline verification tools
+
+on:
+  push:
+    branches: [feat/normalized-exception-entry]
+    paths: [.github/workflows/bootstrap-offline-tools.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  export-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the same reference tools used by CI
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes mtools ovmf qemu-system-x86
+          rustup show active-toolchain
+          rustup component add rustfmt clippy
+          cargo fetch --locked
+      - name: Export only public tool binaries, runtime libraries and public crate caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          export BUNDLE="$RUNNER_TEMP/genos-tools"
+          mkdir -p "$BUNDLE"/{rust,cargo-home,bin-real,bin,lib,share,licenses} build
+          cp -a "$(rustc --print sysroot)/." "$BUNDLE/rust/"
+          cp -a "$HOME/.cargo/registry" "$BUNDLE/cargo-home/"
+          cp -aL /usr/share/qemu /usr/share/OVMF "$BUNDLE/share/"
+          cp -aL /usr/lib/x86_64-linux-gnu/qemu "$BUNDLE/lib/qemu"
+          cp /usr/share/doc/qemu-system-x86/copyright "$BUNDLE/licenses/qemu-copyright"
+          cp /usr/share/doc/mtools/copyright "$BUNDLE/licenses/mtools-copyright"
+          python3 - <<'PY'
+          import os, pathlib, re, shutil, subprocess
+          root = pathlib.Path(os.environ['BUNDLE'])
+          programs = ['qemu-system-x86_64', 'mformat', 'mcopy', 'mmd', 'mtype', 'mdir']
+          inputs = []
+          for name in programs:
+              source = pathlib.Path(shutil.which(name))
+              target = root / 'bin-real' / name
+              shutil.copy2(source, target)
+              inputs.append(target)
+          inputs.extend((root / 'lib/qemu').glob('*.so'))
+          for path in inputs:
+              result = subprocess.run(['ldd', str(path)], text=True, capture_output=True, check=True)
+              for library in re.findall(r'(/[^\s()]+)', result.stdout):
+                  source = pathlib.Path(library)
+                  if source.is_file():
+                      shutil.copy2(source, root / 'lib' / source.name)
+          wrapper = '''#!/bin/sh
+          ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+          NAME=$(basename -- "$0")
+          export QEMU_MODULE_DIR="$ROOT/lib/qemu"
+          if [ "$NAME" = qemu-system-x86_64 ]; then
+              exec "$ROOT/lib/ld-linux-x86-64.so.2" --library-path "$ROOT/lib" "$ROOT/bin-real/$NAME" -L "$ROOT/share/qemu" "$@"
+          fi
+          exec "$ROOT/lib/ld-linux-x86-64.so.2" --library-path "$ROOT/lib" "$ROOT/bin-real/$NAME" "$@"
+          '''
+          for name in programs:
+              path = root / 'bin' / name
+              path.write_text(wrapper)
+              path.chmod(0o755)
+          (root / 'env.sh').write_text('''export GENOS_TOOLS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+          export PATH="$GENOS_TOOLS/bin:$GENOS_TOOLS/rust/bin:$PATH"
+          export CARGO_HOME="$GENOS_TOOLS/cargo-home"
+          export CARGO_NET_OFFLINE=true
+          export OVMF_CODE="$GENOS_TOOLS/share/OVMF/OVMF_CODE_4M.fd"
+          ''')
+          PY
+          {
+            git rev-parse HEAD
+            rustc -Vv
+            cargo -V
+            qemu-system-x86_64 --version
+            dpkg-query -W -f='${Package}=${Version}\n' ovmf qemu-system-x86 mtools
+            echo 'Source distributions: https://static.rust-lang.org/ https://archive.ubuntu.com/ubuntu/pool/main/q/qemu/ https://archive.ubuntu.com/ubuntu/pool/main/m/mtools/'
+          } > "$BUNDLE/manifest.txt"
+          tar -czf build/genos-offline-tools.tar.gz -C "$RUNNER_TEMP" genos-tools
+          sha256sum build/genos-offline-tools.tar.gz > build/genos-offline-tools.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: genos-offline-tools
+          path: |
+            build/genos-offline-tools.tar.gz
+            build/genos-offline-tools.sha256
+          retention-days: 1
