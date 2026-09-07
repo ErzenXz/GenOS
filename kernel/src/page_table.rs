@@ -25,7 +25,8 @@ pub unsafe trait TableMemory {
 
 /// # Safety
 /// Source is a valid live page-table tree of the given depth (1..=4). No
-/// other writer or hardware walker mutates it during this bounded traversal.
+/// software writer mutates its topology during this bounded traversal. A
+/// hardware implementation must tolerate accessed/dirty flag updates.
 pub unsafe fn clone_supervisor(
     memory: &mut impl TableMemory,
     source: u64,

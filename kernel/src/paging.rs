@@ -413,10 +413,12 @@ unsafe impl kernel::page_table::TableMemory for PhysicalTables {
         unsafe { allocate_table().ok() }
     }
     unsafe fn read(&self, root: u64, slot: usize) -> u64 {
-        table(root)[slot]
+        // Hardware may update accessed/dirty flags in the active source tree.
+        // Do not create an immutable Rust reference spanning those updates.
+        core::ptr::read_volatile((root as *const u64).add(slot))
     }
     unsafe fn write(&mut self, root: u64, slot: usize, entry: u64) {
-        table_mut(root)[slot] = entry;
+        core::ptr::write_volatile((root as *mut u64).add(slot), entry);
     }
     fn release(&mut self, frame: u64) {
         assert!(
