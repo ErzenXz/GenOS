@@ -785,6 +785,11 @@ fn wait_not_busy() -> Result<(), StorageError> {
     for _ in 0..ATA_POLL_LIMIT {
         let status = unsafe { arch::inb(ata_port(7)) };
         if status == 0 || status == u8::MAX || status & (ATA_STATUS_ERROR | ATA_STATUS_DF) != 0 {
+            serial::print("[DEBUG-ata-ci] not-busy status=");
+            serial::print_hex(status as u64);
+            serial::print(" error=");
+            serial::print_hex(unsafe { arch::inb(ata_port(1)) } as u64);
+            serial::println("");
             return Err(StorageError::Device);
         }
         if status & ATA_STATUS_BUSY == 0 {
@@ -792,6 +797,7 @@ fn wait_not_busy() -> Result<(), StorageError> {
         }
         core::hint::spin_loop();
     }
+    serial::println("[DEBUG-ata-ci] not-busy poll-budget-exhausted");
     Err(StorageError::Device)
 }
 
@@ -799,6 +805,11 @@ fn wait_drq() -> Result<(), StorageError> {
     for _ in 0..ATA_POLL_LIMIT {
         let status = unsafe { arch::inb(ata_port(7)) };
         if status == 0 || status == u8::MAX || status & (ATA_STATUS_ERROR | ATA_STATUS_DF) != 0 {
+            serial::print("[DEBUG-ata-ci] drq status=");
+            serial::print_hex(status as u64);
+            serial::print(" error=");
+            serial::print_hex(unsafe { arch::inb(ata_port(1)) } as u64);
+            serial::println("");
             return Err(StorageError::Device);
         }
         if status & ATA_STATUS_BUSY == 0 && status & ATA_STATUS_DRQ != 0 {
@@ -806,6 +817,7 @@ fn wait_drq() -> Result<(), StorageError> {
         }
         core::hint::spin_loop();
     }
+    serial::println("[DEBUG-ata-ci] drq poll-budget-exhausted");
     Err(StorageError::Device)
 }
 
