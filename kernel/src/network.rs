@@ -1952,6 +1952,7 @@ impl NetworkStack {
             let throughput = self.tcp_payload_bytes.saturating_mul(1_000) / elapsed;
             if !self.regression_sample_reported
                 && self.tcp_max_stream_bytes >= PASSIVE_TCP_MAX_CWND as u64
+                && self.passive_streams.iter().all(Option::is_none)
             {
                 self.regression_sample_reported = true;
                 serial::print("NETWORK_REGRESSION_SAMPLE bytes=");

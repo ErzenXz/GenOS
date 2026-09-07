@@ -29,3 +29,29 @@ extern crate self as kernel;
 mod network_transport;
 #[cfg(test)]
 use network_transport::{network_device, serial};
+
+#[cfg(test)]
+mod arch {
+    pub unsafe fn inb(_: u16) -> u8 {
+        panic!("unexpected hardware I/O in driver test")
+    }
+    pub unsafe fn inw(_: u16) -> u16 {
+        panic!("unexpected hardware I/O in driver test")
+    }
+    pub unsafe fn inl(_: u16) -> u32 {
+        panic!("unexpected hardware I/O in driver test")
+    }
+    pub unsafe fn outb(_: u16, _: u8) {
+        panic!("unexpected hardware I/O in driver test")
+    }
+    pub unsafe fn outw(_: u16, _: u16) {
+        panic!("unexpected hardware I/O in driver test")
+    }
+    pub unsafe fn outl(_: u16, _: u32) {
+        panic!("unexpected hardware I/O in driver test")
+    }
+}
+#[cfg(test)]
+#[allow(dead_code)] // Compile the production driver; only RX completion is invoked.
+#[path = "network_device.rs"]
+mod network_device_under_test;

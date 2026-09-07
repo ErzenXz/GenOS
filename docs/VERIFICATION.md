@@ -5,7 +5,7 @@ PR #4 (quality gates) and PR #6 (normalized exception entry) are merged. This in
 ## Proven locally
 
 - Pinned Rust 1.97.0 on Apple Silicon macOS, native QEMU 11.1.1 and EDK2.
-- 137 Rust host tests and eight Python evidence-parser regressions pass.
+- 138 Rust host tests and eight Python evidence-parser regressions pass.
 - Formatting, documentation links, strict Clippy for every shipped target, and all CI release-target checks pass. The earlier kernel-binary lint failures are resolved.
 - All eight original CPU exception cases pass: user/kernel divide error, invalid opcode, general protection and page fault.
 - Six additional CPU protection cases pass with exact fault-address checks: user data/stack NX; kernel IDT/text write protection; SMEP execution; SMAP data access. The default CPU reports optional features absent, while these six probes use `-cpu max` and require both enabled.
@@ -26,3 +26,5 @@ The [development benchmark](PERFORMANCE.md) records the earlier GenOS 0.55 basel
 F0's separate release-image boot still remains open. CPU protection coverage does not establish physical-frame-wide W^X, missing-NX or mixed optional-feature VM proofs, emergency-stack guards/nesting, XSTATE, or physical hardware support. The allocator manages up to 8 GiB of usable frames across 64 regions; firmware-map truncation, larger metadata, per-owner frame tokens, sensitive-page scrubbing, contiguous allocations and SMP remain future work. Validation probes still run in normal development boot.
 
 Production TCP/IPv6 sockets and DNS, identity and reviewed TLS, signed packages, general application launch, userspace graphics/accessibility, ACPI/SMP, xHCI/NVMe, suspend/resume and real-machine validation remain roadmap gates. Run the current console OS with `make run`.
+
+The first integration CI run exposed stranded coalesced VirtIO RX completions. A production-driver queue test reproduced it: one IRQ with two used descriptors delivered only the first. RX now drains the announced bounded batch before waiting for another IRQ, preserves correct recovery accounting, and rejects impossible used-index advances. The existing regression budgets are unchanged.

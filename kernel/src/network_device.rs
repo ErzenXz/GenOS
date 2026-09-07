@@ -360,6 +360,9 @@ pub struct VirtioNet {
     mac: [u8; 6],
     rx_available: u16,
     rx_used: u16,
+    rx_batch_end: u16,
+    rx_batch_interrupt: bool,
+    rx_faulted: bool,
     tx_available: u16,
     tx_used: u16,
     rx_idle_checks: usize,
@@ -374,6 +377,9 @@ impl VirtioNet {
             mac: [0; 6],
             rx_available: 0,
             rx_used: 0,
+            rx_batch_end: 0,
+            rx_batch_interrupt: false,
+            rx_faulted: false,
             tx_available: 0,
             tx_used: 0,
             rx_idle_checks: 0,
@@ -454,6 +460,9 @@ impl VirtioNet {
         );
         self.rx_available = VIRTQUEUE_SIZE as u16;
         self.rx_used = 0;
+        self.rx_batch_end = 0;
+        self.rx_batch_interrupt = false;
+        self.rx_faulted = false;
     }
 
     unsafe fn notify(address: u64, queue_index: u16) {
@@ -583,7 +592,7 @@ impl FrameDevice for VirtioNet {
     }
 
     fn transmit(&mut self, frame: &[u8]) -> bool {
-        if frame.len() > MAX_FRAME {
+        if self.rx_faulted || frame.len() > MAX_FRAME {
             return false;
         }
         let wire_length = frame.len().max(60);
@@ -656,24 +665,42 @@ impl FrameDevice for VirtioNet {
     }
 
     fn receive(&mut self, packet: &mut PacketBuffer) -> bool {
+        if self.rx_faulted {
+            return false;
+        }
         unsafe {
             let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
-            let interrupt_driven = VIRTIO_INTERRUPT_PENDING.swap(false, Ordering::AcqRel);
+            let notified = VIRTIO_INTERRUPT_PENDING.swap(false, Ordering::AcqRel);
             self.rx_idle_checks = self.rx_idle_checks.wrapping_add(1);
             let recovery = self
                 .rx_idle_checks
                 .is_multiple_of(VIRTIO_RECOVERY_POLL_INTERVAL);
-            if !interrupt_driven && !recovery {
+            let pending = self.rx_used != self.rx_batch_end;
+            if !notified && !pending && !recovery {
                 return false;
             }
-            if recovery {
-                VIRTIO_RECOVERY_POLLS.fetch_add(1, Ordering::Relaxed);
+            if notified || !pending {
+                if !notified {
+                    VIRTIO_RECOVERY_POLLS.fetch_add(1, Ordering::Relaxed);
+                }
+                fence(Ordering::Acquire);
+                let used_index = read_volatile(addr_of!((*queue).used.index));
+                if used_index.wrapping_sub(self.rx_used) > VIRTQUEUE_SIZE as u16 {
+                    self.rx_faulted = true;
+                    serial::println("VIRTIO_NET_RX_INVALID_USED_ADVANCE");
+                    return self.fail();
+                }
+                // A single MSI-X delivery can cover an entire used-ring batch.
+                // Retain readiness until that bounded snapshot is drained;
+                // consuming one frame must not strand its siblings until a
+                // recovery poll or count them as lost-interrupt completions.
+                self.rx_batch_end = used_index;
+                self.rx_batch_interrupt = notified;
             }
-            fence(Ordering::Acquire);
-            let used_index = read_volatile(addr_of!((*queue).used.index));
-            if self.rx_used == used_index {
+            if self.rx_used == self.rx_batch_end {
                 return false;
             }
+            let interrupt_driven = self.rx_batch_interrupt;
             let element = read_volatile(addr_of!(
                 (*queue).used.ring[self.rx_used as usize % VIRTQUEUE_SIZE]
             ));
@@ -1166,4 +1193,69 @@ fn ne2000_wait_register(port: u16, mask: u8) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn one_interrupt_drains_every_completed_rx_descriptor_without_recovery_polling() {
+        let mut notification = 0u16;
+        let mut device = VirtioNet::new();
+        device.rx_notify = core::ptr::addr_of_mut!(notification) as u64;
+        // SAFETY: this is the only test touching the driver's DMA fixtures.
+        // No device or other test owns these static queue/buffer locations.
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            queue.write(VirtqueueMemory::empty());
+            device.prepare_receive_queue();
+            for index in 0..2 {
+                (*queue).used.ring[index] = VirtqUsedElement {
+                    id: index as u32,
+                    length: (VIRTIO_NET_HEADER_BYTES + 60) as u32,
+                };
+                let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+                (&mut (*buffers)[index])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60]
+                    .fill(index as u8 + 1);
+            }
+            (*queue).used.index = 2;
+        }
+        VIRTIO_RX_INTERRUPT_COMPLETIONS.store(0, Ordering::Relaxed);
+        VIRTIO_RECOVERY_COMPLETIONS.store(0, Ordering::Relaxed);
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        let mut packet = PacketBuffer::empty();
+        assert!(device.receive(&mut packet));
+        assert_eq!(packet.bytes[0], 1);
+        assert!(
+            device.receive(&mut packet),
+            "a coalesced completion must not wait for recovery polling"
+        );
+        assert_eq!(packet.bytes[0], 2);
+        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 2);
+        assert_eq!(VIRTIO_RECOVERY_COMPLETIONS.load(Ordering::Relaxed), 0);
+        assert!(!device.receive(&mut packet));
+        // The same contract holds when the 16-bit used index wraps.
+        device.rx_used = u16::MAX;
+        device.rx_batch_end = u16::MAX;
+        // SAFETY: exclusively owned fixture queue, as above.
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            (*queue).used.ring[7] = VirtqUsedElement { id: 0, length: 72 };
+            (*queue).used.ring[0] = VirtqUsedElement { id: 1, length: 72 };
+            (*queue).used.index = 1;
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        assert!(device.receive(&mut packet));
+        assert!(device.receive(&mut packet));
+        assert_eq!(device.rx_used, 1);
+        assert!(!device.receive(&mut packet));
+        // A device cannot claim more completions than it owns descriptors.
+        unsafe {
+            (*addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY)).used.index = 10;
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        assert!(!device.receive(&mut packet));
+        assert!(device.rx_faulted);
+    }
 }
