@@ -255,3 +255,6 @@ A useful review comment identifies:
 Approval means the reviewer understands the changed contract and evidence. It does not mean the project has no remaining limitations.
 
 By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report suspected vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
+### Exact CPU evidence
+
+The full `make test` suite now includes six CPU page-protection probes through `cargo xtask test-protections`, in addition to the eight exception cases in the existing CI lane. Commit source changes on a development branch before the full suite: the CPU harness refuses dirty source so its artifact identifies the actual tested commit. Host tests and static analysis remain available before committing. Each run retains its own serial log and manifest; the full suite copies protection evidence into the existing CI artifact paths.

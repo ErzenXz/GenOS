@@ -1268,6 +1268,116 @@ mod tests {
     }
 
     #[test]
+    fn two_accepted_children_are_served_concurrently_and_independently() {
+        let mut sockets = SocketSet::new();
+        let listener = sockets.open(OWNER, SocketProtocol::TcpStream).unwrap();
+        sockets
+            .bind(OWNER, listener, SOCKET_LISTENER_PORT_MIN)
+            .unwrap();
+        sockets.listen(OWNER, listener, 2).unwrap();
+        let peer_a = server_peer(0x0a00_0202, 50000);
+        let peer_b = server_peer(0x0a00_0202, 50001);
+        sockets.queue_incoming(OWNER, listener, peer_a).unwrap();
+        sockets.queue_incoming(OWNER, listener, peer_b).unwrap();
+        let first = sockets.accept(OWNER, listener).unwrap();
+        let second = sockets.accept(OWNER, listener).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(sockets.server_peer(OWNER, first), Ok(peer_a));
+        assert_eq!(sockets.server_peer(OWNER, second), Ok(peer_b));
+        assert_eq!(sockets.server_handle(peer_a), Some(first));
+        assert_eq!(sockets.server_handle(peer_b), Some(second));
+
+        // Interleaved receive: bytes for one peer never reach the other child.
+        assert_eq!(sockets.push_receive(OWNER, first, b"GENOS_PING_A"), Ok(12));
+        assert_eq!(sockets.push_receive(OWNER, second, b"GENOS_PING_B"), Ok(12));
+        let mut input = [0u8; 12];
+        assert_eq!(sockets.receive(OWNER, second, &mut input), Ok(12));
+        assert_eq!(&input, b"GENOS_PING_B");
+        assert_eq!(sockets.receive(OWNER, first, &mut input), Ok(12));
+        assert_eq!(&input, b"GENOS_PING_A");
+
+        // Both responses are in flight at once under distinct request IDs,
+        // and each completion is bound to its exact child and peer.
+        assert_eq!(sockets.send(OWNER, first, b"GENOS_PONG_A"), Ok(12));
+        assert_eq!(sockets.send(OWNER, second, b"GENOS_PONG_B"), Ok(12));
+        let mut output_a = [0u8; SOCKET_BUFFER_CAPACITY];
+        let mut output_b = [0u8; SOCKET_BUFFER_CAPACITY];
+        assert_eq!(
+            sockets.begin_server_send(OWNER, first, 91, &mut output_a),
+            Ok(12)
+        );
+        assert_eq!(
+            sockets.begin_server_send(OWNER, second, 92, &mut output_b),
+            Ok(12)
+        );
+        assert_eq!(&output_a[..12], b"GENOS_PONG_A");
+        assert_eq!(&output_b[..12], b"GENOS_PONG_B");
+        assert!(sockets.server_send_active(OWNER, first, peer_a, 91, 12));
+        assert!(sockets.server_send_active(OWNER, second, peer_b, 92, 12));
+        assert_eq!(
+            sockets.complete_server_send(OWNER, first, peer_b, 91),
+            Err(SocketError::InvalidState)
+        );
+        assert_eq!(
+            sockets.complete_server_send(OWNER, second, peer_b, 91),
+            Err(SocketError::InvalidState)
+        );
+        assert_eq!(
+            sockets.complete_server_send(OWNER, second, peer_b, 92),
+            Ok(12)
+        );
+        assert_eq!(
+            sockets.complete_server_send(OWNER, first, peer_a, 91),
+            Ok(12)
+        );
+
+        // An accepted child remains usable after a completed exchange. A
+        // second receive/send cycle uses a fresh request ID and the same exact
+        // capability without reopening or sharing listener authority.
+        assert_eq!(
+            sockets.push_receive(OWNER, first, b"SECOND_REQUEST"),
+            Ok(14)
+        );
+        let mut second_input = [0u8; 14];
+        assert_eq!(sockets.receive(OWNER, first, &mut second_input), Ok(14));
+        assert_eq!(&second_input, b"SECOND_REQUEST");
+        assert_eq!(sockets.send(OWNER, first, b"SECOND_RESPONSE"), Ok(15));
+        assert_eq!(
+            sockets.begin_server_send(OWNER, first, 93, &mut output_a),
+            Ok(15)
+        );
+        assert_eq!(&output_a[..15], b"SECOND_RESPONSE");
+        assert_eq!(
+            sockets.complete_server_send(OWNER, first, peer_a, 93),
+            Ok(15)
+        );
+
+        // Each stream closes independently without touching its sibling.
+        sockets
+            .mark_server_read_closed(OWNER, first, peer_a)
+            .unwrap();
+        sockets.shutdown(OWNER, first, false, true).unwrap();
+        sockets.mark_server_closed(OWNER, first, peer_a).unwrap();
+        assert_eq!(
+            sockets.status(OWNER, first).unwrap().state,
+            SocketState::Closed
+        );
+        assert_eq!(
+            sockets.status(OWNER, second).unwrap().state,
+            SocketState::Established
+        );
+        sockets
+            .mark_server_read_closed(OWNER, second, peer_b)
+            .unwrap();
+        sockets.shutdown(OWNER, second, false, true).unwrap();
+        sockets.mark_server_closed(OWNER, second, peer_b).unwrap();
+        sockets.close(OWNER, first).unwrap();
+        sockets.close(OWNER, second).unwrap();
+        sockets.close(OWNER, listener).unwrap();
+        assert!(!sockets.owns_local_port(SOCKET_LISTENER_PORT_MIN));
+    }
+
+    #[test]
     fn local_ports_are_exclusive_across_process_socket_sets_and_reusable_after_close() {
         let mut first = SocketSet::new();
         let second = SocketSet::new();

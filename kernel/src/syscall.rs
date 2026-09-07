@@ -32,6 +32,7 @@ pub use genos_abi::{
     USER_SYSCALL_SOCKET_SEND as SYSCALL_SOCKET_SEND,
     USER_SYSCALL_SOCKET_SHUTDOWN as SYSCALL_SOCKET_SHUTDOWN,
     USER_SYSCALL_SOCKET_STATUS as SYSCALL_SOCKET_STATUS,
+    USER_SYSCALL_SOCKET_WAIT as SYSCALL_SOCKET_WAIT,
     USER_SYSCALL_STAT_HANDLE as SYSCALL_STAT_HANDLE,
     USER_SYSCALL_SYSTEM_INFO as SYSCALL_SYSTEM_INFO,
     USER_SYSCALL_TCP_EXCHANGE as SYSCALL_TCP_EXCHANGE,
@@ -230,6 +231,11 @@ pub enum SyscallAction {
         handle: u64,
         output_address: u64,
         output_length: u64,
+    },
+    SocketWait {
+        handle: u64,
+        readiness: u64,
+        timeout_ticks: u64,
     },
     SocketShutdown {
         handle: u64,
@@ -645,6 +651,19 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
                 output_length: args[2],
             })
         }
+        SYSCALL_SOCKET_WAIT
+            if args[0] != 0
+                && args[1] != 0
+                && args[1] & !genos_abi::USER_SOCKET_READY_MASK == 0
+                && (1..=genos_abi::USER_SOCKET_WAIT_MAX_TICKS).contains(&args[2])
+                && args[3..] == [0; 3] =>
+        {
+            Ok(SyscallAction::SocketWait {
+                handle: args[0],
+                readiness: args[1],
+                timeout_ticks: args[2],
+            })
+        }
         SYSCALL_SOCKET_SHUTDOWN
             if args[0] != 0
                 && matches!(
@@ -707,6 +726,7 @@ pub fn dispatch(number: u64, args: [u64; 6]) -> Result<SyscallAction, SyscallErr
         | SYSCALL_SOCKET_SEND
         | SYSCALL_SOCKET_RECEIVE
         | SYSCALL_SOCKET_STATUS
+        | SYSCALL_SOCKET_WAIT
         | SYSCALL_SOCKET_SHUTDOWN
         | SYSCALL_SOCKET_CLOSE => Err(SyscallError::InvalidArgument),
         // `SYSCALL_SEND` and `SYSCALL_RECEIVE` stay reserved but unimplemented.
@@ -1032,6 +1052,14 @@ mod tests {
             })
         );
         assert_eq!(
+            dispatch(SYSCALL_SOCKET_WAIT, [0xe701, 9, 25, 0, 0, 0]),
+            Ok(SyscallAction::SocketWait {
+                handle: 0xe701,
+                readiness: 9,
+                timeout_ticks: 25,
+            })
+        );
+        assert_eq!(
             dispatch(SYSCALL_SOCKET_SHUTDOWN, [0xe701, 3, 0, 0, 0, 0]),
             Ok(SyscallAction::SocketShutdown {
                 handle: 0xe701,
@@ -1174,6 +1202,25 @@ mod tests {
             dispatch(SYSCALL_SOCKET_STATUS, [0xe701, 0x6000, 39, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)
         );
+        for args in [
+            [0, 1, 25, 0, 0, 0],
+            [0xe701, 0, 25, 0, 0, 0],
+            [0xe701, genos_abi::USER_SOCKET_READY_MASK + 1, 25, 0, 0, 0],
+            [0xe701, 1, 0, 0, 0, 0],
+            [
+                0xe701,
+                1,
+                genos_abi::USER_SOCKET_WAIT_MAX_TICKS + 1,
+                0,
+                0,
+                0,
+            ],
+        ] {
+            assert_eq!(
+                dispatch(SYSCALL_SOCKET_WAIT, args),
+                Err(SyscallError::InvalidArgument)
+            );
+        }
         assert_eq!(
             dispatch(SYSCALL_SOCKET_SHUTDOWN, [0xe701, 0, 0, 0, 0, 0]),
             Err(SyscallError::InvalidArgument)

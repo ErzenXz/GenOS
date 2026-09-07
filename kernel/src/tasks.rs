@@ -208,7 +208,7 @@ impl SchedulerMetrics {
             .saturating_mul(1_000)
             .checked_div(self.dispatches)
         {
-            Some(value) => value,
+            Some(average) => average,
             None => 0,
         }
     }

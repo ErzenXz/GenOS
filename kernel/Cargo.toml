@@ -17,3 +17,12 @@ path = "src/lib.rs"
 
 [dependencies]
 genos_abi.workspace = true
+
+[features]
+default = []
+# Enables deterministic, bounded packet fault injection used only by the
+# `cargo xtask test-network` QEMU acceptance gate. Production images never
+# compile the trigger payloads or deliberate packet delay/drop paths.
+network-test-faults = []
+# Explicit validation images only: inject failures before physical allocation.
+memory-test-faults = []

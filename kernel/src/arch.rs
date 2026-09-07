@@ -127,6 +127,68 @@ pub fn init() {
     crate::serial::println("IDT initialized");
 }
 
+/// Called only after the supervisor-only page-table clone is active: enabling
+/// SMEP on the firmware's inherited user mappings could fault kernel code.
+pub fn init_page_protections() -> bool {
+    use core::arch::x86_64::{__cpuid, __cpuid_count};
+    use kernel::protection::{Features, CR0_WP, EFER_NXE};
+    // CPUID is available on x86_64; unknown leaves are never queried.
+    let features = {
+        let extended = if __cpuid(0x8000_0000).eax >= 0x8000_0001 {
+            __cpuid(0x8000_0001).edx
+        } else {
+            0
+        };
+        let structured = if __cpuid(0).eax >= 7 {
+            __cpuid_count(7, 0).ebx
+        } else {
+            0
+        };
+        Features::from_cpuid(extended, structured)
+    };
+    if !features.nx {
+        crate::serial::println("CPU_PROTECTIONS_UNSUPPORTED required=nx");
+        return false;
+    }
+    let (mut low, high): (u32, u32);
+    let (mut cr0, mut cr4): (u64, u64);
+    // SAFETY: single BSP bootstrap, IF clear, supervisor page tables active.
+    // Preserve unrelated control bits, enable only CPUID-supported features,
+    // and verify the hardware state before publishing readiness.
+    unsafe {
+        asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") low, out("edx") high, options(nostack));
+        low |= EFER_NXE as u32;
+        asm!("wrmsr", in("ecx") 0xc000_0080u32, in("eax") low, in("edx") high, options(nostack));
+        asm!("mov {}, cr0", out(reg) cr0, options(nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack));
+        cr0 |= CR0_WP;
+        cr4 |= features.cr4_bits();
+        asm!("pushfq", "and qword ptr [rsp], -262145", "popfq");
+        asm!("mov cr0, {}", in(reg) cr0, options(nostack));
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack));
+        asm!("mov {}, cr0", out(reg) cr0, options(nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack));
+    }
+    let (efer_low, efer_high): (u32, u32);
+    // SAFETY: EFER is present on every supported x86_64 CPU.
+    unsafe {
+        asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") efer_low, out("edx") efer_high, options(nostack));
+    }
+    if !features.verified((u64::from(efer_high) << 32) | u64::from(efer_low), cr0, cr4) {
+        return false;
+    }
+    crate::serial::print("CPU_PROTECTIONS_READY nx=1 wp=1 smep=");
+    crate::serial::print_u64(u64::from(features.smep));
+    crate::serial::print(" smap=");
+    crate::serial::print_u64(u64::from(features.smap));
+    crate::serial::println("");
+    true
+}
+
+pub fn idt_address() -> u64 {
+    core::ptr::addr_of!(IDT) as u64
+}
+
 unsafe fn init_gdt() {
     let stack_base = core::ptr::addr_of!(INTERRUPT_STACK.0) as u64;
     TSS.ist[(INTERRUPT_IST_INDEX - 1) as usize] = stack_base + INTERRUPT_STACK_SIZE as u64;

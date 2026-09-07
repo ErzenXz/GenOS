@@ -17,6 +17,11 @@
     push r13
     push r14
     push r15
+    // AC is user-controllable. Clear it before Rust so an interrupted user
+    // cannot disable SMAP in the kernel. This works even without CLAC support.
+    pushfq
+    and qword ptr [rsp], -262145
+    popfq
 .endm
 
 .macro genos_pop_regs
@@ -72,6 +77,15 @@ genos_irq12_stub:
     cld
     genos_push_regs
     genos_call_aligned genos_irq12_rust
+    genos_pop_regs
+    iretq
+
+// Modern VirtIO MSI-X completion retains its bounded device-specific path.
+.global genos_irq48_stub
+genos_irq48_stub:
+    cld
+    genos_push_regs
+    genos_call_aligned genos_irq48_rust
     genos_pop_regs
     iretq
 

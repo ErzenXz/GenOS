@@ -106,34 +106,187 @@ pub fn map_user_page(
 ) -> Result<(), PagingError> {
     if virtual_address & (PAGE_SIZE - 1) != 0
         || physical_address & (PAGE_SIZE - 1) != 0
+        || physical_address == 0
+        || physical_address & !TABLE_ADDRESS_MASK != 0
+        || (writable && executable)
         || index(virtual_address, 39) != USER_PML4_INDEX
     {
         return Err(PagingError::InvalidAddress);
     }
 
-    unsafe {
-        let pml4 = table_mut(space.root);
-        let pdpt_phys = ensure_user_table(&mut pml4[index(virtual_address, 39)])?;
-        let pdpt = table_mut(pdpt_phys);
-        let pd_phys = ensure_user_table(&mut pdpt[index(virtual_address, 30)])?;
-        let pd = table_mut(pd_phys);
-        let pt_phys = ensure_user_table(&mut pd[index(virtual_address, 21)])?;
-        let pt = table_mut(pt_phys);
-        let pte = &mut pt[index(virtual_address, 12)];
-        if *pte & PRESENT != 0 {
-            return Err(PagingError::AddressInUse);
-        }
-
-        let mut flags = PRESENT | USER;
-        if writable {
-            flags |= WRITABLE;
-        }
-        if !executable && nx_enabled() {
-            flags |= NO_EXECUTE;
-        }
-        *pte = physical_address | flags;
-        asm!("invlpg [{page}]", page = in(reg) virtual_address, options(nostack, preserves_flags));
+    let mut flags = PRESENT | USER;
+    if writable {
+        flags |= WRITABLE;
     }
+    if !executable {
+        if !nx_enabled() {
+            return Err(PagingError::InvalidAddress);
+        }
+        flags |= NO_EXECUTE;
+    }
+    let mut created = [(core::ptr::null_mut::<u64>(), 0u64); 3];
+    let mut count = 0;
+    // SAFETY: this private process root is owned by the caller. Allocation
+    // records every new parent edge so failure can revoke it before freeing.
+    let result = unsafe {
+        (|| {
+            let mut current = space.root;
+            for shift in [39, 30, 21] {
+                let entry = &mut table_mut(current)[index(virtual_address, shift)];
+                let empty = *entry & PRESENT == 0;
+                let child = ensure_user_table(entry)?;
+                if empty {
+                    created[count] = (entry as *mut u64, child);
+                    count += 1;
+                }
+                current = child;
+            }
+            let pte = &mut table_mut(current)[index(virtual_address, 12)];
+            if *pte & PRESENT != 0 {
+                return Err(PagingError::AddressInUse);
+            }
+            *pte = physical_address | flags;
+            Ok(())
+        })()
+    };
+    if result.is_err() {
+        for &(parent, child) in created[..count].iter().rev() {
+            // SAFETY: children are unpublished in reverse order, while each
+            // parent still exists. No failed transaction published a leaf.
+            unsafe {
+                parent.write(0);
+            }
+            assert!(
+                memory::free_frame(child),
+                "user-table rollback lost ownership"
+            );
+        }
+    } else {
+        // SAFETY: invalidate only the mapping just published by this caller.
+        unsafe {
+            asm!("invlpg [{page}]", page = in(reg) virtual_address, options(nostack, preserves_flags));
+        }
+    }
+    result
+}
+
+/// Seal a supervisor mapping, splitting firmware huge pages without changing
+/// the neighboring mappings. Bootstrap-only: no process root may be active.
+pub fn protect_kernel_page(
+    address: u64,
+    writable: bool,
+    executable: bool,
+) -> Result<(), PagingError> {
+    let root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
+    if root == 0
+        || active_root() != root
+        || address & (PAGE_SIZE - 1) != 0
+        || !(PAGE_SIZE..USER_BASE).contains(&address)
+        || (writable && executable)
+        || !nx_enabled()
+    {
+        return Err(PagingError::InvalidAddress);
+    }
+    // SAFETY: BSP initialization owns these supervisor tables with IF clear;
+    // every child table is populated before its parent entry is published.
+    unsafe {
+        let mut current = root;
+        for shift in [39, 30, 21] {
+            let entry = &mut table_mut(current)[index(address, shift)];
+            if *entry & PRESENT == 0 || *entry & USER != 0 {
+                return Err(PagingError::MissingMapping);
+            }
+            // This API only tightens effective permissions. Relaxing a leaf
+            // cannot override an ancestor restriction (including one copied
+            // from a huge mapping), so reject such requests explicitly.
+            if (writable && *entry & WRITABLE == 0) || (executable && *entry & NO_EXECUTE != 0) {
+                return Err(PagingError::InvalidAddress);
+            }
+            if *entry & HUGE_OR_PAT != 0 {
+                if shift == 39 {
+                    return Err(PagingError::InvalidAddress);
+                }
+                let child = allocate_table()?;
+                let mask = if shift == 30 {
+                    PAGE_1G_ADDRESS_MASK
+                } else {
+                    PAGE_2M_ADDRESS_MASK
+                };
+                let base = *entry & mask;
+                let mut flags = *entry & !mask;
+                let step = if shift == 30 { 1 << 21 } else { PAGE_SIZE };
+                if shift == 21 {
+                    let pat = flags & (1 << 12) != 0;
+                    flags &= !(HUGE_OR_PAT | (1 << 12));
+                    if pat {
+                        flags |= 1 << 7;
+                    }
+                }
+                for (slot, leaf) in table_mut(child).iter_mut().enumerate() {
+                    *leaf = (base + slot as u64 * step) | flags;
+                }
+                // Leaf-only PAT/dirty/global attributes must not become
+                // table-address bits or reserved bits in the parent.
+                *entry = child | (*entry & (0x3f | NO_EXECUTE));
+            }
+            current = *entry & TABLE_ADDRESS_MASK;
+        }
+        let entry = &mut table_mut(current)[index(address, 12)];
+        if *entry & PRESENT == 0 || *entry & USER != 0 {
+            return Err(PagingError::MissingMapping);
+        }
+        if (writable && *entry & WRITABLE == 0) || (executable && *entry & NO_EXECUTE != 0) {
+            return Err(PagingError::InvalidAddress);
+        }
+        *entry &= !(WRITABLE | NO_EXECUTE);
+        if writable {
+            *entry |= WRITABLE;
+        }
+        if !executable {
+            *entry |= NO_EXECUTE;
+        }
+        asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
+    }
+    Ok(())
+}
+
+pub fn protect_kernel_image() -> Result<(), PagingError> {
+    unsafe extern "C" {
+        static __kernel_text_start: u8;
+        static __kernel_text_end: u8;
+        static __kernel_rodata_start: u8;
+        static __kernel_rodata_end: u8;
+        static __kernel_data_start: u8;
+        static __kernel_data_end: u8;
+    }
+    for (start, end, writable, executable) in [
+        (
+            core::ptr::addr_of!(__kernel_text_start) as u64,
+            core::ptr::addr_of!(__kernel_text_end) as u64,
+            false,
+            true,
+        ),
+        (
+            core::ptr::addr_of!(__kernel_rodata_start) as u64,
+            core::ptr::addr_of!(__kernel_rodata_end) as u64,
+            false,
+            false,
+        ),
+        (
+            core::ptr::addr_of!(__kernel_data_start) as u64,
+            core::ptr::addr_of!(__kernel_data_end) as u64,
+            true,
+            false,
+        ),
+    ] {
+        if start >= end || end & (PAGE_SIZE - 1) != 0 {
+            return Err(PagingError::InvalidAddress);
+        }
+        for address in (start..end).step_by(PAGE_SIZE as usize) {
+            protect_kernel_page(address, writable, executable)?;
+        }
+    }
+    crate::serial::println("KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx");
     Ok(())
 }
 
@@ -251,37 +404,44 @@ pub fn destroy_user_address_space(space: AddressSpace) -> Result<u64, PagingErro
     Ok(released + 1)
 }
 
-unsafe fn clone_table(source_phys: u64, level: u8) -> Result<u64, PagingError> {
-    let destination_phys = allocate_table()?;
-    let source = table(source_phys);
-    let destination = table_mut(destination_phys);
-
-    for slot in 0..ENTRY_COUNT {
-        let entry = source[slot];
-        if entry & PRESENT == 0 {
-            continue;
-        }
-        let is_leaf = level == 1 || (level <= 3 && entry & HUGE_OR_PAT != 0);
-        if is_leaf {
-            destination[slot] = entry & !USER;
-        } else {
-            let child = entry & TABLE_ADDRESS_MASK;
-            let cloned_child = clone_table(child, level - 1)?;
-            destination[slot] = cloned_child | ((entry & !TABLE_ADDRESS_MASK) & !USER);
-        }
+struct PhysicalTables;
+// SAFETY: the BSP owns cloned tables exclusively; callers validate source
+// roots. Frames are identity-mapped, zeroed before publication, and allocated
+// by the ownership bitmap. No leaf frame is released by this adapter.
+unsafe impl kernel::page_table::TableMemory for PhysicalTables {
+    fn allocate(&mut self) -> Option<u64> {
+        unsafe { allocate_table().ok() }
     }
-    Ok(destination_phys)
+    unsafe fn read(&self, root: u64, slot: usize) -> u64 {
+        table(root)[slot]
+    }
+    unsafe fn write(&mut self, root: u64, slot: usize, entry: u64) {
+        table_mut(root)[slot] = entry;
+    }
+    fn release(&mut self, frame: u64) {
+        assert!(
+            memory::free_frame(frame),
+            "page-table rollback lost ownership"
+        );
+    }
+}
+
+unsafe fn clone_table(source_phys: u64, level: u8) -> Result<u64, PagingError> {
+    kernel::page_table::clone_supervisor(&mut PhysicalTables, source_phys, level)
+        .ok_or(PagingError::OutOfMemory)
 }
 
 unsafe fn ensure_user_table(entry: &mut u64) -> Result<u64, PagingError> {
     if *entry & PRESENT == 0 {
         let table_phys = allocate_table()?;
         *entry = table_phys | PRESENT | WRITABLE | USER;
-    } else if *entry & HUGE_OR_PAT != 0 || *entry & USER == 0 {
+    } else if *entry & HUGE_OR_PAT != 0
+        || *entry & USER == 0
+        || *entry & WRITABLE == 0
+        || *entry & NO_EXECUTE != 0
+    {
         return Err(PagingError::AddressInUse);
     }
-    *entry |= PRESENT | WRITABLE | USER;
-    *entry &= !NO_EXECUTE;
     Ok(*entry & TABLE_ADDRESS_MASK)
 }
 

@@ -43,21 +43,23 @@ Examples of valid future claims:
 
 See [the engineering quality plan](docs/ENGINEERING_QUALITY.md) for the evidence format and release levels.
 
-## Current baseline: GenOS 0.49
+## Current baseline: GenOS 0.56
 
 The current experimental baseline includes:
 
 - a repo-owned `x86_64` UEFI bootloader and versioned boot contract;
 - a Rust `no_std` monolithic kernel;
 - GDT, TSS, IDT, PIT/PIC interrupt setup, and serial diagnostics;
-- separate Ring 3 address spaces, timer preemption, ELF loading, and ABI 17 syscalls;
+- separate Ring 3 address spaces, timer preemption, ELF loading, and ABI 18 syscalls;
 - process-local typed capabilities for files, directories, endpoints, console access, process lifecycle, and sockets;
 - an isolated Ring 3 serial shell and fail-closed emergency kernel console;
 - RAM-backed temporary storage plus bounded persistent `/USER/` snapshots, inspection, repair, and read-only recovery;
-- modern VirtIO 1.x networking with Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, bounded TCP clients, listener authority, one passive handshake, and one bounded accepted request/response transaction;
+- modern VirtIO 1.x networking with Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, bounded TCP clients, listener authority, four global passive slots, bounded concurrent accepted streams, and scheduler-backed socket waits;
 - host tests and QEMU smoke proofs for the implemented vertical slices.
 
 These are real operating-system mechanisms. They remain constrained by the limitations tracked in [KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+
+Recent delivered slices also include bounded concurrent TCP with MSI-X, scheduler-backed socket readiness, a host packet fault matrix, initial IPv6 SLAAC/DAD/ICMPv6, and an externally built SDK application executed in Ring 3. See [milestone history](docs/MILESTONE_HISTORY.md), [IPv6](docs/IPV6.md), and [SDK](docs/SDK.md) for exact boundaries. These do not close the foundation gates below.
 
 ## Immediate priority: foundation correctness gate
 
@@ -80,58 +82,64 @@ Goal: every proposed change reaches all tests instead of failing early or depend
 
 Goal: every architectural entry path constructs a valid frame, preserves required state, and terminates or halts deliberately.
 
-- [ ] Replace the catch-all bare `iretq` entry with explicit stubs for exceptions with and without CPU-pushed error codes.
-- [ ] Install handlers for all architecturally relevant x86 exceptions, including divide error, invalid opcode, debug, invalid TSS, segment-not-present, stack fault, alignment check, machine check, and control-protection fault when supported.
-- [ ] Normalize vector, error code, instruction pointer, privilege level, stack, and fault address before entering Rust.
-- [ ] Terminate the exact Ring 3 process for recoverable user exceptions without damaging another process.
-- [ ] Print a complete serial fault record and halt on an unhandled Ring 0 exception.
-- [ ] Handle spurious and unexpected external interrupts without returning through a malformed frame.
-- [ ] Use dedicated interrupt stacks where architectural failure handling requires them.
-- [ ] Make the initialized IDT read-only before enabling untrusted execution.
+- [x] Replace the catch-all bare `iretq` entry with explicit stubs for exceptions with and without CPU-pushed error codes.
+- [x] Install handlers for all architecturally relevant x86 exceptions, including divide error, invalid opcode, debug, invalid TSS, segment-not-present, stack fault, alignment check, machine check, and control-protection fault when supported.
+- [x] Normalize vector, error code, instruction pointer, privilege level, stack, and fault address before entering Rust.
+- [x] Terminate the exact Ring 3 process for recoverable user exceptions without damaging another process.
+- [x] Print a complete serial fault record and halt on an unhandled Ring 0 exception.
+- [x] Handle spurious and unexpected external interrupts without returning through a malformed frame.
+- [x] Use dedicated interrupt stacks where architectural failure handling requires them.
+- [x] Make the initialized IDT read-only before enabling untrusted execution.
 
 Acceptance proof:
 
-- [ ] Deterministic Ring 3 tests exercise `#DE`, `#UD`, `#GP`, and `#PF` and leave a healthy peer running.
-- [ ] Deterministic Ring 0 fault tests produce the expected serial frame and halt rather than looping or triple-faulting.
-- [ ] No installed default entry consists only of `iretq`.
+- [x] Deterministic Ring 3 tests exercise `#DE`, `#UD`, `#GP`, and `#PF` and leave a healthy peer running.
+- [x] Deterministic Ring 0 fault tests produce the expected serial frame and halt rather than looping or triple-faulting.
+- [x] No installed default entry consists only of `iretq`.
+
+Reference proofs: all eight user/kernel exception cases plus IDT write protection. Emergency-stack guards, same-IST nesting, XSTATE and physical-machine validation remain explicitly open; these checks establish the scoped reference-VM entry contract.
 
 ### F2 — Hardware-enforced page protections
 
 Goal: make the page permissions promised by the loader true on the CPU, independent of firmware defaults.
 
-- [ ] Discover NX, SMEP, SMAP, and related features through CPUID.
-- [ ] Enable and verify `EFER.NXE` before mapping non-executable pages.
-- [ ] Enable and verify `CR0.WP` so supervisor writes respect read-only mappings.
-- [ ] Enable SMEP and SMAP when supported, with explicit guarded user-copy primitives.
+- [x] Discover NX, SMEP, SMAP, and related features through CPUID.
+- [x] Enable and verify `EFER.NXE` before mapping non-executable pages.
+- [x] Enable and verify `CR0.WP` so supervisor writes respect read-only mappings.
+- [x] Enable SMEP and SMAP when supported, with explicit guarded user-copy primitives.
 - [ ] Reject writable-and-executable ELF mappings and preserve that invariant across every mapping API.
-- [ ] Keep user stacks and writable data non-executable.
-- [ ] Keep kernel text read-only and executable, kernel read-only data non-writable, and mutable kernel data non-executable once the linker and boot mappings expose those sections.
+- [x] Keep user stacks and writable data non-executable.
+- [x] Keep kernel text read-only and executable, kernel read-only data non-writable, and mutable kernel data non-executable once the linker and boot mappings expose those sections.
 
 Acceptance proof:
 
-- [ ] Executing from Ring 3 data or stack pages terminates only the offending process.
-- [ ] Writing through a kernel read-only mapping faults under `CR0.WP`.
-- [ ] A user mapping cannot execute in supervisor mode under SMEP, and ordinary kernel access cannot bypass SMAP unintentionally.
-- [ ] Boot logs record the detected and enabled protection set without treating an unsupported optional feature as success.
+- [x] Executing from Ring 3 data or stack pages terminates only the offending process.
+- [x] Writing through a kernel read-only mapping faults under `CR0.WP`.
+- [x] A user mapping cannot execute in supervisor mode under SMEP, and ordinary kernel access cannot bypass SMAP unintentionally.
+- [x] Boot logs record the detected and enabled protection set without treating an unsupported optional feature as success.
+
+GenOS 0.56 implements [ADR 0003](docs/adr/0003-explicit-cpu-page-protections.md). User mappings and explicit kernel mappings reject W+X; inherited physical aliases still prevent a system-wide physical-frame W^X claim. Six exact-address CPU protection probes supplement the eight exception probes.
 
 ### F3 — Transactional physical and virtual memory
 
 Goal: every failed allocation leaves the exact pre-operation ownership state.
 
-- [ ] Replace the fixed 256-frame recycle stack with a page-state allocator that can represent every managed frame.
+- [x] Replace the fixed 256-frame recycle stack with a page-state allocator that can represent every managed frame.
 - [ ] Track frame ownership and reject double free, foreign free, reserved-memory allocation, and aliasing.
 - [ ] Support contiguous or ordered allocations only through an explicit contract.
-- [ ] Roll back partial page-table cloning, user image loading, stack construction, and mapping failures.
+- [x] Roll back partial page-table cloning, user image loading, stack construction, and mapping failures.
 - [ ] Define zeroing policy for newly granted user pages and reclaimed sensitive pages.
 - [ ] Separate early-boot allocation from the normal allocator when their invariants differ.
 - [ ] Publish allocator counters and consistency checks that remain usable without graphics.
 
 Acceptance proof:
 
-- [ ] Fault injection fails each allocation point in process construction and returns to the exact baseline frame count.
-- [ ] Randomized host tests allocate and free across fragmented memory maps without duplicate ownership.
-- [ ] Reclaiming more than 256 frames remains lossless.
-- [ ] A failed address-space clone leaks no page-table frame.
+- [x] Fault injection fails each allocation point in process construction and returns to the exact baseline frame count.
+- [x] Randomized host tests allocate and free across fragmented memory maps without duplicate ownership.
+- [x] Reclaiming more than 256 frames remains lossless.
+- [x] A failed address-space clone leaks no page-table frame.
+
+GenOS 0.56 implements [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md): all ten allocations in the reference process constructor are injected in QEMU, and every allocation in a branched host clone fixture is injected. The kernel manages up to 8 GiB of usable frames and fails closed on allocator metadata exhaustion. Per-owner frame tokens, sensitive-page scrubbing and larger-memory support remain open.
 
 ### F4 — Kernel ownership and decomposition
 

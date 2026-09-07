@@ -1366,7 +1366,7 @@ impl DisplayManager {
             &mut self.fb,
             body,
             Point::new(body.x + 22, body.y + 104),
-            "RING 3 FILES + JOBS  /  CAPABILITY CONTROL  /  ABI 17",
+            "RING 3 FILES + JOBS  /  CAPABILITY CONTROL  /  ABI 18",
             TextStyle::regular(12, Color::TEXT_MUTED),
         );
         TextRenderer::draw_text(
