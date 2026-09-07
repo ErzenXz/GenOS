@@ -200,7 +200,16 @@ impl RuntimeCoordinator {
     pub fn run_headless_boot_probe(&mut self, max_steps: u16) -> bool {
         let initial_vfs = self.completed_vfs_requests;
         let initial_lifecycle = self.completed_lifecycle_launches;
-        for tick in 0..u64::from(max_steps) {
+        let started = crate::interrupts::ticks();
+        // Socket peers run on real time. Counting coordinator iterations as
+        // timer ticks can expire every parked socket before a host packet
+        // arrives, making the readiness proof depend on host CPU speed.
+        // Bound both work and elapsed time while using the actual timer.
+        for _ in 0..u64::from(max_steps).saturating_mul(64) {
+            let tick = crate::interrupts::poll_fallback_tick();
+            if tick.saturating_sub(started) > u64::from(max_steps) {
+                break;
+            }
             let _ = self.advance(tick);
             self.finish_iteration(false, tick);
             if self.completed_vfs_requests > initial_vfs
