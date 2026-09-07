@@ -54,7 +54,7 @@ fn boot_main() -> Result<(), Status> {
             uefi::cstr16!("EFI\\BOOT\\INITRD.GRD"),
         ],
     )
-    .unwrap_or_else(Vec::new);
+    .unwrap_or_default();
 
     uefi::println!("Loading kernel ELF");
     let loaded_kernel = elf::load_kernel(&kernel)?;

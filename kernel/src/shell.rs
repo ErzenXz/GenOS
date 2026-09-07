@@ -1,3 +1,5 @@
+// The serial terminal is active; older framebuffer-shell helpers remain compiled until ROADMAP F4.
+
 use genos_abi::BootInfo;
 use kernel::{
     display::{DisplayManager, FixedText, LineKind},
@@ -109,6 +111,7 @@ fn write_terminal_update(update: userspace::ProcessUpdate) {
     }
 }
 
+#[allow(dead_code)]
 pub fn run(
     mut display: DisplayManager,
     boot_info: &'static BootInfo,
@@ -286,6 +289,7 @@ pub fn run(
     }
 }
 
+#[allow(dead_code)]
 fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &BootInfo) {
     serial::print("recovery: ");
     serial::println(command);
@@ -351,6 +355,7 @@ fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &Boo
         }
     }
 }
+#[allow(dead_code)]
 fn apply_process_update(display: &mut DisplayManager, update: userspace::ProcessUpdate) {
     if !update.output.is_empty() {
         let mut line = FixedText::from_str("app[");
@@ -387,6 +392,7 @@ fn apply_process_update(display: &mut DisplayManager, update: userspace::Process
     }
 }
 
+#[allow(dead_code)]
 fn managed_state_text(state: userspace::ManagedState) -> &'static str {
     match state {
         userspace::ManagedState::Ready => "ready",
@@ -398,6 +404,7 @@ fn managed_state_text(state: userspace::ManagedState) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn push_launch_error(display: &mut DisplayManager, error: userspace::LaunchError) {
     let text = match error {
         userspace::LaunchError::ImageUnavailable => "userspace process not found",

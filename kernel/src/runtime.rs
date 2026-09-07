@@ -30,6 +30,8 @@ pub struct TaskIds {
     pub idle: u32,
 }
 
+// This fixed-capacity no-heap event remains Copy; indirection would change that contract.
+#[allow(dead_code, clippy::large_enum_variant)]
 #[derive(Clone, Copy)]
 pub enum RuntimeEvent {
     Process(userspace::ProcessUpdate),
@@ -122,6 +124,8 @@ impl RuntimeCoordinator {
         coordinator
     }
 
+    #[allow(dead_code)]
+    // Retained for the deferred graphical task surface until ROADMAP F4 removes or isolates it.
     pub fn task_snapshot(&self) -> &TaskSnapshotSet {
         &self.task_snapshot
     }
@@ -165,6 +169,8 @@ impl RuntimeCoordinator {
             && !self.socket_transport_started
     }
 
+    #[allow(dead_code)]
+    // Retained for the deferred graphical file surface until ROADMAP F4 removes or isolates it.
     pub fn vfs(&self) -> &RamVfs {
         &self.vfs
     }
@@ -282,10 +288,14 @@ impl RuntimeCoordinator {
         self.tasks.mark_running(self.ids.input, tick);
     }
 
+    #[allow(dead_code)]
+    // Retained for the legacy graphical shell accounting until ROADMAP F4 removes or isolates it.
     pub fn record_shell_activity(&mut self, tick: u64) {
         self.tasks.mark_running(self.ids.shell, tick);
     }
 
+    #[allow(dead_code)]
+    // Retained for the legacy desktop accounting until ROADMAP F4 removes or isolates it.
     pub fn record_desktop_activity(&mut self, tick: u64) {
         self.tasks.mark_running(self.ids.desktop, tick);
     }

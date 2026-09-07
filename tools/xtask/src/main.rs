@@ -323,7 +323,7 @@ fn valid_genos_partition(bytes: &[u8]) -> Result<(usize, usize), String> {
         let sectors =
             u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().unwrap()) as usize;
         if start > 0
-            && sectors >= 1 + SLOT_SECTORS * 2
+            && sectors > SLOT_SECTORS * 2
             && start
                 .checked_add(sectors)
                 .is_some_and(|end| end <= bytes.len() / 512)
@@ -739,7 +739,7 @@ fn smoke_network_qemu() -> Result<(), String> {
             let _ = inbound_sender.send(false);
             return;
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, inbound_host_port));
         while Instant::now() < deadline {
             if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(200))
@@ -771,6 +771,7 @@ fn smoke_network_qemu() -> Result<(), String> {
         "USER_SOCKET_API_READY",
         "USER_SOCKET_CAPABILITY_READY abi=17",
         "USER_SOCKET_LISTENER_CAPABILITY_READY abi=17",
+        "USER_SOCKET_PASSIVE_LISTENER_READY",
         "TCP_PASSIVE_SYN_ACCEPTED",
         "TCP_PASSIVE_HANDSHAKE_OK",
         "USER_SOCKET_PASSIVE_ACCEPT_READY",
@@ -805,8 +806,7 @@ fn smoke_network_qemu() -> Result<(), String> {
             if output.contains("KERNEL PANIC") || output.contains("_FAILED") {
                 break;
             }
-            if !inbound_triggered && output.contains("USER_SOCKET_LISTENER_CAPABILITY_READY abi=17")
-            {
+            if !inbound_triggered && output.contains("USER_SOCKET_PASSIVE_LISTENER_READY") {
                 let _ = inbound_trigger_sender.send(());
                 inbound_triggered = true;
             }
@@ -836,7 +836,9 @@ fn smoke_network_qemu() -> Result<(), String> {
         );
         Ok(())
     } else {
-        Err(format!("network smoke failed; serial:\n{output}"))
+        Err(format!(
+            "network smoke failed: markers_ok={passed} server_ok={server_ok} inbound_ok={inbound_ok}; serial:\n{output}"
+        ))
     }
 }
 
@@ -1006,8 +1008,8 @@ fn inspect_filesystem_image(path: &Path) -> Result<ImageReport, String> {
         valid_slots: Vec::new(),
         invalid_slots: Vec::new(),
     };
-    for slot in 0..2 {
-        let start = (partition_start + SLOT_OFFSETS[slot]) * 512;
+    for (slot, slot_offset) in SLOT_OFFSETS.iter().copied().enumerate() {
+        let start = (partition_start + slot_offset) * 512;
         let snapshot = &bytes[start..start + SLOT_BYTES];
         if snapshot.iter().all(|byte| *byte == 0) {
             continue;

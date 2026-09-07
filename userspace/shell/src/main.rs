@@ -316,6 +316,12 @@ fn prove_passive_tcp_accept(console: u64, status: &mut runtime::UserSocketStatus
     {
         return false;
     }
+    let listening_message = b"passive TCP listener ready";
+    if runtime::console_write(console, listening_message, runtime::CONSOLE_LINE_STATUS)
+        != listening_message.len() as u64
+    {
+        return false;
+    }
     for _ in 0..80 {
         let accepted = runtime::socket_accept(listener);
         if accepted == runtime::ERROR_WOULD_BLOCK {

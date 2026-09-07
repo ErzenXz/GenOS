@@ -32,6 +32,8 @@ impl<'a> RamFs<'a> {
         Self { bytes, count }
     }
 
+    #[allow(dead_code)]
+    // Retained for the deferred graphical file browser.
     pub fn count(&self) -> usize {
         self.count
     }

@@ -367,10 +367,10 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
         blank: true,
         readable: false,
     }; 2];
-    for slot in 0..2 {
+    for (slot, summary) in summaries.iter_mut().enumerate() {
         let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
         let readable = fs.read_slot(slot, buffer).is_ok();
-        summaries[slot] = SlotSummary {
+        *summary = SlotSummary {
             generation: readable.then(|| validate_snapshot(buffer).ok()).flatten(),
             blank: readable && buffer.iter().all(|byte| *byte == 0),
             readable,
@@ -414,17 +414,17 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
         return (PersistentBootState::Restored, fs);
     }
 
-    if !fs.read_only && summaries.iter().all(|slot| slot.readable && slot.blank) {
-        if vfs.write(PERSISTENT_PATH, PERSISTENT_PAYLOAD).is_ok()
-            && vfs.write(KEEP_PATH, KEEP_PAYLOAD).is_ok()
-            && fs.commit(vfs).is_ok()
-        {
-            seed_status(vfs, b"state=healthy");
-            serial::println("PERSISTENT_STORAGE_CREATED files=2 generation=1");
-            serial::println("PERSISTENT_STORAGE_READY");
-            report_cache(&fs.cache);
-            return (PersistentBootState::Created, fs);
-        }
+    if !fs.read_only
+        && summaries.iter().all(|slot| slot.readable && slot.blank)
+        && vfs.write(PERSISTENT_PATH, PERSISTENT_PAYLOAD).is_ok()
+        && vfs.write(KEEP_PATH, KEEP_PAYLOAD).is_ok()
+        && fs.commit(vfs).is_ok()
+    {
+        seed_status(vfs, b"state=healthy");
+        serial::println("PERSISTENT_STORAGE_CREATED files=2 generation=1");
+        serial::println("PERSISTENT_STORAGE_READY");
+        report_cache(&fs.cache);
+        return (PersistentBootState::Created, fs);
     }
 
     unavailable(vfs)
@@ -692,11 +692,13 @@ fn apply_snapshot(vfs: &mut RamVfs, snapshot: &[u8; SLOT_BYTES]) -> Result<(), S
     Ok(())
 }
 
+type DecodedEntry<'a> = (&'a [u8], NodeKind, &'a [u8], usize);
+
 fn decode_entry(
     snapshot: &[u8; SLOT_BYTES],
     cursor: usize,
     used: usize,
-) -> Result<(&[u8], NodeKind, &[u8], usize), StorageError> {
+) -> Result<DecodedEntry<'_>, StorageError> {
     if cursor + ENTRY_HEADER_BYTES > used {
         return Err(StorageError::InvalidRecord);
     }
