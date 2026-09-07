@@ -49,7 +49,7 @@ The long-term goal is to build a system that can beat larger platforms on define
 
 ## What works today
 
-The GenOS 0.49 experimental baseline includes:
+The GenOS 0.56 experimental baseline includes:
 
 ### Boot and architecture
 
@@ -66,7 +66,7 @@ The GenOS 0.49 experimental baseline includes:
 - private code, data, guarded stack, saved context, and CR3 per process;
 - timer-driven preemption and bounded round-robin scheduling;
 - process-local page-fault containment for the currently handled user faults;
-- ABI 17 through a DPL3 `int 0x80` gate with scalar and user-buffer validation;
+- ABI 18 through a DPL3 `int 0x80` gate with scalar and user-buffer validation;
 - one authoritative typed handle table per process;
 - generation-safe file, directory, endpoint, console, lifecycle, process, and socket capabilities;
 - exact asynchronous request identity and stale-completion rejection;
@@ -91,8 +91,17 @@ The GenOS 0.49 experimental baseline includes:
 - generation-safe UDP and TCP socket capabilities;
 - scheduler-driven bounded UDP and TCP client transactions;
 - exclusive TCP listener authority and bounded backlog;
-- one passive handshake and one accepted request/response/close transaction;
+- four global passive slots, two per process owner, bounded concurrent streams and readiness waits;
 - deterministic host-side and QEMU network proofs.
+
+### GenOS 0.55 additions
+
+- concurrent bounded TCP, sustained-loss/reordering tests, scheduler readiness, and MSI-X completion;
+- gap-safe receive delivery, validated reset/ACK handling, and bounded zero/small-window sends;
+- [IPv6 SLAAC, DAD, neighbor replies, and ICMPv6](docs/IPV6.md); IPv6 sockets remain open;
+- [offline standalone SDK and real Ring 3 execution](docs/SDK.md);
+- disposable test volumes and preservation of the user disk during build/test/clean;
+- `make bench` and [recorded development benchmarks](docs/PERFORMANCE.md).
 
 ### Verification
 
@@ -103,9 +112,11 @@ The GenOS 0.49 experimental baseline includes:
 
 ### Important qualification
 
-The ELF loader rejects writable-and-executable load segments. That is not yet the same as proven system-wide W^X. The audited baseline adds the page-table NX bit only when firmware has already enabled `EFER.NXE`; the foundation roadmap requires GenOS to enable and test NX, supervisor write protection, SMEP, and SMAP itself.
+GenOS now enables and verifies NX and CR0.WP, plus CPUID-supported SMEP/SMAP, after switching to supervisor-only kernel mappings. Text, read-only data, writable data and the IDT receive explicit page permissions. Real CPU fault probes verify user data/stack NX, IDT/text write protection, SMEP and SMAP. See [ADR 0003](docs/adr/0003-explicit-cpu-page-protections.md).
 
-The current system also remains single-core, uses a fixed recycled-frame pool, has incomplete exception coverage, runs development stress probes during normal boot, and contains concentrated userspace kernel code. These are release blockers, not cosmetic cleanup.
+The allocator uses a bitmap for up to 8 GiB of usable memory across 64 ranges, with overlap/capacity refusal and lossless reclamation. Clone rollback is tested at every allocation in a host fixture; real process construction is tested at all ten allocation points. See [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md).
+
+The system remains single-core and experimental. Emergency-stack nesting/XSTATE, inherited physical aliases, larger-memory support, allocator owner tokens, release/validation boot separation, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
 
 ## Immediate engineering priority
 
@@ -289,3 +300,6 @@ GenOS is released under the [MIT License](LICENSE).
 ## The ambition
 
 GenOS can become lighter, easier to inspect, and more coherent than larger systems for selected workloads. Reaching that point requires stronger fundamentals, not louder claims. The project will publish what it proves, record what it does not, and improve one reviewable change at a time.
+Export an application with `cargo xtask new-app PATH`, verify it with `make test-sdk`, and measure development boots with `make bench`.
+
+Memory failure injection: `cargo xtask test-memory`. CPU-fault matrix: [exception harness](tools/test_exception_entry.py). Latest integration evidence: [verification](docs/VERIFICATION.md).

@@ -781,37 +781,72 @@ fn select_sector(lba: u32, command: u8) -> Result<(), StorageError> {
     wait_drq()
 }
 
-fn wait_not_busy() -> Result<(), StorageError> {
-    for _ in 0..ATA_POLL_LIMIT {
-        let status = unsafe { arch::inb(ata_port(7)) };
-        if status == 0 || status == u8::MAX || status & (ATA_STATUS_ERROR | ATA_STATUS_DF) != 0 {
-            return Err(StorageError::Device);
-        }
-        if status & ATA_STATUS_BUSY == 0 {
-            return Ok(());
-        }
-        core::hint::spin_loop();
+fn ata_status_ready(status: u8, data_phase: bool) -> Result<bool, StorageError> {
+    if status == 0 || status == u8::MAX {
+        return Err(StorageError::Device);
     }
-    Err(StorageError::Device)
+    // While BSY is set, other status bits are not valid completion results.
+    if status & ATA_STATUS_BUSY != 0 {
+        return Ok(false);
+    }
+    if status & (ATA_STATUS_ERROR | ATA_STATUS_DF) != 0 {
+        return Err(StorageError::Device);
+    }
+    // A non-busy device requesting data has not completed its command yet.
+    Ok((status & ATA_STATUS_DRQ != 0) == data_phase)
 }
 
+fn wait_not_busy() -> Result<(), StorageError> {
+    wait_status(false)
+}
 fn wait_drq() -> Result<(), StorageError> {
+    wait_status(true)
+}
+
+fn wait_status(data_phase: bool) -> Result<(), StorageError> {
     for _ in 0..ATA_POLL_LIMIT {
+        // SAFETY: bounded status polling on the discovered controller.
         let status = unsafe { arch::inb(ata_port(7)) };
-        if status == 0 || status == u8::MAX || status & (ATA_STATUS_ERROR | ATA_STATUS_DF) != 0 {
-            return Err(StorageError::Device);
+        match ata_status_ready(status, data_phase) {
+            Ok(true) => return Ok(()),
+            Ok(false) => core::hint::spin_loop(),
+            Err(error) => {
+                serial::print("ATA_COMMAND_ERROR phase=");
+                serial::print(if data_phase { "data" } else { "complete" });
+                serial::print(" status=0x");
+                serial::print_hex(status as u64);
+                serial::print(" error=0x");
+                serial::print_hex(unsafe { arch::inb(ata_port(1)) } as u64);
+                serial::println("");
+                return Err(error);
+            }
         }
-        if status & ATA_STATUS_BUSY == 0 && status & ATA_STATUS_DRQ != 0 {
-            return Ok(());
-        }
-        core::hint::spin_loop();
     }
+    serial::print("ATA_COMMAND_TIMEOUT phase=");
+    serial::println(if data_phase { "data" } else { "complete" });
     Err(StorageError::Device)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_status_cannot_publish_stale_errors_or_complete_a_data_phase() {
+        assert_eq!(
+            ata_status_ready(ATA_STATUS_BUSY | ATA_STATUS_ERROR, false),
+            Ok(false)
+        );
+        assert_eq!(
+            ata_status_ready(ATA_STATUS_BUSY | ATA_STATUS_DF | ATA_STATUS_DRQ, true),
+            Ok(false)
+        );
+        assert_eq!(ata_status_ready(0x58, false), Ok(false));
+        assert_eq!(ata_status_ready(0x58, true), Ok(true));
+        assert_eq!(ata_status_ready(0x50, false), Ok(true));
+        assert_eq!(ata_status_ready(0x51, false), Err(StorageError::Device));
+        assert_eq!(ata_status_ready(0xff, false), Err(StorageError::Device));
+    }
 
     #[test]
     fn newest_valid_generation_wins_and_torn_slot_is_ignored() {

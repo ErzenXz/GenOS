@@ -71,3 +71,9 @@ The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=re
 6. Boot an image with a valid MBR but both slots corrupt, surface the storage error to Ring 3, and prove temporary RAM storage still works.
 
 The current format remains deliberately bounded. It has no allocation bitmap, extents, large files, or incremental metadata journal; each mutation commits one full snapshot. Those are later filesystem-growth concerns, not unfinished Stage 4 acceptance items.
+
+## Host-tool volume preservation (GenOS 0.55)
+
+`build/genos-data.img` is the normal user's persistent volume. Builds create it only when it is absent; an unreadable or invalid existing image produces an error and is preserved for explicit recovery. `make test`, network/SDK tests, and benchmarks use separate disposable images. Storage corruption, repair, and read-only tests never target the normal volume. `make clean` removes generated artifacts while retaining `genos-data.img`. Deleting the user volume is an explicit manual reset, not a build/test side effect. Host regression tests check corrupt-image preservation and clean behavior.
+
+ATA fallback polling now treats status bits as valid only after BSY clears and requires DRQ to match the current data/completion phase. Host tests exercise these transitions; command failures report phase, status, and the device error register, while exhausted poll budgets produce a distinct timeout diagnostic. `cargo xtask test-serial` isolates the native serial-boot gate.

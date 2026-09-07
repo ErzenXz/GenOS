@@ -1,7 +1,8 @@
 """Host-only regression tests for the fault probe's fail-closed evidence parser."""
 import unittest
 
-from test_exception_entry import USER_READY, patch_fixture, replace_once, validate_log
+from test_exception_entry import USER_READY, patch_fixture, replace_once, validate_log, require_clean_source
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -20,6 +21,12 @@ def valid_log(mode="user", vector=6, error=0, cr2=0):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_dirty_source_cannot_be_attributed_to_head(self):
+        with patch("test_exception_entry.command_output", return_value=" M kernel/src/interrupts.rs"):
+            with self.assertRaises(ValueError):
+                require_clean_source(Path("."))
+        with patch("test_exception_entry.command_output", side_effect=["", "exact-commit"]):
+            self.assertEqual(require_clean_source(Path(".")), "exact-commit")
     def test_all_eight_fault_identities_are_validated(self):
         for mode in ("user", "kernel"):
             for fault, vector in (("de", 0), ("ud", 6), ("gp", 13), ("pf", 14)):
@@ -28,6 +35,23 @@ class EvidenceTests(unittest.TestCase):
                     error = 0x38
                 validate_log(valid_log(mode, vector, error, 0x7000 if fault == "pf" else 0),
                              mode, fault)
+
+    def test_protection_faults_require_exact_permission_bits_and_enabled_features(self):
+        for fault, mode, error in [("nx-data", "user", 0x15), ("nx-stack", "user", 0x15),
+                                   ("wp", "kernel", 3), ("kernel-text", "kernel", 3),
+                                   ("smep", "kernel", 0x11), ("smap", "kernel", 1)]:
+            address = {"nx-data": 0x400000002000, "nx-stack": 0x40000000c000,
+                       "smep": 0x400000001000, "smap": 0x400000001000}.get(fault, 0x7000)
+            target = f"CPU_PROTECTION_PROBE_TARGET address=0x{address:x}\n" if mode == "kernel" else ""
+            log = ("CPU_PROTECTIONS_READY nx=1 wp=1 smep=1 smap=1\nIDT_READONLY_READY\n"
+                   + target + valid_log(mode, 14, error, address))
+            validate_log(log, mode, fault)
+            with self.assertRaises(ValueError):
+                validate_log(log.replace("smep=1", "smep=0"), mode, fault)
+            with self.assertRaises(ValueError):
+                validate_log(log.replace(f"error=0x{error:x}", "error=0x0"), mode, fault)
+            with self.assertRaises(ValueError):
+                validate_log(log.replace(f"cr2=0x{address:x}", "cr2=0x9000"), mode, fault)
 
     def test_missing_evidence_cannot_pass(self):
         log = valid_log()

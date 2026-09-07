@@ -1,7 +1,6 @@
 # ADR 0002: Normalize x86 exception entry before broadening the kernel
 
-Status: proposed for review. Architecture proposal: issue #5. This change is
-stacked on the unmerged quality-first roadmap in PR #4.
+Status: Accepted in PR #6 after PR #4. Architecture proposal: issue #5.
 
 ## Problem
 

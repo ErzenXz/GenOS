@@ -18,6 +18,7 @@ static FALLBACK_TICKS: AtomicU64 = AtomicU64::new(0);
 static FALLBACK_SPINS: AtomicU64 = AtomicU64::new(0);
 static KEYBOARD_IRQS: AtomicU64 = AtomicU64::new(0);
 static MOUSE_IRQS: AtomicU64 = AtomicU64::new(0);
+static NETWORK_IRQS: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -25,6 +26,7 @@ pub struct InterruptStats {
     pub ticks: u64,
     pub keyboard_irqs: u64,
     pub mouse_irqs: u64,
+    pub network_irqs: u64,
 }
 
 global_asm!(
@@ -36,6 +38,7 @@ extern "C" {
     fn genos_irq0_stub();
     fn genos_irq1_stub();
     fn genos_irq12_stub();
+    fn genos_irq48_stub();
     static genos_vector_table: [unsafe extern "C" fn(); 256];
 }
 
@@ -53,6 +56,7 @@ pub fn init() {
         arch::set_idt_handler(32, genos_irq0_stub);
         arch::set_idt_handler(33, genos_irq1_stub);
         arch::set_idt_handler(44, genos_irq12_stub);
+        arch::set_idt_handler(crate::network_device::VIRTIO_MSIX_VECTOR, genos_irq48_stub);
         arch::set_user_idt_handler(userspace::SYSCALL_VECTOR, userspace::syscall_handler());
         remap_pic();
         init_pit_100hz();
@@ -96,6 +100,7 @@ pub fn stats() -> InterruptStats {
         ticks: ticks(),
         keyboard_irqs: KEYBOARD_IRQS.load(Ordering::Relaxed),
         mouse_irqs: MOUSE_IRQS.load(Ordering::Relaxed),
+        network_irqs: NETWORK_IRQS.load(Ordering::Relaxed),
     }
 }
 
@@ -119,6 +124,15 @@ extern "C" fn genos_irq12_rust() {
     MOUSE_IRQS.fetch_add(1, Ordering::Relaxed);
     input_hw::mouse_irq();
     unsafe { pic_eoi(12) };
+}
+
+#[no_mangle]
+extern "C" fn genos_irq48_rust() {
+    NETWORK_IRQS.fetch_add(1, Ordering::Relaxed);
+    crate::network_device::record_virtio_interrupt();
+    // SAFETY: this MSI-X vector is routed to the BSP local APIC; acknowledge
+    // its identity-mapped EOI register without touching protocol state.
+    unsafe { core::ptr::write_volatile(0xfee0_00b0 as *mut u32, 0) };
 }
 
 #[no_mangle]

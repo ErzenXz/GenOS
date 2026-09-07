@@ -1,6 +1,6 @@
 use core::{
     ptr::{addr_of, addr_of_mut, read_volatile, write_volatile},
-    sync::atomic::{fence, Ordering},
+    sync::atomic::{fence, AtomicBool, AtomicU64, Ordering},
 };
 
 use crate::{arch, serial};
@@ -14,6 +14,7 @@ const PCI_DEVICE_VIRTIO_NET_TRANSITIONAL: u16 = 0x1000;
 const PCI_DEVICE_VIRTIO_MODERN_MIN: u16 = 0x1040;
 const PCI_DEVICE_VIRTIO_MODERN_MAX: u16 = 0x107f;
 const PCI_CAP_VENDOR_SPECIFIC: u8 = 0x09;
+const PCI_CAP_MSIX: u8 = 0x11;
 const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
 const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
 const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
@@ -30,11 +31,16 @@ const VIRTQ_DESC_F_WRITE: u16 = 2;
 // 10-byte layout exists only for a legacy interface without mergeable buffers.
 const VIRTIO_NET_HEADER_BYTES: usize = 12;
 const VIRTQUEUE_SIZE: usize = 8;
+#[cfg(feature = "network-test-faults")]
+pub const VIRTIO_QUEUE_CAPACITY: usize = VIRTQUEUE_SIZE;
 const VIRTIO_BUFFER_BYTES: usize = 2048;
 const VIRTIO_RX_QUEUE: u16 = 0;
 const VIRTIO_TX_QUEUE: u16 = 1;
 const VIRTIO_POLL_LIMIT: usize = 800_000;
 const VIRTIO_RESET_POLL_LIMIT: usize = 100_000;
+const VIRTIO_RECOVERY_POLL_INTERVAL: usize = 32_768;
+pub const VIRTIO_MSIX_VECTOR: usize = 0x30;
+const X86_MSI_ADDRESS: u32 = 0xfee0_0000;
 
 const COMMON_DEVICE_FEATURE_SELECT: usize = 0;
 const COMMON_DEVICE_FEATURE: usize = 4;
@@ -281,6 +287,51 @@ static mut VIRTIO_RX_BUFFERS: VirtioRxBuffers =
     VirtioRxBuffers([[0; VIRTIO_BUFFER_BYTES]; VIRTQUEUE_SIZE]);
 static mut VIRTIO_TX_BUFFER: VirtioTxBuffer = VirtioTxBuffer([0; VIRTIO_BUFFER_BYTES]);
 
+static VIRTIO_INTERRUPT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_INTERRUPT_PENDING: AtomicBool = AtomicBool::new(false);
+static VIRTIO_RX_INTERRUPT_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_TX_INTERRUPT_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_RECOVERY_POLLS: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_RECOVERY_COMPLETIONS: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_RX_FRAMES: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_TX_FRAMES: AtomicU64 = AtomicU64::new(0);
+static VIRTIO_QUEUE_NOTIFICATIONS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "network-test-faults")]
+#[derive(Clone, Copy, Default)]
+pub struct NetworkDeviceMetrics {
+    pub interrupts: u64,
+    pub rx_interrupt_completions: u64,
+    pub tx_interrupt_completions: u64,
+    pub recovery_polls: u64,
+    pub recovery_completions: u64,
+    pub rx_frames: u64,
+    pub tx_frames: u64,
+    pub queue_notifications: u64,
+}
+
+/// Called by the dedicated MSI-X interrupt stub. The handler deliberately
+/// records readiness only; queue ownership is reclaimed by the normal network
+/// coordinator, outside interrupt context.
+pub fn record_virtio_interrupt() {
+    VIRTIO_INTERRUPT_EPOCH.fetch_add(1, Ordering::Release);
+    VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+}
+
+#[cfg(feature = "network-test-faults")]
+pub fn metrics() -> NetworkDeviceMetrics {
+    NetworkDeviceMetrics {
+        interrupts: VIRTIO_INTERRUPT_EPOCH.load(Ordering::Acquire),
+        rx_interrupt_completions: VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed),
+        tx_interrupt_completions: VIRTIO_TX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed),
+        recovery_polls: VIRTIO_RECOVERY_POLLS.load(Ordering::Relaxed),
+        recovery_completions: VIRTIO_RECOVERY_COMPLETIONS.load(Ordering::Relaxed),
+        rx_frames: VIRTIO_RX_FRAMES.load(Ordering::Relaxed),
+        tx_frames: VIRTIO_TX_FRAMES.load(Ordering::Relaxed),
+        queue_notifications: VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PciLocation {
     bus: u8,
@@ -296,6 +347,12 @@ struct VirtioPciRegions {
     device: u64,
 }
 
+#[derive(Clone, Copy)]
+struct MsixCapability {
+    capability: u8,
+    table: u64,
+}
+
 pub struct VirtioNet {
     common: u64,
     rx_notify: u64,
@@ -303,8 +360,12 @@ pub struct VirtioNet {
     mac: [u8; 6],
     rx_available: u16,
     rx_used: u16,
+    rx_batch_end: u16,
+    rx_batch_interrupt: bool,
+    rx_faulted: bool,
     tx_available: u16,
     tx_used: u16,
+    rx_idle_checks: usize,
 }
 
 impl VirtioNet {
@@ -316,8 +377,12 @@ impl VirtioNet {
             mac: [0; 6],
             rx_available: 0,
             rx_used: 0,
+            rx_batch_end: 0,
+            rx_batch_interrupt: false,
+            rx_faulted: false,
             tx_available: 0,
             tx_used: 0,
+            rx_idle_checks: 0,
         }
     }
 
@@ -348,7 +413,10 @@ impl VirtioNet {
             return None;
         }
         mmio_write_u16(self.common, COMMON_QUEUE_SIZE, VIRTQUEUE_SIZE as u16);
-        mmio_write_u16(self.common, COMMON_QUEUE_MSIX_VECTOR, u16::MAX);
+        mmio_write_u16(self.common, COMMON_QUEUE_MSIX_VECTOR, 0);
+        if mmio_read_u16(self.common, COMMON_QUEUE_MSIX_VECTOR) != 0 {
+            return None;
+        }
         mmio_write_u64(
             self.common,
             COMMON_QUEUE_DESC,
@@ -392,11 +460,15 @@ impl VirtioNet {
         );
         self.rx_available = VIRTQUEUE_SIZE as u16;
         self.rx_used = 0;
+        self.rx_batch_end = 0;
+        self.rx_batch_interrupt = false;
+        self.rx_faulted = false;
     }
 
     unsafe fn notify(address: u64, queue_index: u16) {
         fence(Ordering::SeqCst);
         write_volatile(address as *mut u16, queue_index);
+        VIRTIO_QUEUE_NOTIFICATIONS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -406,6 +478,10 @@ impl FrameDevice for VirtioNet {
             return false;
         };
         let Some(regions) = discover_virtio_regions(location) else {
+            return false;
+        };
+        let Some(msix) = discover_msix(location) else {
+            serial::println("VIRTIO_NET_MSIX_UNAVAILABLE");
             return false;
         };
         self.common = regions.common;
@@ -463,6 +539,12 @@ impl FrameDevice for VirtioNet {
             }
             serial::println("VIRTIO_NET_FEATURES_OK version=1 mac=true offloads=false");
 
+            if !configure_msix(location, msix) {
+                serial::println("VIRTIO_NET_MSIX_CONFIG_FAILED");
+                return self.fail();
+            }
+            serial::println("VIRTIO_NET_MSIX_READY vector=48 queues=rx,tx");
+
             write_volatile(
                 addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY),
                 VirtqueueMemory::empty(),
@@ -496,6 +578,7 @@ impl FrameDevice for VirtioNet {
             self.prepare_receive_queue();
             self.tx_available = 0;
             self.tx_used = 0;
+            self.rx_idle_checks = 0;
             status |= VIRTIO_STATUS_DRIVER_OK;
             mmio_write_u8(self.common, COMMON_DEVICE_STATUS, status);
             Self::notify(self.rx_notify, VIRTIO_RX_QUEUE);
@@ -509,7 +592,7 @@ impl FrameDevice for VirtioNet {
     }
 
     fn transmit(&mut self, frame: &[u8]) -> bool {
-        if frame.len() > MAX_FRAME {
+        if self.rx_faulted || frame.len() > MAX_FRAME {
             return false;
         }
         let wire_length = frame.len().max(60);
@@ -519,6 +602,7 @@ impl FrameDevice for VirtioNet {
         }
         unsafe {
             let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
+            let mut observed_interrupt = VIRTIO_INTERRUPT_EPOCH.load(Ordering::Acquire);
             let buffer = addr_of_mut!(VIRTIO_TX_BUFFER.0) as *mut u8;
             core::ptr::write_bytes(buffer, 0, total_length);
             core::ptr::copy_nonoverlapping(
@@ -543,7 +627,19 @@ impl FrameDevice for VirtioNet {
             self.tx_available = self.tx_available.wrapping_add(1);
             write_volatile(addr_of_mut!((*queue).available.index), self.tx_available);
             Self::notify(self.tx_notify, VIRTIO_TX_QUEUE);
-            for _ in 0..VIRTIO_POLL_LIMIT {
+            for spin in 0..VIRTIO_POLL_LIMIT {
+                let interrupt = VIRTIO_INTERRUPT_EPOCH.load(Ordering::Acquire);
+                let interrupt_driven = interrupt != observed_interrupt;
+                let recovery = spin != 0 && spin % VIRTIO_RECOVERY_POLL_INTERVAL == 0;
+                if !interrupt_driven && !recovery {
+                    core::hint::spin_loop();
+                    continue;
+                }
+                if interrupt_driven {
+                    observed_interrupt = interrupt;
+                } else {
+                    VIRTIO_RECOVERY_POLLS.fetch_add(1, Ordering::Relaxed);
+                }
                 fence(Ordering::Acquire);
                 let used = read_volatile(addr_of!((*queue).used.index));
                 if used != self.tx_used {
@@ -554,6 +650,12 @@ impl FrameDevice for VirtioNet {
                     if element.id != 0 {
                         serial::println("VIRTIO_NET_TX_INVALID_USED_ID");
                     }
+                    if interrupt_driven {
+                        VIRTIO_TX_INTERRUPT_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        VIRTIO_RECOVERY_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    VIRTIO_TX_FRAMES.fetch_add(1, Ordering::Relaxed);
                     return element.id == 0;
                 }
             }
@@ -563,13 +665,42 @@ impl FrameDevice for VirtioNet {
     }
 
     fn receive(&mut self, packet: &mut PacketBuffer) -> bool {
+        if self.rx_faulted {
+            return false;
+        }
         unsafe {
             let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
-            fence(Ordering::Acquire);
-            let used_index = read_volatile(addr_of!((*queue).used.index));
-            if self.rx_used == used_index {
+            let notified = VIRTIO_INTERRUPT_PENDING.swap(false, Ordering::AcqRel);
+            self.rx_idle_checks = self.rx_idle_checks.wrapping_add(1);
+            let recovery = self
+                .rx_idle_checks
+                .is_multiple_of(VIRTIO_RECOVERY_POLL_INTERVAL);
+            let pending = self.rx_used != self.rx_batch_end;
+            if !notified && !pending && !recovery {
                 return false;
             }
+            if notified || !pending {
+                if !notified {
+                    VIRTIO_RECOVERY_POLLS.fetch_add(1, Ordering::Relaxed);
+                }
+                fence(Ordering::Acquire);
+                let used_index = read_volatile(addr_of!((*queue).used.index));
+                if used_index.wrapping_sub(self.rx_used) > VIRTQUEUE_SIZE as u16 {
+                    self.rx_faulted = true;
+                    serial::println("VIRTIO_NET_RX_INVALID_USED_ADVANCE");
+                    return self.fail();
+                }
+                // A single MSI-X delivery can cover an entire used-ring batch.
+                // Retain readiness until that bounded snapshot is drained;
+                // consuming one frame must not strand its siblings until a
+                // recovery poll or count them as lost-interrupt completions.
+                self.rx_batch_end = used_index;
+                self.rx_batch_interrupt = notified;
+            }
+            if self.rx_used == self.rx_batch_end {
+                return false;
+            }
+            let interrupt_driven = self.rx_batch_interrupt;
             let element = read_volatile(addr_of!(
                 (*queue).used.ring[self.rx_used as usize % VIRTQUEUE_SIZE]
             ));
@@ -599,6 +730,12 @@ impl FrameDevice for VirtioNet {
                 );
                 packet.len = frame_length;
                 packet.owner = PacketOwner::Stack;
+                if interrupt_driven {
+                    VIRTIO_RX_INTERRUPT_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    VIRTIO_RECOVERY_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
+                }
+                VIRTIO_RX_FRAMES.fetch_add(1, Ordering::Relaxed);
             }
 
             if descriptor < VIRTQUEUE_SIZE {
@@ -703,6 +840,57 @@ fn discover_virtio_regions(location: PciLocation) -> Option<VirtioPciRegions> {
     (regions.notify_multiplier != 0).then_some(regions)
 }
 
+fn discover_msix(location: PciLocation) -> Option<MsixCapability> {
+    if pci_read_u16(location, 0x06) & 0x10 == 0 {
+        return None;
+    }
+    let mut capability = pci_read_u8(location, 0x34) & 0xfc;
+    for _ in 0..48 {
+        if capability < 0x40 {
+            break;
+        }
+        let next = pci_read_u8(location, capability.wrapping_add(1)) & 0xfc;
+        if pci_read_u8(location, capability) == PCI_CAP_MSIX {
+            // One table entry is sufficient for the shared RX/TX vector even
+            // when the device exposes additional entries.
+            let table_info = pci_read_u32(location, capability.wrapping_add(4));
+            let bir = (table_info & 0x7) as u8;
+            let offset = u64::from(table_info & !0x7);
+            let table = pci_bar_base(location, bir)?.checked_add(offset)?;
+            return Some(MsixCapability { capability, table });
+        }
+        if next == 0 || next == capability {
+            break;
+        }
+        capability = next;
+    }
+    None
+}
+
+unsafe fn configure_msix(location: PciLocation, msix: MsixCapability) -> bool {
+    // Mask the function while the table entry is being programmed. Entry 0 is
+    // shared by the RX and TX queues; the coordinator determines which used
+    // ring actually advanced before reclaiming any descriptor.
+    let control = pci_read_u16(location, msix.capability.wrapping_add(2));
+    pci_write_u16(
+        location,
+        msix.capability.wrapping_add(2),
+        control | (1 << 14),
+    );
+    write_volatile((msix.table + 12) as *mut u32, 1);
+    write_volatile(msix.table as *mut u32, X86_MSI_ADDRESS);
+    write_volatile((msix.table + 4) as *mut u32, 0);
+    write_volatile((msix.table + 8) as *mut u32, VIRTIO_MSIX_VECTOR as u32);
+    fence(Ordering::SeqCst);
+    write_volatile((msix.table + 12) as *mut u32, 0);
+    pci_write_u16(
+        location,
+        msix.capability.wrapping_add(2),
+        (control | (1 << 15)) & !(1 << 14),
+    );
+    pci_read_u16(location, msix.capability.wrapping_add(2)) & (1 << 15) != 0
+}
+
 fn pci_bar_base(location: PciLocation, bar: u8) -> Option<u64> {
     if bar >= 6 {
         return None;
@@ -755,6 +943,17 @@ fn pci_write_u32(location: PciLocation, offset: u8, value: u32) {
         arch::outl(PCI_CONFIG_ADDRESS, address);
         arch::outl(PCI_CONFIG_DATA, value);
     }
+}
+
+fn pci_write_u16(location: PciLocation, offset: u8, value: u16) {
+    let shift = u32::from(offset & 2) * 8;
+    let mask = !(0xffffu32 << shift);
+    let current = pci_read_u32(location, offset);
+    pci_write_u32(
+        location,
+        offset,
+        (current & mask) | (u32::from(value) << shift),
+    );
 }
 
 unsafe fn mmio_read_u8(base: u64, offset: usize) -> u8 {
@@ -994,4 +1193,69 @@ fn ne2000_wait_register(port: u16, mask: u8) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn one_interrupt_drains_every_completed_rx_descriptor_without_recovery_polling() {
+        let mut notification = 0u16;
+        let mut device = VirtioNet::new();
+        device.rx_notify = core::ptr::addr_of_mut!(notification) as u64;
+        // SAFETY: this is the only test touching the driver's DMA fixtures.
+        // No device or other test owns these static queue/buffer locations.
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            queue.write(VirtqueueMemory::empty());
+            device.prepare_receive_queue();
+            for index in 0..2 {
+                (*queue).used.ring[index] = VirtqUsedElement {
+                    id: index as u32,
+                    length: (VIRTIO_NET_HEADER_BYTES + 60) as u32,
+                };
+                let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+                (&mut (*buffers)[index])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60]
+                    .fill(index as u8 + 1);
+            }
+            (*queue).used.index = 2;
+        }
+        VIRTIO_RX_INTERRUPT_COMPLETIONS.store(0, Ordering::Relaxed);
+        VIRTIO_RECOVERY_COMPLETIONS.store(0, Ordering::Relaxed);
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        let mut packet = PacketBuffer::empty();
+        assert!(device.receive(&mut packet));
+        assert_eq!(packet.bytes[0], 1);
+        assert!(
+            device.receive(&mut packet),
+            "a coalesced completion must not wait for recovery polling"
+        );
+        assert_eq!(packet.bytes[0], 2);
+        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 2);
+        assert_eq!(VIRTIO_RECOVERY_COMPLETIONS.load(Ordering::Relaxed), 0);
+        assert!(!device.receive(&mut packet));
+        // The same contract holds when the 16-bit used index wraps.
+        device.rx_used = u16::MAX;
+        device.rx_batch_end = u16::MAX;
+        // SAFETY: exclusively owned fixture queue, as above.
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            (*queue).used.ring[7] = VirtqUsedElement { id: 0, length: 72 };
+            (*queue).used.ring[0] = VirtqUsedElement { id: 1, length: 72 };
+            (*queue).used.index = 1;
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        assert!(device.receive(&mut packet));
+        assert!(device.receive(&mut packet));
+        assert_eq!(device.rx_used, 1);
+        assert!(!device.receive(&mut packet));
+        // A device cannot claim more completions than it owns descriptors.
+        unsafe {
+            (*addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY)).used.index = 10;
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        assert!(!device.receive(&mut packet));
+        assert!(device.rx_faulted);
+    }
 }

@@ -12,8 +12,8 @@ use genos_abi::{
     USER_PROCESS_MODE_HOLD, USER_PROCESS_MODE_NORMAL, USER_PROCESS_STATE_EXITED,
     USER_PROCESS_STATE_FAULTED, USER_PROCESS_STATE_KILLED, USER_PROCESS_STATE_READY,
     USER_PROCESS_STATE_SLEEPING, USER_PROCESS_STATE_WAITING, USER_SOCKET_BUFFER_CAPACITY,
-    USER_SOCKET_HANDLE_CAPACITY, USER_SOCKET_SHUTDOWN_READ, USER_SOCKET_SHUTDOWN_WRITE,
-    USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    USER_SOCKET_HANDLE_CAPACITY, USER_SOCKET_READY_MASK, USER_SOCKET_SHUTDOWN_READ,
+    USER_SOCKET_SHUTDOWN_WRITE, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
 };
 use kernel::{
     capability::{HandleKind, HandleTable},
@@ -33,6 +33,7 @@ use kernel::{
 use crate::{arch, memory, network, paging};
 
 pub const SYSCALL_VECTOR: usize = 0x80;
+const SOCKET_WAIT_WAKE_BUDGET: usize = 2;
 const PROCESS_COUNT: usize = 3;
 const HEALTHY_PROCESS_COUNT: u8 = 2;
 const FAULT_EXIT_CODE: u8 = 128 + 14;
@@ -279,6 +280,11 @@ enum ProcessEvent {
         handle: u64,
         address: u64,
         length: u64,
+    },
+    SocketWait {
+        handle: u64,
+        readiness: u64,
+        timeout_ticks: u64,
     },
     SocketShutdown {
         handle: u64,
@@ -713,6 +719,7 @@ struct ManagedProcess {
     pending_process_launch: Option<PendingProcessLaunch>,
     process_handles: [Option<ProcessCapability>; PROCESS_HANDLE_CAPACITY],
     pending_input: Option<PendingInput>,
+    pending_socket_wait: Option<PendingSocketWait>,
     process: UserProcess,
 }
 
@@ -814,6 +821,13 @@ struct PendingInput {
     address: u64,
     length: u64,
     mask: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingSocketWait {
+    handle: u64,
+    readiness: u64,
+    deadline: u64,
 }
 
 /// Metadata of a receive that already validated its output buffer and is now
@@ -1115,6 +1129,7 @@ enum BlockReason {
     DirectoryCreate,
     PathRemove,
     Input,
+    Socket,
 }
 
 impl ManagedProcess {
@@ -1166,6 +1181,7 @@ impl ManagedProcess {
             pending_process_launch: None,
             process_handles: [None; PROCESS_HANDLE_CAPACITY],
             pending_input: None,
+            pending_socket_wait: None,
             process,
         }
     }
@@ -1314,6 +1330,7 @@ impl ManagedProcess {
         self.pending_process_launch = None;
         self.process_handles = [None; PROCESS_HANDLE_CAPACITY];
         self.pending_input = None;
+        self.pending_socket_wait = None;
         self.process.console_handle = 0;
         self.process.lifecycle_handle = 0;
     }
@@ -1419,6 +1436,7 @@ impl ManagedProcess {
             && self.pending_namespace_mutation.is_none()
             && self.pending_process_launch.is_none()
             && self.pending_input.is_none()
+            && self.pending_socket_wait.is_none()
             && self.process.console_handle == 0
             && self.process.lifecycle_handle == 0
     }
@@ -1428,6 +1446,7 @@ pub struct ProcessManager {
     slots: [Option<ManagedProcess>; MAX_ASYNC_PROCESSES],
     slot_incarnations: [u64; MAX_ASYNC_PROCESSES],
     cursor: usize,
+    socket_wait_cursor: usize,
 }
 
 impl ProcessManager {
@@ -1436,6 +1455,7 @@ impl ProcessManager {
             slots: [const { None }; MAX_ASYNC_PROCESSES],
             slot_incarnations: [0; MAX_ASYNC_PROCESSES],
             cursor: 0,
+            socket_wait_cursor: 0,
         }
     }
 
@@ -1955,6 +1975,7 @@ impl ProcessManager {
     }
 
     pub fn poll(&mut self, tick: u64) -> Option<ProcessUpdate> {
+        self.wake_socket_waiters(tick);
         self.wake_sleepers(tick);
         for offset in 1..=MAX_ASYNC_PROCESSES {
             let index = (self.cursor + offset) % MAX_ASYNC_PROCESSES;
@@ -2125,7 +2146,7 @@ impl ProcessManager {
                         crate::serial::println("USER_NETWORK_DIAGNOSTICS_READY");
                     }
                     if text.as_str() == "nonblocking socket capabilities ready" {
-                        crate::serial::println("USER_SOCKET_CAPABILITY_READY abi=17");
+                        crate::serial::println("USER_SOCKET_CAPABILITY_READY abi=18");
                     }
                     if text.as_str() == "asynchronous UDP socket ready" {
                         crate::serial::println("USER_SOCKET_UDP_ASYNC_READY");
@@ -2134,7 +2155,13 @@ impl ProcessManager {
                         crate::serial::println("USER_SOCKET_TCP_ASYNC_READY");
                     }
                     if text.as_str() == "listener capability authority ready" {
-                        crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=17");
+                        crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=18");
+                    }
+                    if text.as_str() == "passive TCP listener ready" {
+                        crate::serial::println("USER_SOCKET_PASSIVE_LISTEN_READY port=18081");
+                    }
+                    if text.as_str() == "passive TCP listener ready" {
+                        crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
                     }
                     if text.as_str() == "passive TCP listener ready" {
                         crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
@@ -2144,6 +2171,14 @@ impl ProcessManager {
                     }
                     if text.as_str() == "passive TCP stream ready" {
                         crate::serial::println("USER_SOCKET_PASSIVE_STREAM_READY");
+                    }
+                    if text.as_str() == "concurrent passive TCP streams ready" {
+                        crate::serial::println("USER_SOCKET_PASSIVE_CONCURRENT_READY streams=2");
+                    }
+                    if text.as_str() == "socket readiness wait ready" {
+                        crate::serial::println(
+                            "USER_SOCKET_READINESS_WAIT_READY abi=18 wake_budget=2",
+                        );
                     }
                     if text.as_str() == "durable file committed" {
                         crate::serial::println("USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT");
@@ -2228,6 +2263,11 @@ impl ProcessManager {
                     address,
                     length,
                 } => self.complete_socket_status(index, handle, address, length),
+                ProcessEvent::SocketWait {
+                    handle,
+                    readiness,
+                    timeout_ticks,
+                } => self.complete_socket_wait(index, handle, readiness, timeout_ticks, tick),
                 ProcessEvent::SocketShutdown { handle, direction } => {
                     self.complete_socket_shutdown(index, handle, direction)
                 }
@@ -2412,6 +2452,7 @@ impl ProcessManager {
             }
             Ok(accepted) => {
                 let _ = managed.sockets.close(owner, accepted);
+                crate::serial::println("USER_SOCKET_ACCEPT_ROLLBACK");
                 syscall::error_code(syscall::SyscallError::Unavailable)
             }
             Err(error) => socket_error_code(error),
@@ -2521,6 +2562,50 @@ impl ProcessManager {
             Err(error) => socket_error_code(error),
         };
         managed.state = ManagedState::Ready;
+    }
+
+    fn complete_socket_wait(
+        &mut self,
+        index: usize,
+        handle: u64,
+        readiness: u64,
+        timeout_ticks: u64,
+        tick: u64,
+    ) {
+        let managed = self.slots[index].as_mut().expect("selected process exists");
+        let allowed = managed
+            .handles
+            .allows(handle, HandleKind::Socket, HANDLE_RIGHT_USE);
+        let status = if allowed {
+            managed.sockets.status(socket_owner(managed), handle)
+        } else {
+            Err(SocketError::InvalidHandle)
+        };
+        let Ok(status) = status else {
+            managed.process.context.rax = status
+                .err()
+                .map(socket_error_code)
+                .unwrap_or_else(|| syscall::error_code(syscall::SyscallError::InvalidArgument));
+            managed.state = ManagedState::Ready;
+            return;
+        };
+        let observed = status.readiness & readiness & USER_SOCKET_READY_MASK;
+        if observed != 0 {
+            managed.process.context.rax = observed;
+            managed.state = ManagedState::Ready;
+            crate::serial::println("USER_SOCKET_WAIT_IMMEDIATE");
+            return;
+        }
+        managed.pending_socket_wait = Some(PendingSocketWait {
+            handle,
+            readiness,
+            deadline: tick.saturating_add(timeout_ticks),
+        });
+        managed.blocked_on = BlockReason::Socket;
+        managed.state = ManagedState::Waiting;
+        crate::serial::print("USER_SOCKET_WAIT_BLOCK pid=");
+        crate::serial::print_u64(managed.process.pid as u64);
+        crate::serial::println("");
     }
 
     fn complete_socket_shutdown(&mut self, index: usize, handle: u64, direction: u64) {
@@ -2875,6 +2960,52 @@ impl ProcessManager {
                 crate::serial::print_u64(managed.process.pid as u64);
                 crate::serial::println("");
             }
+        }
+    }
+
+    fn wake_socket_waiters(&mut self, tick: u64) {
+        let mut woke = 0usize;
+        let start_cursor = self.socket_wait_cursor;
+        let mut last_woken = None;
+        for offset in 1..=MAX_ASYNC_PROCESSES {
+            if woke >= SOCKET_WAIT_WAKE_BUDGET {
+                break;
+            }
+            let index = (start_cursor + offset) % MAX_ASYNC_PROCESSES;
+            let Some(managed) = self.slots[index].as_mut() else {
+                continue;
+            };
+            if managed.state != ManagedState::Waiting || managed.blocked_on != BlockReason::Socket {
+                continue;
+            }
+            let Some(wait) = managed.pending_socket_wait else {
+                continue;
+            };
+            let result = managed
+                .sockets
+                .status(socket_owner(managed), wait.handle)
+                .map(|status| status.readiness & wait.readiness & USER_SOCKET_READY_MASK);
+            let (return_value, marker) = match result {
+                Ok(observed) if observed != 0 => (observed, "USER_SOCKET_WAIT_WAKE"),
+                Ok(_) if tick >= wait.deadline => {
+                    (genos_abi::USER_ERROR_TIMED_OUT, "USER_SOCKET_WAIT_TIMEOUT")
+                }
+                Err(error) => (socket_error_code(error), "USER_SOCKET_WAIT_STALE"),
+                Ok(_) => continue,
+            };
+            managed.pending_socket_wait = None;
+            managed.blocked_on = BlockReason::None;
+            managed.state = ManagedState::Ready;
+            managed.process.context.rax = return_value;
+            last_woken = Some(index);
+            woke += 1;
+            crate::serial::print(marker);
+            crate::serial::print(" pid=");
+            crate::serial::print_u64(managed.process.pid as u64);
+            crate::serial::println("");
+        }
+        if let Some(index) = last_woken {
+            self.socket_wait_cursor = index;
         }
     }
 
@@ -4792,6 +4923,9 @@ genos_syscall_stub:
     push r13
     push r14
     push r15
+    pushfq
+    and qword ptr [rsp], -262145
+    popfq
     mov rdi, rsp
     and rsp, -16
     sub rsp, 16
@@ -4939,6 +5073,7 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
                 | ProcessEvent::SocketSend { .. }
                 | ProcessEvent::SocketReceive { .. }
                 | ProcessEvent::SocketStatus { .. }
+                | ProcessEvent::SocketWait { .. }
                 | ProcessEvent::SocketShutdown { .. }
                 | ProcessEvent::SocketClose(_) => fail("USER_PROBE_BLOCKED"),
                 ProcessEvent::None => fail("USER_EVENT_MISSING"),
@@ -5114,6 +5249,71 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     crate::serial::print_u64(result.preemptions);
     crate::serial::println("");
     Ok(result)
+}
+
+/// Explicit SDK acceptance image only: execute the external ELF through the
+/// production mapper/syscall path, with bounded slices and unconditional
+/// reclamation. This grants no new shell, VFS, or lifecycle capabilities.
+pub fn run_sdk_probe(elf_bytes: &[u8]) -> bool {
+    let pid = NEXT_DYNAMIC_PID.fetch_add(1, Ordering::AcqRel);
+    let Ok(mut process) = build_process(pid, TOKEN_DYNAMIC_BASE | u64::from(pid), elf_bytes) else {
+        return false;
+    };
+    for _ in 0..32 {
+        if process.completed {
+            break;
+        }
+        run_slice(&mut process);
+        if !matches!(
+            process.event,
+            ProcessEvent::Yield | ProcessEvent::Preempt | ProcessEvent::Exit
+        ) {
+            break;
+        }
+    }
+    paging::activate_kernel();
+    let passed = process.completed
+        && process.event == ProcessEvent::Exit
+        && process.exit_code == 0
+        && process.output.as_str() == "Hello from the standalone GenOS SDK";
+    let reclaimed = reclaim_process(&mut process).is_ok();
+    if passed && reclaimed {
+        crate::serial::println("SDK_APPLICATION_READY abi=18 exit=0 reclaimed=true");
+    }
+    passed && reclaimed
+}
+
+#[cfg(feature = "memory-test-faults")]
+pub fn run_memory_rollback_probe(elf_bytes: &[u8]) -> bool {
+    let was_enabled = arch::interrupts_enabled();
+    arch::disable_interrupts();
+    let baseline = memory::allocated_frames();
+    let mut success = false;
+    for cutoff in 0..64 {
+        memory::fail_after(Some(cutoff));
+        let result = build_process(127, TOKEN_DYNAMIC_BASE | 127, elf_bytes);
+        memory::fail_after(None);
+        let built = result.is_ok();
+        let reclaimed = match result {
+            Ok(mut process) => reclaim_process(&mut process).is_ok(),
+            Err(_) => true,
+        };
+        if !reclaimed || memory::allocated_frames() != baseline {
+            break;
+        }
+        if built {
+            crate::serial::print("MEMORY_ROLLBACK_READY allocation_points=");
+            crate::serial::print_u64(cutoff as u64);
+            crate::serial::println(" leaked_frames=0");
+            success = cutoff >= 10;
+            break;
+        }
+    }
+    memory::fail_after(None);
+    if was_enabled {
+        arch::enable_interrupts();
+    }
+    success
 }
 
 /// Latches the last line each pid wrote. A write syscall only marks its line
@@ -6844,6 +7044,20 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 0
             }
         }
+        Ok(SyscallAction::SocketWait {
+            handle,
+            readiness,
+            timeout_ticks,
+        }) => {
+            frame.rax = 0;
+            process.context = *frame;
+            process.event = ProcessEvent::SocketWait {
+                handle,
+                readiness,
+                timeout_ticks,
+            };
+            1
+        }
         Ok(SyscallAction::SocketShutdown { handle, direction }) => {
             frame.rax = 0;
             process.context = *frame;
@@ -7115,7 +7329,9 @@ fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64
     if physical != expected {
         return None;
     }
-    Some(unsafe { core::ptr::read_unaligned(address as *const u64) })
+    // SAFETY: the complete eight-byte range belongs to this process's data
+    // frame. Copy through its supervisor-only physical alias under SMAP.
+    Some(unsafe { core::ptr::read_unaligned(physical as *const u64) })
 }
 
 fn console_line_kind(kind: u64) -> Option<LineKind> {
@@ -7144,8 +7360,10 @@ fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<Fi
     let mut bytes = [0u8; 80];
     for (index, slot) in bytes.iter_mut().take(length).enumerate() {
         let virtual_address = address.checked_add(index as u64)?;
-        paging::translate(process.space, virtual_address)?;
-        let byte = unsafe { core::ptr::read_volatile(virtual_address as *const u8) };
+        let physical = paging::translate(process.space, virtual_address)?;
+        // SAFETY: translation checks each byte inside the bounded owned user
+        // range; the supervisor alias remains mapped for the frame lifetime.
+        let byte = unsafe { core::ptr::read_volatile(physical as *const u8) };
         *slot = if byte.is_ascii() && !byte.is_ascii_control() {
             byte
         } else {
@@ -7172,8 +7390,10 @@ fn copy_user_bytes(process: &UserProcess, address: u64, length: u64) -> Option<F
     data.len = length as usize;
     for (index, slot) in data.bytes.iter_mut().take(data.len).enumerate() {
         let virtual_address = address.checked_add(index as u64)?;
-        paging::translate(process.space, virtual_address)?;
-        *slot = unsafe { core::ptr::read_volatile(virtual_address as *const u8) };
+        let physical = paging::translate(process.space, virtual_address)?;
+        // SAFETY: bounded process-owned translation, accessed via supervisor
+        // alias. No STAC window or raw userspace dereference is required.
+        *slot = unsafe { core::ptr::read_volatile(physical as *const u8) };
     }
     Some(data)
 }

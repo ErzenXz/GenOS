@@ -26,6 +26,7 @@ pub struct TcpPacket<'a> {
     pub sequence: u32,
     pub acknowledgment: u32,
     pub flags: u8,
+    pub window: u16,
     pub payload: &'a [u8],
 }
 
@@ -153,6 +154,7 @@ pub fn parse_tcp(payload: &[u8]) -> Option<TcpPacket<'_>> {
         sequence: u32::from_be_bytes(payload[4..8].try_into().ok()?),
         acknowledgment: u32::from_be_bytes(payload[8..12].try_into().ok()?),
         flags: payload[13],
+        window: u16::from_be_bytes([payload[14], payload[15]]),
         payload: &payload[header_len..],
     })
 }
@@ -287,6 +289,7 @@ mod tests {
             ip.payload
         ));
         let syn = parse_tcp(ip.payload).unwrap();
+        assert_eq!(syn.window, 4_096);
         assert!(is_initial_tcp_syn(&syn));
         assert_eq!(syn.destination_port, 18081);
         for len in 0..frame.len() {

@@ -276,3 +276,6 @@ A pull request must update this file when it:
 - discovers a failure that affects user or contributor expectations.
 
 Remove a limitation only in the same change that adds the required implementation and evidence, or in a follow-up change that links directly to already merged proof.
+## Integration update — GenOS 0.56 (2026-09-08)
+
+The audit above preserves its original baseline. The integrated system now has normalized exception entry, dedicated fatal stacks, a CPU-protected IDT, explicit NX/WP and supported SMEP/SMAP, page permissions for the linked kernel sections, bounded UART waits, lossless bitmap reclamation, transactional clone/map rollback, and physical-allocation failure tests. These supersede the corresponding older implementation descriptions without closing the broader security/concurrency release gate. The allocator limit is now 8 GiB of usable memory and 64 managed ranges; the bootloader's own memory-map capacity remains a separate limitation. Inherited physical aliases, owner tokens, sensitive-page scrubbing, nested emergency-stack/XSTATE handling and release/validation boot separation remain unfinished.

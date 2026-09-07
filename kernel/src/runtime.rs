@@ -9,6 +9,7 @@ use kernel::{
 use crate::{network, serial, storage, userspace};
 
 const MAX_RUNTIME_EVENTS: usize = 4;
+const PASSIVE_TCP_PER_PROCESS_BUDGET: usize = 2;
 pub const SHELL_TASK_ID: u32 = 0x100;
 static mut VFS_ROLLBACK: RamVfs = RamVfs::new();
 
@@ -19,6 +20,25 @@ enum SocketTransportProgress {
         len: usize,
     },
     Failed,
+}
+
+/// One in-flight passive handshake bound to the exact listener capability
+/// that owned its destination port when the SYN was admitted.
+#[derive(Clone, Copy)]
+struct PassiveHandshakeState {
+    tuple: network::PassiveTcpFailure,
+    listener: userspace::UserTcpListener,
+}
+
+/// One accepted or pending passive stream, tracked per exact peer tuple so
+/// several accepted clients can be served concurrently.
+#[derive(Clone, Copy)]
+struct PassiveStreamState {
+    peer: kernel::socket::TcpServerPeer,
+    listener: Option<userspace::UserTcpListener>,
+    stream: Option<userspace::UserTcpStream>,
+    send: Option<userspace::UserTcpStreamSend>,
+    close_started: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -76,11 +96,8 @@ pub struct RuntimeCoordinator {
     pending_lifecycle_request: Option<userspace::UserLifecycleRequest>,
     pending_socket_request: Option<userspace::UserSocketRequest>,
     socket_transport_started: bool,
-    pending_tcp_listener: Option<userspace::UserTcpListener>,
-    tcp_stream_listener: Option<userspace::UserTcpListener>,
-    tcp_stream: Option<userspace::UserTcpStream>,
-    pending_tcp_stream_send: Option<userspace::UserTcpStreamSend>,
-    tcp_stream_close_started: bool,
+    tcp_handshakes: [Option<PassiveHandshakeState>; network::PASSIVE_TCP_HANDSHAKE_SLOTS],
+    tcp_streams: [Option<PassiveStreamState>; network::PASSIVE_TCP_STREAM_SLOTS],
     next_process_task_id: u32,
     completed_vfs_requests: u64,
     completed_lifecycle_launches: u64,
@@ -108,11 +125,8 @@ impl RuntimeCoordinator {
             pending_lifecycle_request: None,
             pending_socket_request: None,
             socket_transport_started: false,
-            pending_tcp_listener: None,
-            tcp_stream_listener: None,
-            tcp_stream: None,
-            pending_tcp_stream_send: None,
-            tcp_stream_close_started: false,
+            tcp_handshakes: [None; network::PASSIVE_TCP_HANDSHAKE_SLOTS],
+            tcp_streams: [None; network::PASSIVE_TCP_STREAM_SLOTS],
             next_process_task_id: SHELL_TASK_ID + 1,
             completed_vfs_requests: 0,
             completed_lifecycle_launches: 0,
@@ -186,7 +200,16 @@ impl RuntimeCoordinator {
     pub fn run_headless_boot_probe(&mut self, max_steps: u16) -> bool {
         let initial_vfs = self.completed_vfs_requests;
         let initial_lifecycle = self.completed_lifecycle_launches;
-        for tick in 0..u64::from(max_steps) {
+        let started = crate::interrupts::ticks();
+        // Socket peers run on real time. Counting coordinator iterations as
+        // timer ticks can expire every parked socket before a host packet
+        // arrives, making the readiness proof depend on host CPU speed.
+        // Bound both work and elapsed time while using the actual timer.
+        for _ in 0..u64::from(max_steps).saturating_mul(64) {
+            let tick = crate::interrupts::poll_fallback_tick();
+            if tick.saturating_sub(started) > u64::from(max_steps) {
+                break;
+            }
             let _ = self.advance(tick);
             self.finish_iteration(false, tick);
             if self.completed_vfs_requests > initial_vfs
@@ -230,7 +253,7 @@ impl RuntimeCoordinator {
             &mut saw_uname_prompt,
             &mut saw_uname_output,
             b"/> uname",
-            b"GenOS v0.49 ring3-shell x86_64 ABI 17",
+            b"GenOS v0.56 ring3-shell x86_64 ABI 18",
         ) {
             return false;
         }
@@ -308,6 +331,9 @@ impl RuntimeCoordinator {
     }
 
     pub fn advance(&mut self, tick: u64) -> RuntimeBatch {
+        // Boot probes use synthetic scheduler ticks; IPv6 DAD/lifetimes must
+        // always use elapsed hardware time, including during those probes.
+        network::advance_control(crate::interrupts::ticks());
         let mut batch = RuntimeBatch::new();
         self.complete_lifecycle_request(&mut batch);
         self.complete_vfs_request(tick, &mut batch);
@@ -547,9 +573,11 @@ impl RuntimeCoordinator {
             return;
         }
         if !self.socket_transport_started {
-            if self.pending_tcp_listener.is_some()
+            if self.tcp_handshakes.iter().any(Option::is_some)
                 || network::tcp_passive_active()
-                || network::tcp_passive_stream_peer().is_some()
+                || network::tcp_passive_stream_peers()
+                    .iter()
+                    .any(Option::is_some)
             {
                 return;
             }
@@ -631,14 +659,60 @@ impl RuntimeCoordinator {
         }
     }
 
+    fn handshake_index(&self, tuple: network::PassiveTcpFailure) -> Option<usize> {
+        self.tcp_handshakes
+            .iter()
+            .position(|entry| entry.is_some_and(|handshake| handshake.tuple == tuple))
+    }
+
+    fn passive_owner_count(&self, listener: userspace::UserTcpListener) -> usize {
+        let handshake_count = self
+            .tcp_handshakes
+            .iter()
+            .flatten()
+            .filter(|state| {
+                state.listener.owner_slot == listener.owner_slot
+                    && state.listener.owner_instance == listener.owner_instance
+            })
+            .count();
+        let stream_count = self
+            .tcp_streams
+            .iter()
+            .flatten()
+            .filter(|state| {
+                state.stream.map_or_else(
+                    || {
+                        state.listener.is_some_and(|owner| {
+                            owner.owner_slot == listener.owner_slot
+                                && owner.owner_instance == listener.owner_instance
+                        })
+                    },
+                    |owner| {
+                        owner.owner_slot == listener.owner_slot
+                            && owner.owner_instance == listener.owner_instance
+                    },
+                )
+            })
+            .count();
+        handshake_count.saturating_add(stream_count)
+    }
+
+    fn stream_index(&self, peer: kernel::socket::TcpServerPeer) -> Option<usize> {
+        self.tcp_streams
+            .iter()
+            .position(|entry| entry.is_some_and(|state| state.peer == peer))
+    }
+
     fn complete_passive_tcp(&mut self, tick: u64) {
-        if self
-            .pending_tcp_listener
-            .is_some_and(|listener| !self.processes.tcp_listener_active(listener))
-        {
-            network::cancel_tcp_passive();
-            self.pending_tcp_listener = None;
-            serial::println("TCP_PASSIVE_STALE_LISTENER_DROPPED");
+        for index in 0..self.tcp_handshakes.len() {
+            let Some(handshake) = self.tcp_handshakes[index] else {
+                continue;
+            };
+            if !self.processes.tcp_listener_active(handshake.listener) {
+                network::cancel_tcp_passive(handshake.tuple);
+                self.tcp_handshakes[index] = None;
+                serial::println("TCP_PASSIVE_STALE_LISTENER_DROPPED");
+            }
         }
         match network::poll_tcp_passive(tick) {
             network::PassiveTcpProgress::Idle | network::PassiveTcpProgress::Pending => {}
@@ -647,24 +721,58 @@ impl RuntimeCoordinator {
                     network::reject_tcp_syn(syn);
                     return;
                 };
+                if self.passive_owner_count(listener) >= PASSIVE_TCP_PER_PROCESS_BUDGET {
+                    network::reject_tcp_syn(syn);
+                    serial::println("TCP_PASSIVE_OWNER_BUDGET_REFUSED");
+                    return;
+                }
+                let Some(free) = self.tcp_handshakes.iter().position(Option::is_none) else {
+                    network::reject_tcp_syn(syn);
+                    return;
+                };
                 if network::start_tcp_passive(syn, tick) {
-                    self.pending_tcp_listener = Some(listener);
+                    self.tcp_handshakes[free] = Some(PassiveHandshakeState {
+                        tuple: network::PassiveTcpFailure {
+                            target: syn.target,
+                            remote_port: syn.remote_port,
+                            local_port: syn.local_port,
+                        },
+                        listener,
+                    });
                     serial::println("TCP_PASSIVE_SYN_ACCEPTED");
                 } else {
                     network::reject_tcp_syn(syn);
                 }
             }
-            network::PassiveTcpProgress::Established(peer) => {
-                let listener = self.pending_tcp_listener.take();
+            network::PassiveTcpProgress::Established(peer, early) => {
+                let tuple = network::PassiveTcpFailure {
+                    target: peer.target,
+                    remote_port: peer.remote_port,
+                    local_port: peer.local_port,
+                };
+                let listener = self
+                    .handshake_index(tuple)
+                    .and_then(|index| self.tcp_handshakes[index].take())
+                    .map(|handshake| handshake.listener);
                 if listener.is_some_and(|listener| {
-                    if !network::start_tcp_passive_stream(peer, tick) {
+                    if !network::start_tcp_passive_stream(peer, early, tick) {
                         return false;
                     }
+                    let Some(free) = self.tcp_streams.iter().position(Option::is_none) else {
+                        network::cancel_tcp_passive_stream(peer);
+                        return false;
+                    };
                     if self.processes.queue_tcp_peer(listener, peer).is_ok() {
-                        self.tcp_stream_listener = Some(listener);
+                        self.tcp_streams[free] = Some(PassiveStreamState {
+                            peer,
+                            listener: Some(listener),
+                            stream: None,
+                            send: None,
+                            close_started: false,
+                        });
                         true
                     } else {
-                        network::cancel_tcp_passive_stream();
+                        network::cancel_tcp_passive_stream(peer);
                         false
                     }
                 }) {
@@ -674,166 +782,180 @@ impl RuntimeCoordinator {
                     serial::println("TCP_PASSIVE_BACKLOG_REFUSED");
                 }
             }
-            network::PassiveTcpProgress::Failed => {
-                self.pending_tcp_listener = None;
+            network::PassiveTcpProgress::Failed(failure) => {
+                if let Some(index) = self.handshake_index(failure) {
+                    self.tcp_handshakes[index] = None;
+                }
                 serial::println("TCP_PASSIVE_TIMEOUT");
             }
         }
     }
 
     fn complete_passive_tcp_stream(&mut self, tick: u64) {
-        let Some(peer) = network::tcp_passive_stream_peer() else {
-            self.tcp_stream_listener = None;
-            self.tcp_stream = None;
-            self.pending_tcp_stream_send = None;
-            self.tcp_stream_close_started = false;
-            return;
-        };
+        let peers = network::tcp_passive_stream_peers();
+        for entry in &mut self.tcp_streams {
+            if entry.is_some_and(|state| !peers.contains(&Some(state.peer))) {
+                *entry = None;
+            }
+        }
 
-        if self
-            .tcp_stream
-            .is_some_and(|stream| !self.processes.tcp_stream_active(stream))
-        {
-            network::cancel_tcp_passive_stream();
-            self.tcp_stream = None;
-            self.pending_tcp_stream_send = None;
-            self.tcp_stream_listener = None;
-            self.tcp_stream_close_started = false;
-            serial::println("TCP_PASSIVE_STREAM_STALE_CAPABILITY");
-            return;
-        }
-        if self.tcp_stream.is_none() {
-            self.tcp_stream = self.processes.tcp_stream(peer);
-            if self.tcp_stream.is_some() {
-                self.tcp_stream_listener = None;
-            } else if self
-                .tcp_stream_listener
-                .is_none_or(|listener| !self.processes.tcp_listener_active(listener))
+        for index in 0..self.tcp_streams.len() {
+            let Some(mut state) = self.tcp_streams[index] else {
+                continue;
+            };
+            if state
+                .stream
+                .is_some_and(|stream| !self.processes.tcp_stream_active(stream))
             {
-                network::cancel_tcp_passive_stream();
-                self.tcp_stream_listener = None;
-                serial::println("TCP_PASSIVE_STREAM_UNCLAIMED");
-                return;
+                network::cancel_tcp_passive_stream(state.peer);
+                self.tcp_streams[index] = None;
+                serial::println("TCP_PASSIVE_STREAM_STALE_CAPABILITY");
+                continue;
             }
-        }
-        if self
-            .pending_tcp_stream_send
-            .is_some_and(|request| !self.processes.tcp_stream_send_active(request))
-        {
-            if let Some(stream) = self.tcp_stream {
-                let _ = self.processes.fail_tcp_stream(stream);
+            if state.stream.is_none() {
+                state.stream = self.processes.tcp_stream(state.peer);
+                if state.stream.is_some() {
+                    state.listener = None;
+                } else if state
+                    .listener
+                    .is_none_or(|listener| !self.processes.tcp_listener_active(listener))
+                {
+                    network::cancel_tcp_passive_stream(state.peer);
+                    self.tcp_streams[index] = None;
+                    serial::println("TCP_PASSIVE_STREAM_UNCLAIMED");
+                    continue;
+                }
             }
-            network::cancel_tcp_passive_stream();
-            self.pending_tcp_stream_send = None;
-            self.tcp_stream = None;
-            self.tcp_stream_close_started = false;
-            serial::println("TCP_PASSIVE_STREAM_STALE_SEND");
-            return;
+            if state
+                .send
+                .is_some_and(|request| !self.processes.tcp_stream_send_active(request))
+            {
+                if let Some(stream) = state.stream {
+                    let _ = self.processes.fail_tcp_stream(stream);
+                }
+                network::cancel_tcp_passive_stream(state.peer);
+                self.tcp_streams[index] = None;
+                serial::println("TCP_PASSIVE_STREAM_STALE_SEND");
+                continue;
+            }
+            self.tcp_streams[index] = Some(state);
         }
 
         match network::poll_tcp_passive_stream(tick) {
             network::PassiveTcpStreamProgress::Idle
             | network::PassiveTcpStreamProgress::Pending => {}
-            network::PassiveTcpStreamProgress::Received {
-                peer: received_peer,
-                bytes,
-                len,
-            } => {
-                if received_peer == peer
-                    && self.tcp_stream.is_some_and(|stream| {
-                        self.processes
-                            .queue_tcp_stream_receive(stream, &bytes[..len])
-                            .is_ok()
-                    })
-                    && network::consume_tcp_passive_stream_receive(peer)
+            network::PassiveTcpStreamProgress::Received { peer, bytes, len } => {
+                let stream = self
+                    .stream_index(peer)
+                    .and_then(|index| self.tcp_streams[index])
+                    .and_then(|state| state.stream);
+                if stream.is_some_and(|stream| {
+                    self.processes
+                        .queue_tcp_stream_receive(stream, &bytes[..len])
+                        .is_ok()
+                }) && network::consume_tcp_passive_stream_receive(peer)
                 {
                     serial::println("TCP_PASSIVE_STREAM_RX_OK");
                 }
             }
-            network::PassiveTcpStreamProgress::SendComplete(completed_peer) => {
-                if completed_peer == peer
-                    && self.pending_tcp_stream_send.is_some_and(|request| {
+            network::PassiveTcpStreamProgress::SendComplete(peer) => {
+                if let Some(index) = self.stream_index(peer) {
+                    let send = self.tcp_streams[index].and_then(|state| state.send);
+                    if send.is_some_and(|request| {
                         self.processes.complete_tcp_stream_send(request).is_ok()
-                    })
-                    && network::consume_tcp_passive_stream_send(peer)
-                {
-                    self.pending_tcp_stream_send = None;
-                    serial::println("TCP_PASSIVE_STREAM_TX_OK");
+                    }) && network::consume_tcp_passive_stream_send(peer)
+                    {
+                        if let Some(state) = self.tcp_streams[index].as_mut() {
+                            state.send = None;
+                        }
+                        serial::println("TCP_PASSIVE_STREAM_TX_OK");
+                    }
                 }
             }
-            network::PassiveTcpStreamProgress::PeerClosed(closed_peer) => {
-                if closed_peer == peer
-                    && self.tcp_stream.is_some_and(|stream| {
-                        self.processes.mark_tcp_stream_read_closed(stream).is_ok()
-                    })
-                    && network::consume_tcp_passive_peer_close(peer)
+            network::PassiveTcpStreamProgress::PeerClosed(peer) => {
+                let stream = self
+                    .stream_index(peer)
+                    .and_then(|index| self.tcp_streams[index])
+                    .and_then(|state| state.stream);
+                if stream.is_some_and(|stream| {
+                    self.processes.mark_tcp_stream_read_closed(stream).is_ok()
+                }) && network::consume_tcp_passive_peer_close(peer)
                 {
                     serial::println("TCP_PASSIVE_STREAM_PEER_FIN_OK");
                 }
             }
-            network::PassiveTcpStreamProgress::Closed(closed_peer) => {
-                if closed_peer == peer
-                    && self
-                        .tcp_stream
-                        .is_some_and(|stream| self.processes.mark_tcp_stream_closed(stream).is_ok())
+            network::PassiveTcpStreamProgress::Closed(peer) => {
+                let index = self.stream_index(peer);
+                let stream = index
+                    .and_then(|index| self.tcp_streams[index])
+                    .and_then(|state| state.stream);
+                if stream
+                    .is_some_and(|stream| self.processes.mark_tcp_stream_closed(stream).is_ok())
                     && network::finish_tcp_passive_stream(peer)
                 {
                     serial::println("TCP_PASSIVE_STREAM_FIN_OK");
                 }
-                self.pending_tcp_stream_send = None;
-                self.tcp_stream_listener = None;
-                self.tcp_stream = None;
-                self.tcp_stream_close_started = false;
-                return;
-            }
-            network::PassiveTcpStreamProgress::Reset(reset_peer)
-            | network::PassiveTcpStreamProgress::Failed(reset_peer) => {
-                if reset_peer == peer {
-                    if let Some(stream) = self.tcp_stream {
-                        let _ = self.processes.fail_tcp_stream(stream);
-                    } else if let Some(listener) = self.tcp_stream_listener {
-                        let _ = self.processes.drop_tcp_peer(listener, peer);
-                    }
-                    let _ = network::finish_tcp_passive_stream(peer);
+                if let Some(index) = index {
+                    self.tcp_streams[index] = None;
                 }
-                self.pending_tcp_stream_send = None;
-                self.tcp_stream_listener = None;
-                self.tcp_stream = None;
-                self.tcp_stream_close_started = false;
+            }
+            network::PassiveTcpStreamProgress::Reset(peer)
+            | network::PassiveTcpStreamProgress::Failed(peer) => {
+                if let Some(index) = self.stream_index(peer) {
+                    if let Some(state) = self.tcp_streams[index] {
+                        if let Some(stream) = state.stream {
+                            let _ = self.processes.fail_tcp_stream(stream);
+                        } else if let Some(listener) = state.listener {
+                            let _ = self.processes.drop_tcp_peer(listener, peer);
+                        }
+                    }
+                    self.tcp_streams[index] = None;
+                }
+                let _ = network::finish_tcp_passive_stream(peer);
                 serial::println("TCP_PASSIVE_STREAM_FAILED");
-                return;
             }
         }
 
-        let Some(stream) = self.tcp_stream else {
-            return;
-        };
-        if self.pending_tcp_stream_send.is_none() {
-            if let Some(request) = self.processes.begin_tcp_stream_send(stream) {
-                if network::start_tcp_passive_stream_send(peer, request.data.as_slice(), tick) {
-                    self.pending_tcp_stream_send = Some(request);
-                } else {
-                    let _ = self.processes.fail_tcp_stream(stream);
-                    network::cancel_tcp_passive_stream();
-                    self.tcp_stream = None;
-                    serial::println("TCP_PASSIVE_STREAM_FAILED");
-                    return;
+        for index in 0..self.tcp_streams.len() {
+            let Some(mut state) = self.tcp_streams[index] else {
+                continue;
+            };
+            let Some(stream) = state.stream else {
+                continue;
+            };
+            if state.send.is_none() {
+                if let Some(request) = self.processes.begin_tcp_stream_send(stream) {
+                    if network::start_tcp_passive_stream_send(
+                        state.peer,
+                        request.data.as_slice(),
+                        tick,
+                    ) {
+                        state.send = Some(request);
+                    } else {
+                        let _ = self.processes.fail_tcp_stream(stream);
+                        network::cancel_tcp_passive_stream(state.peer);
+                        self.tcp_streams[index] = None;
+                        serial::println("TCP_PASSIVE_STREAM_FAILED");
+                        continue;
+                    }
                 }
             }
-        }
-        if self.pending_tcp_stream_send.is_none()
-            && !self.tcp_stream_close_started
-            && self.processes.tcp_stream_write_closed(stream)
-        {
-            if network::start_tcp_passive_stream_close(peer, tick) {
-                self.tcp_stream_close_started = true;
-                serial::println("TCP_PASSIVE_STREAM_FIN_SENT");
-            } else {
-                let _ = self.processes.fail_tcp_stream(stream);
-                network::cancel_tcp_passive_stream();
-                self.tcp_stream = None;
-                serial::println("TCP_PASSIVE_STREAM_FAILED");
+            if state.send.is_none()
+                && !state.close_started
+                && self.processes.tcp_stream_write_closed(stream)
+            {
+                if network::start_tcp_passive_stream_close(state.peer, tick) {
+                    state.close_started = true;
+                    serial::println("TCP_PASSIVE_STREAM_FIN_SENT");
+                } else {
+                    let _ = self.processes.fail_tcp_stream(stream);
+                    network::cancel_tcp_passive_stream(state.peer);
+                    self.tcp_streams[index] = None;
+                    serial::println("TCP_PASSIVE_STREAM_FAILED");
+                    continue;
+                }
             }
+            self.tcp_streams[index] = Some(state);
         }
     }
 

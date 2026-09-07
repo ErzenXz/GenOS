@@ -1,6 +1,6 @@
 # ADR-0001: Evidence-gated release and CI policy
 
-- **Status:** Proposed
+- **Status:** Accepted in PR #4
 - **Date:** 2026-08-17
 - **Decision owners:** `@ErzenXz`
 - **Related issue:** PR #4

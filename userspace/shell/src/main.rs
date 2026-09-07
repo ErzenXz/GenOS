@@ -10,7 +10,7 @@ const LINE_CAPACITY: usize = runtime::CONSOLE_TEXT_MAX;
 const READY: &[u8] = b"SHELL.ELF ready - filesystem, network, and process control run in Ring 3";
 const HELP: &[u8] =
     b"help clear echo uname net ls cat stat touch write append mkdir rm run ps kill wait";
-const UNAME: &[u8] = b"GenOS v0.49 ring3-shell x86_64 ABI 17";
+const UNAME: &[u8] = b"GenOS v0.56 ring3-shell x86_64 ABI 18";
 const UNKNOWN: &[u8] = b"unknown userspace command";
 const DIRECTORY_ERROR: &[u8] = b"directory unavailable";
 const FILE_ERROR: &[u8] = b"file unavailable";
@@ -307,112 +307,225 @@ fn prove_listener_authority(console: u64, status: &mut runtime::UserSocketStatus
 
 fn prove_passive_tcp_accept(console: u64, status: &mut runtime::UserSocketStatus) -> bool {
     const PORT: u16 = 18081;
-    const REQUEST: &[u8] = b"GENOS_PING";
-    const RESPONSE: &[u8] = b"GENOS_PONG";
+    const REQUEST_PREFIX: &[u8] = b"GENOS_PING";
+    const RESPONSE_PREFIX: &[u8] = b"GENOS_PONG";
+    const MAX_CLIENTS: usize = 2;
+    const PHASE_RECEIVE: u8 = 0;
+    const PHASE_DRAIN: u8 = 1;
+    const PHASE_CLOSING: u8 = 2;
     let listener = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
     if handle_error(listener)
         || runtime::socket_bind(listener, PORT) != 0
-        || runtime::socket_listen(listener, 1) != 0
+        || runtime::socket_listen(listener, runtime::SOCKET_LISTENER_BACKLOG_CAPACITY) != 0
+        || runtime::socket_wait(
+            listener,
+            runtime::SOCKET_READY_ACCEPT | runtime::SOCKET_READY_ERROR,
+            1,
+        ) != runtime::ERROR_TIMED_OUT
     {
         return false;
     }
-    let listening_message = b"passive TCP listener ready";
-    if runtime::console_write(console, listening_message, runtime::CONSOLE_LINE_STATUS)
-        != listening_message.len() as u64
+    let listening = b"passive TCP listener ready";
+    if runtime::console_write(console, listening, runtime::CONSOLE_LINE_STATUS)
+        != listening.len() as u64
     {
         return false;
     }
-    for _ in 0..80 {
-        let accepted = runtime::socket_accept(listener);
-        if accepted == runtime::ERROR_WOULD_BLOCK {
-            if runtime::sleep(1) != 0 {
-                return false;
+
+    // A bounded multi-client service window: new peers are accepted while
+    // already accepted clients progress through receive, response, drain, and
+    // close, and a client that fails or resets is closed so its slot serves a
+    // replacement. Waiting for one client never starves another stream.
+    let mut clients: [Option<(u64, u8, u8)>; MAX_CLIENTS] = [None; MAX_CLIENTS];
+    let mut accepted_total = 0usize;
+    let mut completed = 0usize;
+    let mut idle_iterations = 0usize;
+    let mut wait_cursor = 0usize;
+    for _ in 0..400 {
+        if accepted_total == 0 {
+            idle_iterations += 1;
+            if idle_iterations > 80 {
+                break;
             }
-            continue;
         }
-        if handle_error(accepted)
-            || runtime::socket_status(accepted, status)
-                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
-            || status.protocol != runtime::SOCKET_PROTOCOL_TCP_STREAM
-            || !matches!(
-                status.state,
-                runtime::SOCKET_STATE_ESTABLISHED | runtime::SOCKET_STATE_READ_CLOSED
-            )
-        {
-            return false;
-        }
-        let accepted_message = b"passive TCP accept ready";
-        if runtime::console_write(console, accepted_message, runtime::CONSOLE_LINE_STATUS)
-            != accepted_message.len() as u64
-        {
-            return false;
-        }
-        let file_buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
-        let input = &mut file_buffer[..runtime::SOCKET_BUFFER_CAPACITY as usize];
-        let mut received = None;
-        for _ in 0..80 {
-            let result = runtime::socket_receive(accepted, input);
-            if result == runtime::ERROR_WOULD_BLOCK {
-                if runtime::sleep(1) != 0 {
+        if let Some(free) = clients.iter().position(Option::is_none) {
+            let handle = runtime::socket_accept(listener);
+            if handle != runtime::ERROR_WOULD_BLOCK && handle != runtime::ERROR_UNAVAILABLE {
+                if handle_error(handle)
+                    || runtime::socket_status(handle, status)
+                        != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+                    || status.protocol != runtime::SOCKET_PROTOCOL_TCP_STREAM
+                    || !matches!(
+                        status.state,
+                        runtime::SOCKET_STATE_ESTABLISHED | runtime::SOCKET_STATE_READ_CLOSED
+                    )
+                {
                     return false;
                 }
+                if runtime::socket_wait(
+                    handle,
+                    runtime::SOCKET_READY_WRITABLE | runtime::SOCKET_READY_ERROR,
+                    1,
+                ) & runtime::SOCKET_READY_WRITABLE
+                    == 0
+                {
+                    return false;
+                }
+                clients[free] = Some((handle, PHASE_RECEIVE, 0));
+                accepted_total += 1;
+                if accepted_total == 1 {
+                    let message = b"passive TCP accept ready";
+                    if runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
+                        != message.len() as u64
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        for entry in &mut clients {
+            let Some((handle, phase, exchanges)) = *entry else {
+                continue;
+            };
+            if runtime::socket_status(handle, status)
+                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
+            {
+                return false;
+            }
+            if status.state == runtime::SOCKET_STATE_FAILED {
+                // A reset or timed-out peer releases its slot so a retrying
+                // client can be accepted without ending the service window.
+                if runtime::socket_close(handle) != 0 {
+                    return false;
+                }
+                *entry = None;
                 continue;
             }
-            if handle_error(result) || result as usize > input.len() {
-                return false;
+            match phase {
+                PHASE_RECEIVE => {
+                    let file_buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
+                    let input = &mut file_buffer[..runtime::SOCKET_BUFFER_CAPACITY as usize];
+                    let result = runtime::socket_receive(handle, input);
+                    if result == runtime::ERROR_WOULD_BLOCK {
+                        if status.state == runtime::SOCKET_STATE_READ_CLOSED {
+                            if runtime::socket_shutdown(handle, runtime::SOCKET_SHUTDOWN_WRITE) != 0
+                            {
+                                return false;
+                            }
+                            *entry = Some((handle, PHASE_CLOSING, exchanges));
+                        }
+                        continue;
+                    }
+                    let length = result as usize;
+                    if handle_error(result)
+                        || length > input.len()
+                        || length < REQUEST_PREFIX.len()
+                        || &input[..REQUEST_PREFIX.len()] != REQUEST_PREFIX
+                    {
+                        return false;
+                    }
+                    // Answer in place: GENOS_PING<suffix> becomes
+                    // GENOS_PONG<suffix>, so each client can verify its own
+                    // stream's exact response.
+                    input[..RESPONSE_PREFIX.len()].copy_from_slice(RESPONSE_PREFIX);
+                    if runtime::socket_send(handle, &input[..length]) != length as u64 {
+                        return false;
+                    }
+                    *entry = Some((handle, PHASE_DRAIN, exchanges.saturating_add(1)));
+                }
+                PHASE_DRAIN => {
+                    if status.queued_send != 0 {
+                        continue;
+                    }
+                    if status.state == runtime::SOCKET_STATE_READ_CLOSED {
+                        if runtime::socket_shutdown(handle, runtime::SOCKET_SHUTDOWN_WRITE) != 0 {
+                            return false;
+                        }
+                        *entry = Some((handle, PHASE_CLOSING, exchanges));
+                    } else {
+                        *entry = Some((handle, PHASE_RECEIVE, exchanges));
+                    }
+                }
+                PHASE_CLOSING => {
+                    if status.state == runtime::SOCKET_STATE_CLOSED
+                        && status.readiness & runtime::SOCKET_READY_CLOSED != 0
+                    {
+                        if runtime::socket_close(handle) != 0 {
+                            return false;
+                        }
+                        *entry = None;
+                        completed += 1;
+                    }
+                }
+                _ => return false,
             }
-            received = Some(result as usize);
+        }
+        if completed >= MAX_CLIENTS {
             break;
         }
-        if received != Some(REQUEST.len()) || &input[..REQUEST.len()] != REQUEST {
-            return false;
-        }
-        if runtime::socket_send(accepted, RESPONSE) != RESPONSE.len() as u64 {
-            return false;
-        }
-        let mut sent = false;
-        for _ in 0..80 {
-            if runtime::socket_status(accepted, status)
-                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
-            {
-                return false;
-            }
-            if status.queued_send == 0 {
-                sent = true;
+        let mut wait_target = listener;
+        let mut wait_mask = runtime::SOCKET_READY_ACCEPT | runtime::SOCKET_READY_ERROR;
+        for offset in 0..MAX_CLIENTS {
+            let index = (wait_cursor + offset) % MAX_CLIENTS;
+            if let Some((handle, phase, _)) = clients[index] {
+                wait_target = handle;
+                wait_mask = match phase {
+                    PHASE_RECEIVE => {
+                        runtime::SOCKET_READY_READABLE
+                            | runtime::SOCKET_READY_CLOSED
+                            | runtime::SOCKET_READY_ERROR
+                    }
+                    PHASE_DRAIN => {
+                        runtime::SOCKET_READY_WRITABLE
+                            | runtime::SOCKET_READY_CLOSED
+                            | runtime::SOCKET_READY_ERROR
+                    }
+                    PHASE_CLOSING => runtime::SOCKET_READY_CLOSED | runtime::SOCKET_READY_ERROR,
+                    _ => return false,
+                };
+                wait_cursor = (index + 1) % MAX_CLIENTS;
                 break;
             }
-            if runtime::sleep(1) != 0 {
-                return false;
-            }
         }
-        if !sent || runtime::socket_shutdown(accepted, runtime::SOCKET_SHUTDOWN_WRITE) != 0 {
+        let waited = runtime::socket_wait(wait_target, wait_mask, 2);
+        if handle_error(waited) && waited != runtime::ERROR_TIMED_OUT {
             return false;
         }
-        let mut closed = false;
-        for _ in 0..80 {
-            if runtime::socket_status(accepted, status)
-                != core::mem::size_of::<runtime::UserSocketStatus>() as u64
-            {
-                return false;
-            }
-            if status.state == runtime::SOCKET_STATE_CLOSED
-                && status.readiness & runtime::SOCKET_READY_CLOSED != 0
-            {
-                closed = true;
-                break;
-            }
-            if runtime::sleep(1) != 0 {
+    }
+    for entry in &mut clients {
+        if let Some((handle, _, _)) = entry.take() {
+            if runtime::socket_close(handle) != 0 {
                 return false;
             }
         }
-        if !closed || runtime::socket_close(accepted) != 0 || runtime::socket_close(listener) != 0 {
-            return false;
-        }
-        let message = b"passive TCP stream ready";
+    }
+    if runtime::socket_close(listener) != 0 {
+        return false;
+    }
+    if accepted_total == 0 {
+        return true;
+    }
+    if completed == 0 {
+        return false;
+    }
+    let message = b"passive TCP stream ready";
+    if runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
+        != message.len() as u64
+    {
+        return false;
+    }
+    let readiness = b"socket readiness wait ready";
+    if runtime::console_write(console, readiness, runtime::CONSOLE_LINE_STATUS)
+        != readiness.len() as u64
+    {
+        return false;
+    }
+    if completed >= MAX_CLIENTS {
+        let message = b"concurrent passive TCP streams ready";
         return runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
             == message.len() as u64;
     }
-    runtime::socket_close(listener) == 0
+    true
 }
 
 fn prove_async_tcp(

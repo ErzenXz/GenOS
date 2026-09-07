@@ -38,7 +38,9 @@ pub fn print_u64(mut value: u64) {
         value /= 10;
     }
     for byte in &buf[i..] {
-        write_byte(*byte);
+        if !write_byte(*byte) {
+            break;
+        }
     }
 }
 
@@ -60,7 +62,9 @@ pub fn print_hex(mut value: u64) {
         value >>= 4;
     }
     for byte in &buf[i..] {
-        write_byte(*byte);
+        if !write_byte(*byte) {
+            break;
+        }
     }
 }
 
@@ -77,15 +81,22 @@ struct Serial;
 impl Write for Serial {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
-            write_byte(byte);
+            if !write_byte(byte) {
+                return Err(fmt::Error);
+            }
         }
         Ok(())
     }
 }
 
-fn write_byte(byte: u8) {
+fn write_byte(byte: u8) -> bool {
+    // SAFETY: COM1 status reads and writes are bounded port I/O. A failed
+    // transmitter drops output rather than blocking containment or halt.
     unsafe {
-        while inb(COM1 + 5) & 0x20 == 0 {}
+        if !kernel::serial_transport::wait_ready(|| inb(COM1 + 5) & 0x20 != 0) {
+            return false;
+        }
         outb(COM1, byte);
     }
+    true
 }

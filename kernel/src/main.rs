@@ -43,7 +43,20 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         arch::halt_loop();
     }
 
+    if !arch::init_page_protections() || paging::protect_kernel_image().is_err() {
+        serial::println("CPU_PROTECTIONS_FAILED");
+        arch::halt_loop();
+    }
     interrupts::init();
+    if paging::protect_kernel_page(arch::idt_address(), false, false).is_err() {
+        serial::println("IDT_PROTECTION_FAILED");
+        arch::halt_loop();
+    }
+    serial::println("IDT_READONLY_READY");
+    // The modern VirtIO network path uses MSI-X for normal RX/TX completion.
+    // Enable interrupts before DHCP so the boot networking proof exercises the
+    // same completion path as the runtime instead of silently polling.
+    interrupts::enable();
     network::init();
     let initrd = ramfs::RamFs::from_initrd(boot_info.initrd.base, boot_info.initrd.size);
     let Some(init_program) = initrd.find("INIT.ELF") else {
@@ -55,6 +68,11 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         arch::halt_loop();
     };
     userspace::register_shell_elf(shell_program.data);
+    #[cfg(feature = "memory-test-faults")]
+    if !userspace::run_memory_rollback_probe(init_program.data) {
+        serial::println("MEMORY_ROLLBACK_FAILED");
+        arch::halt_loop();
+    }
     userspace::run_probe(init_program.data);
     let dynamic_probe = match userspace::launch_init() {
         Ok(result) => result,
@@ -91,6 +109,12 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::println("RUNTIME_ROLLBACK_READY");
     userspace::run_process_generation_stress_probe();
     serial::println("PROCESS_GENERATION_STRESS_READY");
+    if let Some(application) = initrd.find("SDK.ELF") {
+        if !userspace::run_sdk_probe(application.data) {
+            serial::println("SDK_APPLICATION_FAILED");
+            arch::halt_loop();
+        }
+    }
 
     let scheduler_benchmark = kernel::tasks::benchmark_scheduler_policy();
     if scheduler_benchmark.dispatches == 0 || scheduler_benchmark.max_dispatch_latency_ticks == 0 {
@@ -123,7 +147,7 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     });
     let mut runtime =
         runtime::RuntimeCoordinator::new(tasks, task_ids, processes, vfs, persistent_fs);
-    if !runtime.run_headless_boot_probe(512) {
+    if !runtime.run_headless_boot_probe(4096) {
         serial::println("HEADLESS_RUNTIME_FAILED");
         arch::halt_loop();
     }
@@ -156,7 +180,6 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::println("SERIAL_TERMINAL_READY port=com1");
     serial::println("GENOS_READY");
 
-    interrupts::enable();
     shell::run_terminal(boot_info, runtime);
 }
 
