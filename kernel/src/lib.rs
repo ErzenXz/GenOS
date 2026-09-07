@@ -55,3 +55,7 @@ mod arch {
 #[allow(dead_code)] // Compile the production driver; only RX completion is invoked.
 #[path = "network_device.rs"]
 mod network_device_under_test;
+#[cfg(test)]
+#[allow(dead_code)] // Compile storage policy without issuing hardware commands.
+#[path = "storage.rs"]
+mod storage_under_test;

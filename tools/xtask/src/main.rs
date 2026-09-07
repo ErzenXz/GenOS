@@ -50,6 +50,7 @@ fn main() {
         "test-sdk" => test_sdk(),
         "test-memory" => test_memory(),
         "test-protections" => test_protections(),
+        "test-serial" => test_serial(),
         "bench" => benchmark(),
         "inspect-data" => inspect_data_command(),
         "repair-data" => repair_data_command(),
@@ -147,6 +148,12 @@ fn test() -> Result<(), String> {
     test_sdk()?;
     test_memory()?;
     test_protections()
+}
+
+fn test_serial() -> Result<(), String> {
+    build()?;
+    ensure_test_data_image(false)?;
+    smoke_serial_terminal_input()
 }
 
 fn test_protections() -> Result<(), String> {

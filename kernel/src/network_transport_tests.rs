@@ -6,6 +6,7 @@ pub(crate) mod serial {
     pub fn print(_: &str) {}
     pub fn println(_: &str) {}
     pub fn print_u64(_: u64) {}
+    pub fn print_hex(_: u64) {}
 }
 
 pub(crate) mod network_device {
