@@ -1,4 +1,4 @@
-use core::arch::{asm, global_asm};
+use core::arch::asm;
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
@@ -8,6 +8,7 @@ pub const USER_CODE_SELECTOR: u16 = 0x33;
 const INTERRUPT_IST_INDEX: u16 = 1;
 const INTERRUPT_STACK_SIZE: usize = 64 * 1024;
 const PRIVILEGE_STACK_SIZE: usize = 64 * 1024;
+const EMERGENCY_STACK_SIZE: usize = 16 * 1024;
 
 #[repr(C, packed)]
 struct DescriptorTablePointer {
@@ -40,7 +41,7 @@ impl TaskStateSegment {
     }
 }
 
-#[repr(C, align(16))]
+#[repr(C, align(4096))]
 struct Idt([IdtEntry; 256]);
 
 #[repr(C, packed)]
@@ -66,12 +67,12 @@ impl IdtEntry {
         }
     }
 
-    fn new(handler: unsafe extern "C" fn(), user_callable: bool) -> Self {
+    fn new(vector: usize, handler: unsafe extern "C" fn(), user_callable: bool) -> Self {
         let addr = handler as usize as u64;
         let ist = if user_callable {
             0
         } else {
-            INTERRUPT_IST_INDEX
+            kernel::exception::ist_index(vector)
         };
         Self {
             offset_low: addr as u16,
@@ -84,6 +85,9 @@ impl IdtEntry {
     }
 }
 
+// BSP initialization owns these objects with IF clear. The IDT has its own
+// page so F2 can protect it without making unrelated mutable data read-only.
+// Alignment alone is not hardware write protection; that gate remains open.
 static mut IDT: Idt = Idt([IdtEntry::missing(); 256]);
 static mut GDT: [u64; 7] = [0; 7];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -93,27 +97,26 @@ static mut INTERRUPT_STACK: InterruptStack = InterruptStack([0; INTERRUPT_STACK_
 #[repr(align(16))]
 struct PrivilegeStack([u8; PRIVILEGE_STACK_SIZE]);
 static mut PRIVILEGE_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_SIZE]);
-
-global_asm!(
-    r#"
-    .global genos_interrupt_stub
-genos_interrupt_stub:
-    iretq
-"#
-);
-
-extern "C" {
-    fn genos_interrupt_stub();
-}
+#[repr(align(16))]
+struct EmergencyStack([u8; EMERGENCY_STACK_SIZE]);
+static mut DOUBLE_FAULT_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
+static mut NMI_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
+static mut MACHINE_CHECK_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
+static mut DEBUG_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
 
 pub fn init() {
+    disable_interrupts();
+    // SAFETY: only the BSP executes this initialization. All table entries and
+    // stack addresses are initialized before LIDT publishes the new table.
     unsafe {
         init_gdt();
         let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
         for index in 0..256 {
-            idt_ptr
-                .add(index)
-                .write(IdtEntry::new(genos_interrupt_stub, false));
+            idt_ptr.add(index).write(IdtEntry::new(
+                index,
+                crate::interrupts::vector_handler(index),
+                false,
+            ));
         }
         let ptr = DescriptorTablePointer {
             limit: (core::mem::size_of::<Idt>() - 1) as u16,
@@ -127,6 +130,13 @@ pub fn init() {
 unsafe fn init_gdt() {
     let stack_base = core::ptr::addr_of!(INTERRUPT_STACK.0) as u64;
     TSS.ist[(INTERRUPT_IST_INDEX - 1) as usize] = stack_base + INTERRUPT_STACK_SIZE as u64;
+    // SAFETY: static storage lives for the kernel lifetime, is disjoint, and
+    // has 16-byte aligned tops. The processor owns each emergency stack on
+    // entry; no normal Rust code creates references into these buffers.
+    TSS.ist[1] = core::ptr::addr_of!(DOUBLE_FAULT_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
+    TSS.ist[2] = core::ptr::addr_of!(NMI_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
+    TSS.ist[3] = core::ptr::addr_of!(MACHINE_CHECK_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
+    TSS.ist[4] = core::ptr::addr_of!(DEBUG_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
     let privilege_stack_base = core::ptr::addr_of!(PRIVILEGE_STACK.0) as u64;
     TSS.rsp[0] = privilege_stack_base + PRIVILEGE_STACK_SIZE as u64;
 
@@ -180,14 +190,18 @@ fn tss_descriptor(base: u64) -> (u64, u64) {
 pub unsafe fn set_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
     if vector < 256 {
         let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr.add(vector).write(IdtEntry::new(handler, false));
+        idt_ptr
+            .add(vector)
+            .write(IdtEntry::new(vector, handler, false));
     }
 }
 
 pub unsafe fn set_user_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
     if vector < 256 {
         let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr.add(vector).write(IdtEntry::new(handler, true));
+        idt_ptr
+            .add(vector)
+            .write(IdtEntry::new(vector, handler, true));
     }
 }
 

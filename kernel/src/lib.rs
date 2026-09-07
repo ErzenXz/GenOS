@@ -6,6 +6,7 @@ extern crate std;
 pub mod capability;
 pub mod display;
 pub mod elf;
+pub mod exception;
 pub mod input;
 pub mod ipc;
 pub mod net;

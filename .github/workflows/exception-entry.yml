@@ -1,0 +1,77 @@
+name: Exception entry
+
+on:
+  pull_request:
+    branches: [main, docs/quality-first-roadmap]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exceptions-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence-parser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Reject missing, forged and duplicate fault evidence
+        run: python3 -m unittest discover -s tools -p test_exception_harness.py -v
+
+  source-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Export the exact tested source without Git credentials or untracked files
+        run: |
+          mkdir -p build
+          git archive --format=tar HEAD | gzip -n > build/genos-source.tar.gz
+          git rev-parse HEAD > build/source-commit.txt
+          sha256sum build/genos-source.tar.gz > build/source-sha256.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: genos-source-evidence
+          path: |
+            build/genos-source.tar.gz
+            build/source-commit.txt
+            build/source-sha256.txt
+          retention-days: 14
+
+  cpu-fault:
+    name: CPU fault (${{ matrix.mode }}, ${{ matrix.fault }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [user, kernel]
+        fault: [de, ud, gp, pf]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install reference VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Activate pinned toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none x86_64-unknown-uefi
+      - name: Prove the real exception and its failure boundary
+        run: python3 tools/test_exception_entry.py --mode ${{ matrix.mode }} --fault ${{ matrix.fault }}
+      - name: Retain exact fixture and CPU evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: exception-${{ matrix.mode }}-${{ matrix.fault }}
+          path: build/exception-evidence/
+          if-no-files-found: error
+          retention-days: 14
