@@ -1,6 +1,6 @@
 # Bitmap frame ownership and transactional page-table construction
 
-Status: Proposed
+Status: Accepted in PR #7
 
 F3 replaces the lossy 256-entry returned-frame stack with a dense allocation bitmap indexed across sorted usable regions. The kernel reserves 256 KiB of static bitmap storage, representing up to 8 GiB of usable frames across at most 64 ranges; high physical addresses and holes do not consume bitmap positions. Overlap or metadata exhaustion halts with an explicit diagnostic before granting memory. The table layout freezes after the first successful grant, including after every grant has been returned.
 

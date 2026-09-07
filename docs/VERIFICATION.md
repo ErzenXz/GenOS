@@ -1,6 +1,6 @@
 # GenOS 0.56 integration verification — 2026-09-08
 
-PR #4 (quality gates) and PR #6 (normalized exception entry) are merged. This integration preserves the later GenOS 0.50–0.55 network/SDK work and adds CPU page protections and transactional memory construction. It advances the roadmap without claiming a finished or hardened operating system.
+PR #4 (quality gates), PR #6 (normalized exception entry), and PR #7 (GenOS 0.56 integration) are merged to main. This integration preserves the later GenOS 0.50–0.55 network/SDK work and adds CPU page protections and transactional memory construction. It advances the roadmap without claiming a finished or hardened operating system.
 
 ## Proven locally
 
@@ -32,3 +32,5 @@ The first integration CI run exposed stranded coalesced VirtIO RX completions. A
 After RX batching removed artificial delays, the native test exposed a second timing issue: the headless bootstrap used loop iterations as timer ticks, allowing a real network wait to expire before a host packet arrived. The bootstrap now uses the hardware/fallback timer while independently bounding work and elapsed time. The same network gate then observed real readiness wakeups and passed without relaxed budgets.
 
 An intermittent Linux CI persistent-write failure did not recur in eight isolated native serial boots or the next instrumented CI run. ATA status tests did expose two concrete protocol errors: BUSY status could be treated as a completed error, and non-busy DRQ status could be treated as command completion. Those cases now wait correctly. Bounded polling and explicit command-error/timeout diagnostics remain; the exact cause of the earlier CI write failure was not established.
+
+GitHub validation for PR #7: [CI](https://github.com/ErzenXz/GenOS/actions/runs/34171042822) and [exception proofs](https://github.com/ErzenXz/GenOS/actions/runs/34171042829) passed on the final reviewed branch head. The prior local main/history are retained in backup branches.

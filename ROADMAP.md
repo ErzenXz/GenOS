@@ -71,7 +71,7 @@ This gate blocks production or hardened-release language. It also blocks broad n
 
 Goal: every proposed change reaches all tests instead of failing early or depending on an undocumented local environment.
 
-- [ ] `main` passes formatting, Clippy for every shipped target, workspace tests, image build, and QEMU boot.
+- [x] `main` passes formatting, Clippy for every shipped target, workspace tests, image build, and QEMU boot.
 - [ ] The supported Rust toolchain and minimum supported Rust version are explicit and tested.
 - [ ] CI runs debug and release image builds where their behavior differs.
 - [ ] Failure artifacts include serial output and enough configuration to reproduce the run.

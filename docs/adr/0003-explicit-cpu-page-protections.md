@@ -1,6 +1,6 @@
 # Explicit CPU page protections and supervisor user-copy aliases
 
-Status: Proposed
+Status: Accepted in PR #7
 
 The foundation roadmap F2 requires GenOS to establish its own CPU protection state. Firmware flags are not a kernel contract. After cloning the supervisor-only page tables, GenOS requires NX, enables and reads back EFER.NXE and CR0.WP, and enables CPUID-supported SMEP/SMAP. Optional features are reported independently; missing NX prevents untrusted execution.
 
