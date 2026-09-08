@@ -276,3 +276,31 @@ The duplicated normal command parser has been removed from the kernel. When `SHE
 Boot validation also emits two deliberately scoped scheduler measurements. `SCHED_DISPATCH_BENCH` runs the real round-robin policy for 64 ticks and reports dispatch count plus maximum and average ready-to-dispatch latency. `SCHED_CONTEXT_BENCH` measures 32 real kernel-to-process-to-kernel CR3 switch pairs with serialized TSC reads and reports minimum and average pair cycles. It excludes userspace execution and does not claim end-to-end response latency.
 
 Stage 3 now routes scheduling, process polling, lifecycle launches, and VFS completion through `RuntimeCoordinator`. `ProcessManager` supplies every userspace row in the immutable Task Manager snapshot; `TaskRegistry` contains only system and worker scheduling records. The `HEADLESS_RUNTIME_READY` proof completes real shell VFS and child-launch requests before framebuffer construction, `PROCESS_SNAPSHOT_READY` verifies that every process slot and displayed userspace snapshot agree, `UNIFIED_HANDLE_TABLE_READY` audits exact typed authority, and `ASYNC_REQUEST_IDENTITY_READY` proves distinct VFS and lifecycle request identities. Separate boot probes reject wrong IDs, canceled writable work, and replayed completions.
+
+
+## Endpoint module ownership
+
+`kernel/src/endpoint.rs` now owns endpoint capability metadata, the published
+endpoint's bounded fair queue, and opaque parked-receive metadata. Its fields are
+private. The process manager supplies the same process-local unified handle
+registry on each operation and coordinates user-buffer validation, copy-out,
+scheduler state and wakeup. The module performs no unsafe operations, hardware
+access or presentation work. This is one extracted typed-handle family, not a
+claim that F4's complete process/context/loader decomposition has finished.
+
+Receive creation and send allocation register authority before publishing metadata.
+Close and remote PID/generation revocation unregister that exact authority. Closing
+a receive handle drops the queue and parked receive; closing a send handle leaves
+the local published endpoint intact. Process cleanup clears both registry and
+metadata while retaining the local generation counter. Queue admission rejects a
+second outstanding message from a producer and rejects saturation without replacing
+an existing message. User-copy failure semantics remain in the process manager.
+
+Nine host tests now exercise this production module, including all 256 slot-byte
+values, wrong owner/tag/generation/type/rights, registry exhaustion, queue fairness,
+close/revocation, parked-receive retirement, cleanup and generation exhaustion.
+The old endpoint tests lived under the kernel binary's disabled test target and
+had drifted from the registry interface; they have been replaced by these compiled
+tests. `cargo test -p kernel --lib endpoint` runs them. ABI 18, wire formats and
+persistent data need no migration; the extraction can be reverted as one source
+change without changing those formats.

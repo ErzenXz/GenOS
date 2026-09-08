@@ -19,8 +19,8 @@ use kernel::{
     capability::{HandleKind, HandleTable},
     display::{FixedText, LineKind},
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
+    endpoint::{EndpointRole, EndpointState, PendingReceive, QueueResult},
     input::{InputEvent, KeyEvent, MouseButtons},
-    ipc::ChannelQueue,
     request::RequestSequence,
     socket::{
         local_port_is_available, SocketError, SocketOwner, SocketProtocol, SocketSet, TcpServerPeer,
@@ -53,18 +53,9 @@ const TOKEN_FANIN_RECEIVER_MODE: u64 = 0xc000_0000_0000_0000;
 const TOKEN_FANIN_PRODUCER_A_MODE: u64 = 0xd000_0000_0000_0000;
 const TOKEN_FANIN_PRODUCER_B_MODE: u64 = 0xe000_0000_0000_0000;
 const FILE_HANDLE_CAPACITY: usize = USER_FILE_HANDLE_CAPACITY as usize;
-const ENDPOINT_HANDLE_CAPACITY: usize = USER_ENDPOINT_HANDLE_CAPACITY as usize;
 const HANDLE_TABLE_CAPACITY: usize = 20;
 const HANDLE_RIGHT_USE: u64 = 1;
 const ENDPOINT_QUEUE_CAPACITY: usize = USER_ENDPOINT_QUEUE_CAPACITY;
-/// Endpoint handles carry a dedicated tag byte in the position file handles use
-/// for their owner pid, so endpoint authority can never be spent on the file
-/// tables and file authority can never be spent on an endpoint.
-const ENDPOINT_HANDLE_TAG: u64 = 0xe9 << 56;
-const ENDPOINT_HANDLE_TAG_MASK: u64 = 0xff << 56;
-/// Generations stay inside 32 bits so the owner pid, generation and slot fields
-/// of a handle never overlap.
-const ENDPOINT_GENERATION_MAX: u64 = u32::MAX as u64;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
@@ -830,41 +821,6 @@ struct PendingSocketWait {
     deadline: u64,
 }
 
-/// Metadata of a receive that already validated its output buffer and is now
-/// parked on the published endpoint.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingReceive {
-    handle: u64,
-    generation: u64,
-    address: u64,
-    length: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EndpointRole {
-    /// Names the generation of the endpoint this process publishes itself.
-    Receive { generation: u64 },
-    /// Names one remote endpoint: a pid plus the generation it published.
-    Send {
-        target_pid: u8,
-        target_generation: u64,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct EndpointCapability {
-    handle: u64,
-    owner_pid: u8,
-    generation: u64,
-    slot: u8,
-    role: EndpointRole,
-}
-
-struct PublishedEndpoint {
-    generation: u64,
-    queue: ChannelQueue<ENDPOINT_QUEUE_CAPACITY>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EndpointDelivery {
     /// Copied straight into a parked receiver's validated buffer.
@@ -877,232 +833,6 @@ enum EndpointDelivery {
     CopyFailed,
     /// No live process publishes the generation this handle names.
     Stale,
-}
-
-/// Per-process endpoint authority: a small capability table, the single
-/// endpoint this process publishes, and the receive it is parked on.
-struct EndpointState {
-    owner_pid: u8,
-    handles: [Option<EndpointCapability>; ENDPOINT_HANDLE_CAPACITY],
-    next_generation: u64,
-    published: Option<PublishedEndpoint>,
-    pending_receive: Option<PendingReceive>,
-}
-
-const fn endpoint_handle(owner_pid: u8, generation: u64, slot: usize) -> u64 {
-    ENDPOINT_HANDLE_TAG | ((owner_pid as u64) << 40) | (generation << 8) | (slot as u64 + 1)
-}
-
-fn endpoint_handle_slot(handle: u64) -> Option<usize> {
-    if handle & ENDPOINT_HANDLE_TAG_MASK != ENDPOINT_HANDLE_TAG {
-        return None;
-    }
-    let slot = (handle & 0xff) as usize;
-    (1..=ENDPOINT_HANDLE_CAPACITY)
-        .contains(&slot)
-        .then(|| slot - 1)
-}
-
-impl EndpointState {
-    const fn new(owner_pid: u8) -> Self {
-        Self {
-            owner_pid,
-            handles: [None; ENDPOINT_HANDLE_CAPACITY],
-            next_generation: 1,
-            published: None,
-            pending_receive: None,
-        }
-    }
-
-    fn published_generation(&self) -> Option<u64> {
-        self.published.as_ref().map(|endpoint| endpoint.generation)
-    }
-
-    fn queue_depth(&self) -> usize {
-        self.published
-            .as_ref()
-            .map_or(0, |endpoint| endpoint.queue.len())
-    }
-
-    fn next_generation(&mut self) -> Option<u64> {
-        let generation = self.next_generation;
-        if generation > ENDPOINT_GENERATION_MAX {
-            return None;
-        }
-        self.next_generation = generation + 1;
-        Some(generation)
-    }
-
-    fn allocate(
-        &mut self,
-        handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>,
-        role: EndpointRole,
-    ) -> Option<u64> {
-        let slot = self.handles.iter().position(Option::is_none)?;
-        let generation = self.next_generation()?;
-        let handle = endpoint_handle(self.owner_pid, generation, slot);
-        let kind = match role {
-            EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
-            EndpointRole::Send { .. } => HandleKind::EndpointSend,
-        };
-        if !handles.register(handle, kind, HANDLE_RIGHT_USE) {
-            return None;
-        }
-        self.handles[slot] = Some(EndpointCapability {
-            handle,
-            owner_pid: self.owner_pid,
-            generation,
-            slot: slot as u8,
-            role,
-        });
-        Some(handle)
-    }
-
-    /// Resolves a handle this process owns. The tag, decoded slot, owner pid and
-    /// generation must reproduce the handle exactly, so neither a guessed value
-    /// nor another process' handle nor a stale local handle can ever resolve.
-    fn capability(
-        &self,
-        handles: &HandleTable<HANDLE_TABLE_CAPACITY>,
-        handle: u64,
-    ) -> Option<EndpointCapability> {
-        let slot = endpoint_handle_slot(handle)?;
-        let capability = self.handles[slot]?;
-        let kind = match capability.role {
-            EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
-            EndpointRole::Send { .. } => HandleKind::EndpointSend,
-        };
-        (capability.handle == handle
-            && capability.owner_pid == self.owner_pid
-            && capability.slot as usize == slot
-            && endpoint_handle(capability.owner_pid, capability.generation, slot) == handle
-            && handles.allows(handle, kind, HANDLE_RIGHT_USE))
-        .then_some(capability)
-    }
-
-    fn send_capability(
-        &self,
-        handles: &HandleTable<HANDLE_TABLE_CAPACITY>,
-        handle: u64,
-    ) -> Option<(u8, u64)> {
-        match self.capability(handles, handle)?.role {
-            EndpointRole::Send {
-                target_pid,
-                target_generation,
-            } => Some((target_pid, target_generation)),
-            EndpointRole::Receive { .. } => None,
-        }
-    }
-
-    /// A receive capability is only usable while it still names the exact
-    /// endpoint generation this process publishes right now.
-    fn receive_generation(
-        &self,
-        handles: &HandleTable<HANDLE_TABLE_CAPACITY>,
-        handle: u64,
-    ) -> Option<u64> {
-        let EndpointRole::Receive { generation } = self.capability(handles, handle)?.role else {
-            return None;
-        };
-        (self.published_generation() == Some(generation)).then_some(generation)
-    }
-
-    /// Publishes an empty endpoint and returns its owned receive handle. Fails
-    /// when an endpoint is already published or the handle table is full.
-    fn create(&mut self, handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>) -> Option<u64> {
-        if self.published.is_some() || !self.handles.iter().any(Option::is_none) {
-            return None;
-        }
-        let slot = self.handles.iter().position(Option::is_none)?;
-        let generation = self.next_generation()?;
-        let handle = endpoint_handle(self.owner_pid, generation, slot);
-        if !handles.register(handle, HandleKind::EndpointReceive, HANDLE_RIGHT_USE) {
-            return None;
-        }
-        self.handles[slot] = Some(EndpointCapability {
-            handle,
-            owner_pid: self.owner_pid,
-            generation,
-            slot: slot as u8,
-            role: EndpointRole::Receive { generation },
-        });
-        self.published = Some(PublishedEndpoint {
-            generation,
-            queue: ChannelQueue::new(),
-        });
-        Some(handle)
-    }
-
-    /// Closing a send capability revokes only that handle; closing the receive
-    /// capability also drops the queue and unpublishes the endpoint.
-    fn close(
-        &mut self,
-        handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>,
-        handle: u64,
-    ) -> Option<EndpointRole> {
-        let capability = self.capability(handles, handle)?;
-        if let EndpointRole::Receive { generation } = capability.role {
-            if self.published_generation() != Some(generation) {
-                return None;
-            }
-            self.published = None;
-            self.pending_receive = None;
-        }
-        let kind = match capability.role {
-            EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
-            EndpointRole::Send { .. } => HandleKind::EndpointSend,
-        };
-        if !handles.unregister(handle, kind) {
-            return None;
-        }
-        self.handles[capability.slot as usize] = None;
-        Some(capability.role)
-    }
-
-    /// Drops every send capability naming one remote endpoint generation.
-    fn revoke_send_handles(
-        &mut self,
-        handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>,
-        target_pid: u8,
-        target_generation: u64,
-    ) -> usize {
-        let mut revoked = 0;
-        for entry in self.handles.iter_mut() {
-            let names_target = matches!(
-                entry.map(|capability| capability.role),
-                Some(EndpointRole::Send {
-                    target_pid: pid,
-                    target_generation: generation,
-                }) if pid == target_pid && generation == target_generation
-            );
-            if names_target {
-                let handle = entry.expect("matched endpoint capability").handle;
-                let removed = handles.unregister(handle, HandleKind::EndpointSend);
-                debug_assert!(removed);
-                *entry = None;
-                revoked += 1;
-            }
-        }
-        revoked
-    }
-
-    fn clear(&mut self, handles: &mut HandleTable<HANDLE_TABLE_CAPACITY>) {
-        for capability in self.handles.iter().flatten() {
-            let kind = match capability.role {
-                EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
-                EndpointRole::Send { .. } => HandleKind::EndpointSend,
-            };
-            let removed = handles.unregister(capability.handle, kind);
-            debug_assert!(removed);
-        }
-        self.clear_payload();
-    }
-
-    fn clear_payload(&mut self) {
-        self.handles = [None; ENDPOINT_HANDLE_CAPACITY];
-        self.published = None;
-        self.pending_receive = None;
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1337,7 +1067,7 @@ impl ManagedProcess {
 
     fn handle_table_is_consistent(&self) -> bool {
         let expected = self.file_handles.iter().flatten().count()
-            + self.endpoints.handles.iter().flatten().count()
+            + self.endpoints.len()
             + self.process_handles.iter().flatten().count()
             + self.sockets.len_owner(SocketOwner {
                 slot: self.key.slot,
@@ -1386,16 +1116,7 @@ impl ManagedProcess {
         }) {
             return false;
         }
-        if self.endpoints.handles.iter().flatten().any(|capability| {
-            let kind = match capability.role {
-                EndpointRole::Receive { .. } => HandleKind::EndpointReceive,
-                EndpointRole::Send { .. } => HandleKind::EndpointSend,
-            };
-            !self
-                .handles
-                .allows(capability.handle, kind, HANDLE_RIGHT_USE)
-                || self.handles.allows(capability.handle, HandleKind::File, 0)
-        }) {
+        if !self.endpoints.registry_is_consistent(&self.handles) {
             return false;
         }
         let owner = socket_owner(self);
@@ -1420,9 +1141,7 @@ impl ManagedProcess {
     fn resources_are_revoked(&self) -> bool {
         self.handles.is_empty()
             && self.file_handles.iter().all(Option::is_none)
-            && self.endpoints.handles.iter().all(Option::is_none)
-            && self.endpoints.published.is_none()
-            && self.endpoints.pending_receive.is_none()
+            && self.endpoints.resources_are_revoked()
             && self.sockets.len_owner(SocketOwner {
                 slot: self.key.slot,
                 incarnation: self.key.incarnation,
@@ -3491,7 +3210,7 @@ impl ProcessManager {
         let target = self.slots[target_index]
             .as_mut()
             .expect("endpoint target exists");
-        let pending = target.endpoints.pending_receive.filter(|pending| {
+        let pending = target.endpoints.pending_receive().filter(|pending| {
             target.state == ManagedState::Waiting
                 && target.blocked_on == BlockReason::Endpoint
                 && pending.generation == target_generation
@@ -3510,22 +3229,18 @@ impl ProcessManager {
             {
                 return EndpointDelivery::CopyFailed;
             }
-            target.endpoints.pending_receive = None;
+            target.endpoints.clear_pending_receive();
             target.process.context.rax = USER_CHANNEL_MESSAGE_SIZE;
             target.state = ManagedState::Ready;
             target.blocked_on = BlockReason::None;
             return EndpointDelivery::Woken;
         }
-        let Some(endpoint) = target.endpoints.published.as_mut() else {
-            return EndpointDelivery::Stale;
-        };
-        if endpoint.queue.contains_sender(message.sender_pid) {
-            return EndpointDelivery::DuplicateProducer;
+        match target.endpoints.enqueue(message) {
+            QueueResult::Queued(depth) => EndpointDelivery::Queued(depth),
+            QueueResult::DuplicateProducer => EndpointDelivery::DuplicateProducer,
+            QueueResult::Full => EndpointDelivery::QueueFull,
+            QueueResult::Unpublished => EndpointDelivery::Stale,
         }
-        if !endpoint.queue.push(message) {
-            return EndpointDelivery::QueueFull;
-        }
-        EndpointDelivery::Queued(endpoint.queue.len())
     }
 
     fn complete_endpoint_receive(&mut self, index: usize, handle: u64, address: u64, length: u64) {
@@ -3548,20 +3263,20 @@ impl ProcessManager {
             crate::serial::println("");
             return;
         };
-        let queued = managed
-            .endpoints
-            .published
-            .as_mut()
-            .and_then(|endpoint| endpoint.queue.pop());
+        let queued = managed.endpoints.pop_message();
         let Some(message) = queued else {
             managed.state = ManagedState::Waiting;
             managed.blocked_on = BlockReason::Endpoint;
-            managed.endpoints.pending_receive = Some(PendingReceive {
-                handle,
-                generation,
-                address,
-                length,
-            });
+            let parked = managed.endpoints.park_receive(
+                &managed.handles,
+                PendingReceive {
+                    handle,
+                    generation,
+                    address,
+                    length,
+                },
+            );
+            debug_assert!(parked);
             crate::serial::print("USER_ENDPOINT_BLOCK pid=");
             crate::serial::print_u64(managed.process.pid as u64);
             crate::serial::print(" handle=0x");
@@ -3575,7 +3290,7 @@ impl ProcessManager {
         if copied {
             COMPLETED_ENDPOINT_MESSAGES.fetch_add(1, Ordering::AcqRel);
         }
-        managed.endpoints.pending_receive = None;
+        managed.endpoints.clear_pending_receive();
         managed.process.context.rax = if copied {
             USER_CHANNEL_MESSAGE_SIZE
         } else {
@@ -7601,305 +7316,9 @@ fn fail(marker: &str) -> ! {
     arch::halt_loop();
 }
 
-/// Host tests for the endpoint capability layer. `EndpointState` deliberately
-/// owns no paging or context state, so every rule that decides whether a handle
-/// is honoured can be exercised without a real address space.
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn message(sender_pid: u64, value: u64) -> UserChannelMessage {
-        UserChannelMessage { sender_pid, value }
-    }
-
-    fn published(owner_pid: u8) -> (EndpointState, u64) {
-        let mut state = EndpointState::new(owner_pid);
-        let handle = state.create().expect("first endpoint publishes");
-        (state, handle)
-    }
-
-    fn push(state: &mut EndpointState, message: UserChannelMessage) -> bool {
-        let endpoint = state.published.as_mut().expect("endpoint is published");
-        !endpoint.queue.contains_sender(message.sender_pid) && endpoint.queue.push(message)
-    }
-
-    #[test]
-    fn receive_handles_are_owned_tagged_and_slot_exact() {
-        let (state, handle) = published(7);
-        let capability = state.capability(handle).expect("owner resolves its handle");
-
-        assert_eq!(handle & ENDPOINT_HANDLE_TAG_MASK, ENDPOINT_HANDLE_TAG);
-        assert_eq!(capability.owner_pid, 7);
-        assert_eq!(capability.slot, 0);
-        assert_eq!(capability.generation, state.published_generation().unwrap());
-        assert_eq!(
-            capability.role,
-            EndpointRole::Receive {
-                generation: state.published_generation().expect("endpoint is published"),
-            }
-        );
-        assert_eq!(
-            state.receive_generation(handle),
-            state.published_generation()
-        );
-    }
-
-    #[test]
-    fn guessed_and_foreign_handles_never_resolve() {
-        let (state, handle) = published(7);
-        let neighbour = EndpointState::new(8);
-
-        // Same table position, different owner: the owner field is part of the
-        // handle, so pid 8's handle cannot name pid 7's capability.
-        assert_eq!(state.capability(handle ^ (1 << 40)), None);
-        // Neighbouring slots and generations are not authority either.
-        assert_eq!(state.capability(handle + 1), None);
-        assert_eq!(state.capability(handle + (1 << 8)), None);
-        assert_eq!(state.capability(handle & !ENDPOINT_HANDLE_TAG_MASK), None);
-        assert_eq!(state.capability(0), None);
-        // A file handle is shaped `pid << 56 | generation << 8 | slot`, which
-        // never carries the endpoint tag.
-        assert_eq!(state.capability((7u64 << 56) | (1 << 8) | 1), None);
-        // Another process cannot spend a handle it does not hold.
-        assert_eq!(neighbour.capability(handle), None);
-    }
-
-    #[test]
-    fn only_one_endpoint_can_be_published_per_process() {
-        let (mut state, handle) = published(7);
-
-        assert_eq!(state.create(), None);
-        assert!(state.capability(handle).is_some());
-        assert_eq!(state.published_generation(), Some(1));
-    }
-
-    #[test]
-    fn the_handle_table_is_bounded() {
-        let mut state = EndpointState::new(7);
-        state.create().expect("first endpoint publishes");
-        for slot in 1..ENDPOINT_HANDLE_CAPACITY {
-            assert!(
-                state
-                    .allocate(EndpointRole::Send {
-                        target_pid: 20 + slot as u8,
-                        target_generation: 1,
-                    })
-                    .is_some(),
-                "slot {slot} should be free"
-            );
-        }
-        assert_eq!(
-            state.allocate(EndpointRole::Send {
-                target_pid: 99,
-                target_generation: 1,
-            }),
-            None
-        );
-        // A full table also blocks publishing after the endpoint is closed.
-        let mut full = EndpointState::new(8);
-        for _ in 0..ENDPOINT_HANDLE_CAPACITY {
-            full.allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 1,
-            })
-            .expect("slot is free");
-        }
-        assert_eq!(full.create(), None);
-        assert_eq!(full.published_generation(), None);
-    }
-
-    #[test]
-    fn send_and_receive_capabilities_do_not_substitute_for_each_other() {
-        let (mut state, receive) = published(7);
-        let send = state
-            .allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 4,
-            })
-            .expect("slot is free");
-
-        assert_eq!(state.send_capability(send), Some((9, 4)));
-        assert_eq!(state.receive_generation(send), None);
-        assert_eq!(state.send_capability(receive), None);
-        assert_eq!(state.receive_generation(receive), Some(1));
-    }
-
-    #[test]
-    fn a_second_message_from_one_producer_is_denied_without_overwrite() {
-        let (mut state, _) = published(7);
-
-        assert!(push(&mut state, message(2, 100)));
-        assert!(!push(&mut state, message(2, 200)));
-        assert!(push(&mut state, message(3, 300)));
-        assert_eq!(state.queue_depth(), 2);
-
-        let endpoint = state.published.as_mut().expect("endpoint is published");
-        // The first admission survives the denied one untouched.
-        assert_eq!(endpoint.queue.pop(), Some(message(2, 100)));
-        assert_eq!(endpoint.queue.pop(), Some(message(3, 300)));
-        assert_eq!(endpoint.queue.pop(), None);
-    }
-
-    #[test]
-    fn a_full_queue_denies_further_producers() {
-        let (mut state, _) = published(7);
-        for sender in 1..=ENDPOINT_QUEUE_CAPACITY as u64 {
-            assert!(push(&mut state, message(sender, sender)));
-        }
-        assert_eq!(state.queue_depth(), ENDPOINT_QUEUE_CAPACITY);
-        assert!(!push(&mut state, message(99, 99)));
-        assert_eq!(state.queue_depth(), ENDPOINT_QUEUE_CAPACITY);
-    }
-
-    #[test]
-    fn a_parked_receive_keeps_metadata_that_still_names_the_endpoint() {
-        let (mut state, handle) = published(7);
-        let generation = state.published_generation().expect("endpoint is published");
-        state.pending_receive = Some(PendingReceive {
-            handle,
-            generation,
-            address: 0x4010,
-            length: USER_CHANNEL_MESSAGE_SIZE,
-        });
-
-        // What a delivering sender re-checks before copying 16 bytes out.
-        let pending = state.pending_receive.expect("receive is parked");
-        assert_eq!(pending.length, USER_CHANNEL_MESSAGE_SIZE);
-        assert_eq!(pending.generation, generation);
-        assert_eq!(state.receive_generation(pending.handle), Some(generation));
-
-        // Closing the endpoint retires the parked metadata with it.
-        state.close(handle).expect("receive handle closes");
-        assert_eq!(state.pending_receive, None);
-        assert_eq!(state.receive_generation(handle), None);
-    }
-
-    #[test]
-    fn closing_a_send_handle_revokes_only_that_handle() {
-        let (mut state, receive) = published(7);
-        let first = state
-            .allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 3,
-            })
-            .expect("slot is free");
-        let second = state
-            .allocate(EndpointRole::Send {
-                target_pid: 10,
-                target_generation: 5,
-            })
-            .expect("slot is free");
-
-        assert_eq!(
-            state.close(first),
-            Some(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 3,
-            })
-        );
-        assert_eq!(state.capability(first), None);
-        assert_eq!(state.send_capability(second), Some((10, 5)));
-        assert_eq!(state.receive_generation(receive), Some(1));
-        assert!(state.published.is_some());
-        // Closing the same handle twice is a stale use.
-        assert_eq!(state.close(first), None);
-    }
-
-    #[test]
-    fn closing_the_receive_handle_drops_the_queue_and_the_endpoint() {
-        let (mut state, receive) = published(7);
-        let send = state
-            .allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 3,
-            })
-            .expect("slot is free");
-        assert!(push(&mut state, message(2, 100)));
-
-        assert_eq!(
-            state.close(receive),
-            Some(EndpointRole::Receive { generation: 1 })
-        );
-        assert_eq!(state.published_generation(), None);
-        assert_eq!(state.queue_depth(), 0);
-        assert_eq!(state.capability(receive), None);
-        // Only the local receive authority goes; the process keeps its own send
-        // handles to other endpoints.
-        assert_eq!(state.send_capability(send), Some((9, 3)));
-    }
-
-    #[test]
-    fn revocation_drops_exactly_the_handles_naming_one_endpoint() {
-        let mut state = EndpointState::new(7);
-        let matching = state
-            .allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 3,
-            })
-            .expect("slot is free");
-        let other_generation = state
-            .allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 4,
-            })
-            .expect("slot is free");
-        let other_pid = state
-            .allocate(EndpointRole::Send {
-                target_pid: 10,
-                target_generation: 3,
-            })
-            .expect("slot is free");
-
-        assert_eq!(state.revoke_send_handles(9, 3), 1);
-        assert_eq!(state.capability(matching), None);
-        assert_eq!(state.send_capability(other_generation), Some((9, 4)));
-        assert_eq!(state.send_capability(other_pid), Some((10, 3)));
-        assert_eq!(state.revoke_send_handles(9, 3), 0);
-    }
-
-    #[test]
-    fn exit_cleanup_clears_every_local_endpoint_resource() {
-        let (mut state, receive) = published(7);
-        let send = state
-            .allocate(EndpointRole::Send {
-                target_pid: 9,
-                target_generation: 3,
-            })
-            .expect("slot is free");
-        assert!(push(&mut state, message(2, 100)));
-        state.pending_receive = Some(PendingReceive {
-            handle: receive,
-            generation: 1,
-            address: 0x4010,
-            length: USER_CHANNEL_MESSAGE_SIZE,
-        });
-
-        state.clear();
-
-        assert_eq!(state.capability(receive), None);
-        assert_eq!(state.capability(send), None);
-        assert_eq!(state.published_generation(), None);
-        assert_eq!(state.queue_depth(), 0);
-        assert_eq!(state.pending_receive, None);
-    }
-
-    #[test]
-    fn a_reused_slot_never_honours_the_previous_generation() {
-        let (mut state, first) = published(7);
-        state.close(first).expect("receive handle closes");
-        let second = state.create().expect("a new endpoint publishes");
-
-        assert_ne!(first, second);
-        assert_eq!(state.capability(first), None);
-        assert_eq!(state.receive_generation(first), None);
-        assert_eq!(
-            state.receive_generation(second),
-            state.published_generation()
-        );
-        // The reissued endpoint carries a fresh generation, so send handles held
-        // against the closed one stay unusable even in the same slot.
-        assert_eq!(state.published_generation(), Some(2));
-    }
 
     #[test]
     fn namespace_children_stay_beneath_the_owned_directory() {

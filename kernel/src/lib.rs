@@ -7,6 +7,7 @@ pub mod boot_cpu;
 pub mod capability;
 pub mod display;
 pub mod elf;
+pub mod endpoint;
 pub mod exception;
 pub mod input;
 pub mod ipc;

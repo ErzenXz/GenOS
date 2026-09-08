@@ -343,7 +343,9 @@ fn smoke_normal_qemu(mode: BuildMode) -> Result<(), String> {
         }
     });
     let mut transcript = normal_boot::Transcript::default();
-    let deadline = Instant::now() + Duration::from_secs(45);
+    // Cross-architecture TCG and loaded CI hosts need the same 120-second
+    // wall-clock budget as the other boot gates; evidence requirements are unchanged.
+    let deadline = Instant::now() + Duration::from_secs(120);
     let mut output = String::new();
     let mut passed = false;
     let mut failure = None;
@@ -1188,7 +1190,9 @@ fn smoke_network_qemu() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let (server_sender, server_receiver) = mpsc::channel();
     let server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(45);
+        // Cross-architecture TCG and loaded CI hosts need the same 120-second
+        // wall-clock budget as the other boot gates; evidence requirements are unchanged.
+        let deadline = Instant::now() + Duration::from_secs(120);
         let mut accepted = 0usize;
         while Instant::now() < deadline {
             match listener.accept() {
@@ -1434,7 +1438,9 @@ fn smoke_network_qemu() -> Result<(), String> {
         "USER_SHELL_READY",
         "GENOS_READY",
     ];
-    let deadline = Instant::now() + Duration::from_secs(45);
+    // Cross-architecture TCG and loaded CI hosts need the same 120-second
+    // wall-clock budget as the other boot gates; evidence requirements are unchanged.
+    let deadline = Instant::now() + Duration::from_secs(120);
     let mut output = String::new();
     let mut passed = false;
     let mut inbound_triggered = false;
