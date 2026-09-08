@@ -36,7 +36,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
                     break;
                 };
                 if !serial_rx_marker_sent {
-                    serial::println("SERIAL_RX_OK");
+                    serial::trace::println("SERIAL_RX_OK");
                     serial_rx_marker_sent = true;
                 }
                 if byte == b'\n' && last_was_cr {
@@ -98,11 +98,11 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
             awaiting_command_completion = false;
         }
         if !irq_tick_marker_sent && tick >= 100 {
-            serial::println("IRQ_TICK_OK");
+            serial::trace::println("IRQ_TICK_OK");
             irq_tick_marker_sent = true;
         }
         if !terminal_idle_marker_sent && tick >= 140 {
-            serial::println("TERMINAL_IDLE_OK");
+            serial::trace::println("TERMINAL_IDLE_OK");
             terminal_idle_marker_sent = true;
         }
         if !runtime.console_process_active() {
@@ -118,8 +118,19 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
 }
 
 fn write_terminal_update(update: userspace::ProcessUpdate) {
-    if let Some(userspace::ConsoleUpdate::Write { text, .. }) = update.console {
-        serial::println(text.as_str());
+    if !update.output.is_empty() && !cfg!(feature = "validation-boot") {
+        serial::println(update.output.as_str());
+    }
+    match update.console {
+        Some(userspace::ConsoleUpdate::Write { kind, text }) => {
+            // Serial input was already echoed at the prompt. The validation
+            // transcript keeps its historical explicit command record.
+            if kind != LineKind::Prompt || cfg!(feature = "validation-boot") {
+                serial::println(text.as_str());
+            }
+        }
+        Some(userspace::ConsoleUpdate::Clear) => serial::println("\x1b[2J\x1b[H"),
+        _ => {}
     }
 }
 
@@ -173,7 +184,7 @@ pub fn run(
         }
 
         if !irq_tick_marker_sent && tick >= 100 {
-            serial::println("IRQ_TICK_OK");
+            serial::trace::println("IRQ_TICK_OK");
             irq_tick_marker_sent = true;
         }
         if !display_idle_marker_sent && tick >= 140 {

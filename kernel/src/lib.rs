@@ -14,6 +14,7 @@ pub mod ipc;
 pub mod ipv6;
 pub mod net;
 pub mod page_table;
+pub mod path_policy;
 pub mod physmem;
 pub mod protection;
 pub mod recovery;

@@ -13,7 +13,7 @@ use genos_abi::{
     USER_PROCESS_STATE_FAULTED, USER_PROCESS_STATE_KILLED, USER_PROCESS_STATE_READY,
     USER_PROCESS_STATE_SLEEPING, USER_PROCESS_STATE_WAITING, USER_SOCKET_BUFFER_CAPACITY,
     USER_SOCKET_HANDLE_CAPACITY, USER_SOCKET_READY_MASK, USER_SOCKET_SHUTDOWN_READ,
-    USER_SOCKET_SHUTDOWN_WRITE, USER_TIMER_HZ, USER_WRITABLE_PREFIX,
+    USER_SOCKET_SHUTDOWN_WRITE, USER_TIMER_HZ,
 };
 use kernel::{
     capability::{HandleKind, HandleTable},
@@ -31,6 +31,10 @@ use kernel::{
 };
 
 use crate::{arch, memory, network, paging};
+pub use kernel::path_policy::is_user_writable_path;
+use kernel::path_policy::{
+    is_user_writable_directory, join_child_path, paths_equal, valid_absolute_path, valid_name,
+};
 
 pub const SYSCALL_VECTOR: usize = 0x80;
 const SOCKET_WAIT_WAKE_BUDGET: usize = 2;
@@ -1502,13 +1506,13 @@ impl ProcessManager {
         process.context.rsi = lifecycle_handle;
         self.slots[slot] = Some(ManagedProcess::new(key, task_id, None, process));
         DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
-        crate::serial::print("USER_SHELL_SPAWN pid=");
-        crate::serial::print_u64(pid as u64);
-        crate::serial::print(" task=");
-        crate::serial::print_u64(task_id as u64);
-        crate::serial::print(" supervisor=0x");
-        crate::serial::print_hex(lifecycle_handle);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_SHELL_SPAWN pid=");
+        crate::serial::trace::print_u64(pid as u64);
+        crate::serial::trace::print(" task=");
+        crate::serial::trace::print_u64(task_id as u64);
+        crate::serial::trace::print(" supervisor=0x");
+        crate::serial::trace::print_hex(lifecycle_handle);
+        crate::serial::trace::println("");
         Ok(pid)
     }
 
@@ -1552,13 +1556,13 @@ impl ProcessManager {
             build_process(pid, token, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
         self.slots[slot] = Some(ManagedProcess::new(key, task_id, None, process));
         DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
-        crate::serial::print("USER_ASYNC_SPAWN pid=");
-        crate::serial::print_u64(pid as u64);
-        crate::serial::print(" task=");
-        crate::serial::print_u64(task_id as u64);
-        crate::serial::print(" mode=");
-        crate::serial::print(mode);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_ASYNC_SPAWN pid=");
+        crate::serial::trace::print_u64(pid as u64);
+        crate::serial::trace::print(" task=");
+        crate::serial::trace::print_u64(task_id as u64);
+        crate::serial::trace::print(" mode=");
+        crate::serial::trace::print(mode);
+        crate::serial::trace::println("");
         Ok(pid)
     }
 
@@ -1606,11 +1610,11 @@ impl ProcessManager {
             child,
         ));
         DYNAMIC_PROCESSES.fetch_add(2, Ordering::AcqRel);
-        crate::serial::print("USER_PAIR_SPAWN parent=");
-        crate::serial::print_u64(parent_pid as u64);
-        crate::serial::print(" child=");
-        crate::serial::print_u64(child_pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_PAIR_SPAWN parent=");
+        crate::serial::trace::print_u64(parent_pid as u64);
+        crate::serial::trace::print(" child=");
+        crate::serial::trace::print_u64(child_pid as u64);
+        crate::serial::trace::println("");
         Ok((parent_pid, child_pid))
     }
 
@@ -1683,13 +1687,13 @@ impl ProcessManager {
             producer_b,
         ));
         DYNAMIC_PROCESSES.fetch_add(3, Ordering::AcqRel);
-        crate::serial::print("USER_FANIN_SPAWN receiver=");
-        crate::serial::print_u64(receiver_pid as u64);
-        crate::serial::print(" a=");
-        crate::serial::print_u64(a_pid as u64);
-        crate::serial::print(" b=");
-        crate::serial::print_u64(b_pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_FANIN_SPAWN receiver=");
+        crate::serial::trace::print_u64(receiver_pid as u64);
+        crate::serial::trace::print(" a=");
+        crate::serial::trace::print_u64(a_pid as u64);
+        crate::serial::trace::print(" b=");
+        crate::serial::trace::print_u64(b_pid as u64);
+        crate::serial::trace::println("");
         Ok((receiver_pid, a_pid, b_pid))
     }
 
@@ -1833,98 +1837,110 @@ impl ProcessManager {
                     managed.process.context.rax = text.len() as u64;
                     managed.state = ManagedState::Ready;
                     console = Some(ConsoleUpdate::Write { kind, text });
-                    crate::serial::print("USER_CONSOLE_WRITE pid=");
-                    crate::serial::print_u64(managed.process.pid as u64);
-                    crate::serial::print(" text=");
-                    crate::serial::print(text.as_str());
-                    crate::serial::println("");
+                    crate::serial::trace::print("USER_CONSOLE_WRITE pid=");
+                    crate::serial::trace::print_u64(managed.process.pid as u64);
+                    crate::serial::trace::print(" text=");
+                    crate::serial::trace::print(text.as_str());
+                    crate::serial::trace::println("");
                     #[cfg(feature = "validation-boot")]
                     {
                         if text.as_str() == "storage status visible" {
-                            crate::serial::println("USER_STORAGE_STATUS_VISIBLE_OK");
+                            crate::serial::trace::println("USER_STORAGE_STATUS_VISIBLE_OK");
                         }
                         if text.as_str() == "storage failure visible" {
-                            crate::serial::println("USER_STORAGE_FAILURE_VISIBLE_OK");
-                            crate::serial::println("STORAGE_FAILURE_SURFACE_READY");
+                            crate::serial::trace::println("USER_STORAGE_FAILURE_VISIBLE_OK");
+                            crate::serial::trace::println("STORAGE_FAILURE_SURFACE_READY");
                         }
                         if text.as_str() == "storage read-only visible" {
-                            crate::serial::println("USER_STORAGE_READ_ONLY_OK");
+                            crate::serial::trace::println("USER_STORAGE_READ_ONLY_OK");
                         }
                         if text.as_str() == "RAMFS temp visible" {
-                            crate::serial::println("USER_RAMFS_TEMP_APP_OK");
+                            crate::serial::trace::println("USER_RAMFS_TEMP_APP_OK");
                         }
                         if text.as_str() == "network DNS resolved" {
-                            crate::serial::println("USER_DNS_RESOLVE_OK");
+                            crate::serial::trace::println("USER_DNS_RESOLVE_OK");
                         }
                         if text.as_str() == "network HTTP complete" {
-                            crate::serial::println("USER_HTTP_REQUEST_OK");
-                            crate::serial::println("USER_SOCKET_API_READY");
+                            crate::serial::trace::println("USER_HTTP_REQUEST_OK");
+                            crate::serial::trace::println("USER_SOCKET_API_READY");
                         }
                         if text.as_str() == "network timeout handled" {
-                            crate::serial::println("USER_NETWORK_TIMEOUT_OK");
+                            crate::serial::trace::println("USER_NETWORK_TIMEOUT_OK");
                         }
                         if text.as_str() == "network diagnostics ready" {
-                            crate::serial::println("USER_NETWORK_DIAGNOSTICS_READY");
+                            crate::serial::trace::println("USER_NETWORK_DIAGNOSTICS_READY");
                         }
                         if text.as_str() == "nonblocking socket capabilities ready" {
-                            crate::serial::println("USER_SOCKET_CAPABILITY_READY abi=18");
+                            crate::serial::trace::println("USER_SOCKET_CAPABILITY_READY abi=18");
                         }
                         if text.as_str() == "asynchronous UDP socket ready" {
-                            crate::serial::println("USER_SOCKET_UDP_ASYNC_READY");
+                            crate::serial::trace::println("USER_SOCKET_UDP_ASYNC_READY");
                         }
                         if text.as_str() == "asynchronous TCP socket ready" {
-                            crate::serial::println("USER_SOCKET_TCP_ASYNC_READY");
+                            crate::serial::trace::println("USER_SOCKET_TCP_ASYNC_READY");
                         }
                         if text.as_str() == "listener capability authority ready" {
-                            crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=18");
+                            crate::serial::trace::println(
+                                "USER_SOCKET_LISTENER_CAPABILITY_READY abi=18",
+                            );
                         }
                         if text.as_str() == "passive TCP listener ready" {
-                            crate::serial::println("USER_SOCKET_PASSIVE_LISTEN_READY port=18081");
+                            crate::serial::trace::println(
+                                "USER_SOCKET_PASSIVE_LISTEN_READY port=18081",
+                            );
                         }
                         if text.as_str() == "passive TCP listener ready" {
-                            crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
+                            crate::serial::trace::println("USER_SOCKET_PASSIVE_LISTENER_READY");
                         }
                         if text.as_str() == "passive TCP listener ready" {
-                            crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
+                            crate::serial::trace::println("USER_SOCKET_PASSIVE_LISTENER_READY");
                         }
                         if text.as_str() == "passive TCP accept ready" {
-                            crate::serial::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
+                            crate::serial::trace::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
                         }
                         if text.as_str() == "passive TCP stream ready" {
-                            crate::serial::println("USER_SOCKET_PASSIVE_STREAM_READY");
+                            crate::serial::trace::println("USER_SOCKET_PASSIVE_STREAM_READY");
                         }
                         if text.as_str() == "concurrent passive TCP streams ready" {
-                            crate::serial::println(
+                            crate::serial::trace::println(
                                 "USER_SOCKET_PASSIVE_CONCURRENT_READY streams=2",
                             );
                         }
                         if text.as_str() == "socket readiness wait ready" {
-                            crate::serial::println(
+                            crate::serial::trace::println(
                                 "USER_SOCKET_READINESS_WAIT_READY abi=18 wake_budget=2",
                             );
                         }
                         if text.as_str() == "durable file committed" {
-                            crate::serial::println("USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT");
+                            crate::serial::trace::println(
+                                "USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT",
+                            );
                         }
                         if text.as_str() == "durable file restored" {
-                            crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
+                            crate::serial::trace::println(
+                                "USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT",
+                            );
                         }
                         if text.as_str() == "durable file restored read-only" {
-                            crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
-                            crate::serial::println("USER_READ_ONLY_MUTATION_DENIED_OK");
+                            crate::serial::trace::println(
+                                "USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT",
+                            );
+                            crate::serial::trace::println("USER_READ_ONLY_MUTATION_DENIED_OK");
                         }
                         if text.as_str() == "session file written" {
-                            crate::serial::println("USER_SESSION_WRITE_OK path=/USER/SHELL.TXT");
+                            crate::serial::trace::println(
+                                "USER_SESSION_WRITE_OK path=/USER/SHELL.TXT",
+                            );
                         }
                         if text.as_str().starts_with("SHELL.ELF ready") {
                             if text.as_str().contains("process control") {
-                                crate::serial::println("USER_SHELL_PROCESS_CONTROL_OK");
+                                crate::serial::trace::println("USER_SHELL_PROCESS_CONTROL_OK");
                             }
                             if text.as_str().contains("filesystem") {
-                                crate::serial::println("USER_SHELL_NAMESPACE_OK");
-                                crate::serial::println("USER_SHELL_HISTORY_OK");
+                                crate::serial::trace::println("USER_SHELL_NAMESPACE_OK");
+                                crate::serial::trace::println("USER_SHELL_HISTORY_OK");
                             }
-                            crate::serial::println("USER_SHELL_READY");
+                            crate::serial::trace::println("USER_SHELL_READY");
                         }
                     }
                 }
@@ -1957,9 +1973,9 @@ impl ProcessManager {
                     managed.process.context.rax = 0;
                     managed.state = ManagedState::Ready;
                     console = Some(ConsoleUpdate::Clear);
-                    crate::serial::print("USER_CONSOLE_CLEAR pid=");
-                    crate::serial::print_u64(managed.process.pid as u64);
-                    crate::serial::println("");
+                    crate::serial::trace::print("USER_CONSOLE_CLEAR pid=");
+                    crate::serial::trace::print_u64(managed.process.pid as u64);
+                    crate::serial::trace::println("");
                 }
                 ProcessEvent::SocketOpen { protocol } => self.complete_socket_open(index, protocol),
                 ProcessEvent::SocketConnect {
@@ -2043,14 +2059,14 @@ impl ProcessManager {
             .begin_transport(owner, handle, protocol, request_id, &mut data.bytes)
             .ok()?;
         data.len = len;
-        crate::serial::print(match protocol {
+        crate::serial::trace::print(match protocol {
             SocketProtocol::Udp => "USER_SOCKET_UDP_QUEUED pid=",
             SocketProtocol::TcpStream => "USER_SOCKET_TCP_QUEUED pid=",
         });
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" request=");
-        crate::serial::print_u64(request_id);
-        crate::serial::println("");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" request=");
+        crate::serial::trace::print_u64(request_id);
+        crate::serial::trace::println("");
         Some(UserSocketRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -2077,11 +2093,11 @@ impl ProcessManager {
                     .handles
                     .register(handle, HandleKind::Socket, HANDLE_RIGHT_USE) =>
             {
-                crate::serial::print("USER_SOCKET_OPEN pid=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::print(" handle=0x");
-                crate::serial::print_hex(handle);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_SOCKET_OPEN pid=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::print(" handle=0x");
+                crate::serial::trace::print_hex(handle);
+                crate::serial::trace::println("");
                 handle
             }
             Ok(handle) => {
@@ -2176,7 +2192,7 @@ impl ProcessManager {
             }
             Ok(accepted) => {
                 let _ = managed.sockets.close(owner, accepted);
-                crate::serial::println("USER_SOCKET_ACCEPT_ROLLBACK");
+                crate::serial::trace::println("USER_SOCKET_ACCEPT_ROLLBACK");
                 syscall::error_code(syscall::SyscallError::Unavailable)
             }
             Err(error) => socket_error_code(error),
@@ -2202,9 +2218,9 @@ impl ProcessManager {
         };
         managed.process.context.rax = result.map_or_else(socket_error_code, |length| {
             if server_stream {
-                crate::serial::print("USER_SOCKET_PASSIVE_SEND_QUEUED bytes=");
-                crate::serial::print_u64(length as u64);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_SOCKET_PASSIVE_SEND_QUEUED bytes=");
+                crate::serial::trace::print_u64(length as u64);
+                crate::serial::trace::println("");
             }
             length as u64
         });
@@ -2233,16 +2249,16 @@ impl ProcessManager {
         managed.process.context.rax = match result {
             Ok(length) if copy_to_user_data(&managed.process, address, &output[..length]) => {
                 if server_stream {
-                    crate::serial::print("USER_SOCKET_PASSIVE_RECEIVE bytes=");
-                    crate::serial::print_u64(length as u64);
-                    crate::serial::println("");
+                    crate::serial::trace::print("USER_SOCKET_PASSIVE_RECEIVE bytes=");
+                    crate::serial::trace::print_u64(length as u64);
+                    crate::serial::trace::println("");
                 }
                 length as u64
             }
             Ok(_) => syscall::error_code(syscall::SyscallError::InvalidArgument),
             Err(error) => {
                 if server_stream {
-                    crate::serial::println("USER_SOCKET_PASSIVE_RECEIVE_BLOCKED");
+                    crate::serial::trace::println("USER_SOCKET_PASSIVE_RECEIVE_BLOCKED");
                 }
                 socket_error_code(error)
             }
@@ -2317,7 +2333,7 @@ impl ProcessManager {
         if observed != 0 {
             managed.process.context.rax = observed;
             managed.state = ManagedState::Ready;
-            crate::serial::println("USER_SOCKET_WAIT_IMMEDIATE");
+            crate::serial::trace::println("USER_SOCKET_WAIT_IMMEDIATE");
             return;
         }
         managed.pending_socket_wait = Some(PendingSocketWait {
@@ -2327,9 +2343,9 @@ impl ProcessManager {
         });
         managed.blocked_on = BlockReason::Socket;
         managed.state = ManagedState::Waiting;
-        crate::serial::print("USER_SOCKET_WAIT_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_SOCKET_WAIT_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::println("");
     }
 
     fn complete_socket_shutdown(&mut self, index: usize, handle: u64, direction: u64) {
@@ -2387,9 +2403,9 @@ impl ProcessManager {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_PROCESS_LAUNCH_DENIED owner=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_PROCESS_LAUNCH_DENIED owner=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::println("");
             return None;
         }
         let Some(request_id) = managed.allocate_request_id() else {
@@ -2491,14 +2507,14 @@ impl ProcessManager {
             .map(|(_, handle)| handle)
             .unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
         if let Some((pid, handle)) = launch {
-            crate::serial::print("USER_PROCESS_LAUNCHED owner=");
-            crate::serial::print_u64(request.owner_pid as u64);
-            crate::serial::print(" pid=");
-            crate::serial::print_u64(pid as u64);
-            crate::serial::print(" handle=0x");
-            crate::serial::print_hex(handle);
-            crate::serial::print(" mode=");
-            crate::serial::println(if request.mode == USER_PROCESS_MODE_HOLD {
+            crate::serial::trace::print("USER_PROCESS_LAUNCHED owner=");
+            crate::serial::trace::print_u64(request.owner_pid as u64);
+            crate::serial::trace::print(" pid=");
+            crate::serial::trace::print_u64(pid as u64);
+            crate::serial::trace::print(" handle=0x");
+            crate::serial::trace::print_hex(handle);
+            crate::serial::trace::print(" mode=");
+            crate::serial::trace::println(if request.mode == USER_PROCESS_MODE_HOLD {
                 "hold"
             } else {
                 "normal"
@@ -2548,11 +2564,11 @@ impl ProcessManager {
         };
         managed.state = ManagedState::Ready;
         if copied {
-            crate::serial::print("USER_PROCESS_STATUS owner=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::print(" target=");
-            crate::serial::print_u64(status.map(|status| status.runtime_pid).unwrap_or(0));
-            crate::serial::println("");
+            crate::serial::trace::print("USER_PROCESS_STATUS owner=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::print(" target=");
+            crate::serial::trace::print_u64(status.map(|status| status.runtime_pid).unwrap_or(0));
+            crate::serial::trace::println("");
         }
     }
 
@@ -2596,11 +2612,11 @@ impl ProcessManager {
             .expect("selected process exists");
         owner.process.context.rax = 0;
         owner.state = ManagedState::Ready;
-        crate::serial::print("USER_PROCESS_KILLED owner=");
-        crate::serial::print_u64(owner.process.pid as u64);
-        crate::serial::print(" pid=");
-        crate::serial::print_u64(target_pid as u64);
-        crate::serial::println(" code=137");
+        crate::serial::trace::print("USER_PROCESS_KILLED owner=");
+        crate::serial::trace::print_u64(owner.process.pid as u64);
+        crate::serial::trace::print(" pid=");
+        crate::serial::trace::print_u64(target_pid as u64);
+        crate::serial::trace::println(" code=137");
     }
 
     fn complete_controlled_reap(
@@ -2667,11 +2683,11 @@ impl ProcessManager {
         }
         owner.process.context.rax = length;
         owner.state = ManagedState::Ready;
-        crate::serial::print("USER_PROCESS_REAPED owner=");
-        crate::serial::print_u64(owner.process.pid as u64);
-        crate::serial::print(" pid=");
-        crate::serial::print_u64(status.map(|status| status.runtime_pid).unwrap_or(0));
-        crate::serial::println("");
+        crate::serial::trace::print("USER_PROCESS_REAPED owner=");
+        crate::serial::trace::print_u64(owner.process.pid as u64);
+        crate::serial::trace::print(" pid=");
+        crate::serial::trace::print_u64(status.map(|status| status.runtime_pid).unwrap_or(0));
+        crate::serial::trace::println("");
     }
 
     fn wake_sleepers(&mut self, tick: u64) {
@@ -2680,9 +2696,9 @@ impl ProcessManager {
                 managed.state = ManagedState::Ready;
                 managed.wake_at = 0;
                 managed.process.context.rax = 0;
-                crate::serial::print("USER_SLEEP_WAKE pid=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_SLEEP_WAKE pid=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::println("");
             }
         }
     }
@@ -2723,10 +2739,10 @@ impl ProcessManager {
             managed.process.context.rax = return_value;
             last_woken = Some(index);
             woke += 1;
-            crate::serial::print(marker);
-            crate::serial::print(" pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::println("");
+            crate::serial::trace::print(marker);
+            crate::serial::trace::print(" pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::println("");
         }
         if let Some(index) = last_woken {
             self.socket_wait_cursor = index;
@@ -2770,13 +2786,13 @@ impl ProcessManager {
             address,
             length,
         });
-        crate::serial::print("USER_DIRECTORY_READ_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" path=");
-        crate::serial::print(capability.path.as_str());
-        crate::serial::print(" cursor=");
-        crate::serial::print_u64(cursor);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_DIRECTORY_READ_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" path=");
+        crate::serial::trace::print(capability.path.as_str());
+        crate::serial::trace::print(" cursor=");
+        crate::serial::trace::print_u64(cursor);
+        crate::serial::trace::println("");
         Some(DirectoryReadRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -2862,7 +2878,7 @@ impl ProcessManager {
                     if pending.length as usize == bytes.len()
                         && copy_to_user_data(&managed.process, pending.address, bytes)
                     {
-                        crate::serial::println("USER_DIRECTORY_READ_OK");
+                        crate::serial::trace::println("USER_DIRECTORY_READ_OK");
                         pending.length
                     } else {
                         syscall::error_code(syscall::SyscallError::InvalidArgument)
@@ -2877,9 +2893,9 @@ impl ProcessManager {
         managed.process.context.rax = return_value;
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print("USER_DIRECTORY_READ_WAKE pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_DIRECTORY_READ_WAKE pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::println("");
         Ok(process_update(managed))
     }
 
@@ -2929,14 +2945,14 @@ impl ProcessManager {
         managed.state = ManagedState::Waiting;
         managed.blocked_on = reason;
         managed.pending_namespace_mutation = Some(pending);
-        crate::serial::print(match reason {
+        crate::serial::trace::print(match reason {
             BlockReason::DirectoryCreate => "USER_DIRECTORY_CREATE_BLOCK pid=",
             BlockReason::PathRemove => "USER_PATH_REMOVE_BLOCK pid=",
             _ => "USER_NAMESPACE_BLOCK pid=",
         });
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" target=");
-        crate::serial::println(target.as_str());
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" target=");
+        crate::serial::trace::println(target.as_str());
         Some(NamespaceMutationRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -3031,15 +3047,15 @@ impl ProcessManager {
         };
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print(match (reason, succeeded) {
+        crate::serial::trace::print(match (reason, succeeded) {
             (BlockReason::DirectoryCreate, true) => "USER_DIRECTORY_CREATE_OK pid=",
             (BlockReason::DirectoryCreate, false) => "USER_DIRECTORY_CREATE_UNAVAILABLE pid=",
             (BlockReason::PathRemove, true) => "USER_PATH_REMOVE_OK pid=",
             (BlockReason::PathRemove, false) => "USER_PATH_REMOVE_UNAVAILABLE pid=",
             _ => "USER_NAMESPACE_COMPLETE pid=",
         });
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::println("");
         Ok(process_update(managed))
     }
 
@@ -3047,11 +3063,11 @@ impl ProcessManager {
         let managed = self.slots[index].as_mut().expect("selected process exists");
         managed.state = ManagedState::Sleeping;
         managed.wake_at = tick.saturating_add(ticks);
-        crate::serial::print("USER_SLEEP_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" until=");
-        crate::serial::print_u64(managed.wake_at);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_SLEEP_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" until=");
+        crate::serial::trace::print_u64(managed.wake_at);
+        crate::serial::trace::println("");
     }
 
     fn complete_endpoint_create(&mut self, index: usize) {
@@ -3062,18 +3078,20 @@ impl ProcessManager {
         managed.state = ManagedState::Ready;
         match handle {
             Some(handle) => {
-                crate::serial::print("USER_ENDPOINT_CREATED pid=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::print(" handle=0x");
-                crate::serial::print_hex(handle);
-                crate::serial::print(" generation=");
-                crate::serial::print_u64(managed.endpoints.published_generation().unwrap_or(0));
-                crate::serial::println("");
+                crate::serial::trace::print("USER_ENDPOINT_CREATED pid=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::print(" handle=0x");
+                crate::serial::trace::print_hex(handle);
+                crate::serial::trace::print(" generation=");
+                crate::serial::trace::print_u64(
+                    managed.endpoints.published_generation().unwrap_or(0),
+                );
+                crate::serial::trace::println("");
             }
             None => {
-                crate::serial::print("USER_ENDPOINT_CREATE_DENIED pid=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_ENDPOINT_CREATE_DENIED pid=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::println("");
             }
         }
     }
@@ -3099,22 +3117,22 @@ impl ProcessManager {
         managed.state = ManagedState::Ready;
         match handle {
             Some(handle) => {
-                crate::serial::print("USER_ENDPOINT_CONNECTED from=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::print(" to=");
-                crate::serial::print_u64(target_pid as u64);
-                crate::serial::print(" handle=0x");
-                crate::serial::print_hex(handle);
-                crate::serial::print(" generation=");
-                crate::serial::print_u64(target_generation.unwrap_or(0));
-                crate::serial::println("");
+                crate::serial::trace::print("USER_ENDPOINT_CONNECTED from=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::print(" to=");
+                crate::serial::trace::print_u64(target_pid as u64);
+                crate::serial::trace::print(" handle=0x");
+                crate::serial::trace::print_hex(handle);
+                crate::serial::trace::print(" generation=");
+                crate::serial::trace::print_u64(target_generation.unwrap_or(0));
+                crate::serial::trace::println("");
             }
             None => {
-                crate::serial::print("USER_ENDPOINT_CONNECT_DENIED from=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::print(" to=");
-                crate::serial::print_u64(target_pid as u64);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_ENDPOINT_CONNECT_DENIED from=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::print(" to=");
+                crate::serial::trace::print_u64(target_pid as u64);
+                crate::serial::trace::println("");
             }
         }
     }
@@ -3132,11 +3150,11 @@ impl ProcessManager {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_ENDPOINT_SEND_DENIED pid=");
-            crate::serial::print_u64(sender_pid as u64);
-            crate::serial::print(" handle=0x");
-            crate::serial::print_hex(handle);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_ENDPOINT_SEND_DENIED pid=");
+            crate::serial::trace::print_u64(sender_pid as u64);
+            crate::serial::trace::print(" handle=0x");
+            crate::serial::trace::print_hex(handle);
+            crate::serial::trace::println("");
             return;
         };
         let delivery = self.deliver_endpoint_message(
@@ -3168,7 +3186,7 @@ impl ProcessManager {
             EndpointDelivery::Stale => syscall::error_code(syscall::SyscallError::InvalidArgument),
         };
         managed.state = ManagedState::Ready;
-        crate::serial::print(match delivery {
+        crate::serial::trace::print(match delivery {
             EndpointDelivery::Woken => "USER_ENDPOINT_DELIVERED from=",
             EndpointDelivery::Queued(_) => "USER_ENDPOINT_QUEUED from=",
             EndpointDelivery::DuplicateProducer => "USER_CHANNEL_FAIRNESS_DENIED from=",
@@ -3176,16 +3194,16 @@ impl ProcessManager {
             EndpointDelivery::CopyFailed => "USER_ENDPOINT_COPY_FAILED from=",
             EndpointDelivery::Stale => "USER_ENDPOINT_SEND_STALE from=",
         });
-        crate::serial::print_u64(sender_pid as u64);
-        crate::serial::print(" to=");
-        crate::serial::print_u64(target_pid as u64);
-        crate::serial::print(" generation=");
-        crate::serial::print_u64(target_generation);
+        crate::serial::trace::print_u64(sender_pid as u64);
+        crate::serial::trace::print(" to=");
+        crate::serial::trace::print_u64(target_pid as u64);
+        crate::serial::trace::print(" generation=");
+        crate::serial::trace::print_u64(target_generation);
         if let EndpointDelivery::Queued(depth) = delivery {
-            crate::serial::print(" depth=");
-            crate::serial::print_u64(depth as u64);
+            crate::serial::trace::print(" depth=");
+            crate::serial::trace::print_u64(depth as u64);
         }
-        crate::serial::println("");
+        crate::serial::trace::println("");
     }
 
     /// Hands one message to a published endpoint: straight into a validated
@@ -3256,11 +3274,11 @@ impl ProcessManager {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_ENDPOINT_RECEIVE_DENIED pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::print(" handle=0x");
-            crate::serial::print_hex(handle);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_ENDPOINT_RECEIVE_DENIED pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::print(" handle=0x");
+            crate::serial::trace::print_hex(handle);
+            crate::serial::trace::println("");
             return;
         };
         let queued = managed.endpoints.pop_message();
@@ -3277,13 +3295,13 @@ impl ProcessManager {
                 },
             );
             debug_assert!(parked);
-            crate::serial::print("USER_ENDPOINT_BLOCK pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::print(" handle=0x");
-            crate::serial::print_hex(handle);
-            crate::serial::print(" generation=");
-            crate::serial::print_u64(generation);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_ENDPOINT_BLOCK pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::print(" handle=0x");
+            crate::serial::trace::print_hex(handle);
+            crate::serial::trace::print(" generation=");
+            crate::serial::trace::print_u64(generation);
+            crate::serial::trace::println("");
             return;
         };
         let copied = copy_to_user_data(&managed.process, address, channel_message_bytes(&message));
@@ -3298,19 +3316,19 @@ impl ProcessManager {
         };
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print(if copied {
+        crate::serial::trace::print(if copied {
             "USER_ENDPOINT_RECEIVED pid="
         } else {
             "USER_ENDPOINT_COPY_FAILED pid="
         });
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" from=");
-        crate::serial::print_u64(message.sender_pid);
-        crate::serial::print(" generation=");
-        crate::serial::print_u64(generation);
-        crate::serial::print(" depth=");
-        crate::serial::print_u64(managed.endpoints.queue_depth() as u64);
-        crate::serial::println("");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" from=");
+        crate::serial::trace::print_u64(message.sender_pid);
+        crate::serial::trace::print(" generation=");
+        crate::serial::trace::print_u64(generation);
+        crate::serial::trace::print(" depth=");
+        crate::serial::trace::print_u64(managed.endpoints.queue_depth() as u64);
+        crate::serial::trace::println("");
     }
 
     fn complete_endpoint_close(&mut self, index: usize, handle: u64) {
@@ -3334,19 +3352,19 @@ impl ProcessManager {
             syscall::error_code(syscall::SyscallError::InvalidArgument)
         };
         managed.state = ManagedState::Ready;
-        crate::serial::print("USER_ENDPOINT_CLOSED pid=");
-        crate::serial::print_u64(owner_pid as u64);
-        crate::serial::print(" handle=0x");
-        crate::serial::print_hex(handle);
-        crate::serial::print(" kind=");
-        crate::serial::print(match role {
+        crate::serial::trace::print("USER_ENDPOINT_CLOSED pid=");
+        crate::serial::trace::print_u64(owner_pid as u64);
+        crate::serial::trace::print(" handle=0x");
+        crate::serial::trace::print_hex(handle);
+        crate::serial::trace::print(" kind=");
+        crate::serial::trace::print(match role {
             Some(EndpointRole::Receive { .. }) => "receive",
             Some(EndpointRole::Send { .. }) => "send",
             None => "rejected",
         });
-        crate::serial::print(" revoked=");
-        crate::serial::print_u64(revoked as u64);
-        crate::serial::println("");
+        crate::serial::trace::print(" revoked=");
+        crate::serial::trace::print_u64(revoked as u64);
+        crate::serial::trace::println("");
     }
 
     /// Revokes every send capability held anywhere in the manager that names
@@ -3361,13 +3379,13 @@ impl ProcessManager {
             );
         }
         if revoked > 0 {
-            crate::serial::print("USER_ENDPOINT_REVOKED pid=");
-            crate::serial::print_u64(target_pid as u64);
-            crate::serial::print(" generation=");
-            crate::serial::print_u64(target_generation);
-            crate::serial::print(" handles=");
-            crate::serial::print_u64(revoked as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_ENDPOINT_REVOKED pid=");
+            crate::serial::trace::print_u64(target_pid as u64);
+            crate::serial::trace::print(" generation=");
+            crate::serial::trace::print_u64(target_generation);
+            crate::serial::trace::print(" handles=");
+            crate::serial::trace::print_u64(revoked as u64);
+            crate::serial::trace::println("");
         }
         revoked
     }
@@ -3398,9 +3416,9 @@ impl ProcessManager {
         if waiter_exists || mask == 0 || mask & !USER_INPUT_MASK_ALL != 0 {
             managed.process.context.rax = syscall::error_code(syscall::SyscallError::Unavailable);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_INPUT_WAIT_DENIED pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_INPUT_WAIT_DENIED pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::println("");
             return;
         }
         managed.state = ManagedState::Waiting;
@@ -3410,11 +3428,11 @@ impl ProcessManager {
             length,
             mask,
         });
-        crate::serial::print("USER_INPUT_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" mask=");
-        crate::serial::print_u64(mask);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_INPUT_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" mask=");
+        crate::serial::trace::print_u64(mask);
+        crate::serial::trace::println("");
     }
 
     pub fn deliver_input(
@@ -3454,15 +3472,15 @@ impl ProcessManager {
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
         COMPLETED_INPUT_WAITS.fetch_add(1, Ordering::AcqRel);
-        crate::serial::print("USER_INPUT_WAKE pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" kind=");
-        crate::serial::print_u64(event.kind);
-        crate::serial::print(" code=");
-        crate::serial::print_u64(event.code);
-        crate::serial::print(" value0=");
-        crate::serial::print_u64(event.value0 as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_INPUT_WAKE pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" kind=");
+        crate::serial::trace::print_u64(event.kind);
+        crate::serial::trace::print(" code=");
+        crate::serial::trace::print_u64(event.code);
+        crate::serial::trace::print(" value0=");
+        crate::serial::trace::print_u64(event.value0 as u64);
+        crate::serial::trace::println("");
         Ok(Some(process_update(managed)))
     }
 
@@ -3492,11 +3510,11 @@ impl ProcessManager {
             Some((child_key, None)) => {
                 parent.state = ManagedState::Waiting;
                 parent.blocked_on = BlockReason::Child(child_key);
-                crate::serial::print("USER_CHILD_WAIT parent=");
-                crate::serial::print_u64(parent_pid as u64);
-                crate::serial::print(" child=");
-                crate::serial::print_u64(child_pid as u64);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_CHILD_WAIT parent=");
+                crate::serial::trace::print_u64(parent_pid as u64);
+                crate::serial::trace::print(" child=");
+                crate::serial::trace::print_u64(child_pid as u64);
+                crate::serial::trace::println("");
             }
             None => {
                 parent.process.context.rax =
@@ -3526,10 +3544,10 @@ impl ProcessManager {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_FILE_OPEN_DENIED pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::print(" path=");
-            crate::serial::println(path.as_str());
+            crate::serial::trace::print("USER_FILE_OPEN_DENIED pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::print(" path=");
+            crate::serial::trace::println(path.as_str());
             return None;
         }
         let Some(request_id) = managed.allocate_request_id() else {
@@ -3544,13 +3562,13 @@ impl ProcessManager {
             path,
             rights,
         });
-        crate::serial::print("USER_FILE_OPEN_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" path=");
-        crate::serial::print(path.as_str());
-        crate::serial::print(" rights=");
-        crate::serial::print_u64(rights);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_FILE_OPEN_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" path=");
+        crate::serial::trace::print(path.as_str());
+        crate::serial::trace::print(" rights=");
+        crate::serial::trace::print_u64(rights);
+        crate::serial::trace::println("");
         Some(FileOpenRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -3615,11 +3633,11 @@ impl ProcessManager {
             handle.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print("USER_FILE_OPEN_WAKE pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" handle=0x");
-        crate::serial::print_hex(handle.unwrap_or(0));
-        crate::serial::println("");
+        crate::serial::trace::print("USER_FILE_OPEN_WAKE pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" handle=0x");
+        crate::serial::trace::print_hex(handle.unwrap_or(0));
+        crate::serial::trace::println("");
         Ok(process_update(managed))
     }
 
@@ -3659,13 +3677,13 @@ impl ProcessManager {
             address,
             capacity,
         });
-        crate::serial::print("USER_HANDLE_READ_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" handle=0x");
-        crate::serial::print_hex(handle);
-        crate::serial::print(" offset=");
-        crate::serial::print_u64(capability.offset);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_HANDLE_READ_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" handle=0x");
+        crate::serial::trace::print_hex(handle);
+        crate::serial::trace::print(" offset=");
+        crate::serial::trace::print_u64(capability.offset);
+        crate::serial::trace::println("");
         Some(FileReadRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -3718,12 +3736,12 @@ impl ProcessManager {
             syscall::error_code(syscall::SyscallError::InvalidArgument)
         };
         managed.state = ManagedState::Ready;
-        crate::serial::print("USER_FILE_CLOSE pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" handle=0x");
-        crate::serial::print_hex(handle);
-        crate::serial::print(" result=");
-        crate::serial::println(if closed { "closed" } else { "rejected" });
+        crate::serial::trace::print("USER_FILE_CLOSE pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" handle=0x");
+        crate::serial::trace::print_hex(handle);
+        crate::serial::trace::print(" result=");
+        crate::serial::trace::println(if closed { "closed" } else { "rejected" });
     }
 
     fn block_file_handle_write(
@@ -3746,9 +3764,9 @@ impl ProcessManager {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_HANDLE_WRITE_DENIED pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_HANDLE_WRITE_DENIED pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::println("");
             return None;
         };
         let Some(request_id) = managed.allocate_request_id() else {
@@ -3766,15 +3784,15 @@ impl ProcessManager {
         managed.state = ManagedState::Waiting;
         managed.blocked_on = BlockReason::FileWrite;
         managed.pending_file_write = Some(pending);
-        crate::serial::print("USER_HANDLE_WRITE_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" handle=0x");
-        crate::serial::print_hex(handle);
-        crate::serial::print(" offset=");
-        crate::serial::print_u64(capability.offset);
-        crate::serial::print(" bytes=");
-        crate::serial::print_u64(data.len() as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_HANDLE_WRITE_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" handle=0x");
+        crate::serial::trace::print_hex(handle);
+        crate::serial::trace::print(" offset=");
+        crate::serial::trace::print_u64(capability.offset);
+        crate::serial::trace::print(" bytes=");
+        crate::serial::trace::print_u64(data.len() as u64);
+        crate::serial::trace::println("");
         Some(FileWriteRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -3845,17 +3863,17 @@ impl ProcessManager {
             written.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print("USER_HANDLE_WRITE_WAKE pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" bytes=");
-        crate::serial::print_u64(written.unwrap_or(0));
-        crate::serial::print(" size=");
-        crate::serial::print_u64(
+        crate::serial::trace::print("USER_HANDLE_WRITE_WAKE pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" bytes=");
+        crate::serial::trace::print_u64(written.unwrap_or(0));
+        crate::serial::trace::print(" size=");
+        crate::serial::trace::print_u64(
             capability
                 .size
                 .max(request.offset.saturating_add(written.unwrap_or(0))),
         );
-        crate::serial::println("");
+        crate::serial::trace::println("");
         Ok(process_update(managed))
     }
 
@@ -3877,9 +3895,9 @@ impl ProcessManager {
             managed.process.context.rax =
                 syscall::error_code(syscall::SyscallError::InvalidArgument);
             managed.state = ManagedState::Ready;
-            crate::serial::print("USER_HANDLE_TRUNCATE_DENIED pid=");
-            crate::serial::print_u64(managed.process.pid as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_HANDLE_TRUNCATE_DENIED pid=");
+            crate::serial::trace::print_u64(managed.process.pid as u64);
+            crate::serial::trace::println("");
             return None;
         };
         let Some(request_id) = managed.allocate_request_id() else {
@@ -3894,11 +3912,11 @@ impl ProcessManager {
             handle,
             path: capability.path,
         });
-        crate::serial::print("USER_HANDLE_TRUNCATE_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" handle=0x");
-        crate::serial::print_hex(handle);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_HANDLE_TRUNCATE_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" handle=0x");
+        crate::serial::trace::print_hex(handle);
+        crate::serial::trace::println("");
         Some(FileTruncateRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -3964,13 +3982,13 @@ impl ProcessManager {
         };
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print(if truncated {
+        crate::serial::trace::print(if truncated {
             "USER_HANDLE_TRUNCATE_OK pid="
         } else {
             "USER_HANDLE_TRUNCATE_FAILED pid="
         });
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::println("");
         Ok(process_update(managed))
     }
 
@@ -3997,13 +4015,13 @@ impl ProcessManager {
             address,
             capacity,
         });
-        crate::serial::print("USER_FILE_READ_BLOCK pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" path=");
-        crate::serial::print(path.as_str());
-        crate::serial::print(" cap=");
-        crate::serial::print_u64(capacity);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_FILE_READ_BLOCK pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" path=");
+        crate::serial::trace::print(path.as_str());
+        crate::serial::trace::print(" cap=");
+        crate::serial::trace::print_u64(capacity);
+        crate::serial::trace::println("");
         Some(FileReadRequest {
             request_id,
             owner_slot: managed.key.slot,
@@ -4080,11 +4098,11 @@ impl ProcessManager {
             copied.unwrap_or_else(|| syscall::error_code(syscall::SyscallError::Unavailable));
         managed.state = ManagedState::Ready;
         managed.blocked_on = BlockReason::None;
-        crate::serial::print("USER_FILE_READ_WAKE pid=");
-        crate::serial::print_u64(managed.process.pid as u64);
-        crate::serial::print(" bytes=");
-        crate::serial::print_u64(copied.unwrap_or(0));
-        crate::serial::println("");
+        crate::serial::trace::print("USER_FILE_READ_WAKE pid=");
+        crate::serial::trace::print_u64(managed.process.pid as u64);
+        crate::serial::trace::print(" bytes=");
+        crate::serial::trace::print_u64(copied.unwrap_or(0));
+        crate::serial::trace::println("");
         Ok(process_update(managed))
     }
 
@@ -4132,11 +4150,11 @@ impl ProcessManager {
         };
         if supervisor {
             let cleaned = self.cleanup_supervised_children(record.key)?;
-            crate::serial::print("USER_SUPERVISOR_CHILDREN_CLEANED owner=");
-            crate::serial::print_u64(record.pid as u64);
-            crate::serial::print(" children=");
-            crate::serial::print_u64(cleaned as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_SUPERVISOR_CHILDREN_CLEANED owner=");
+            crate::serial::trace::print_u64(record.pid as u64);
+            crate::serial::trace::print(" children=");
+            crate::serial::trace::print_u64(cleaned as u64);
+            crate::serial::trace::println("");
         }
         self.wake_waiting_parent(record.key, record.pid, record.exit_code);
         Ok(record)
@@ -4177,11 +4195,11 @@ impl ProcessManager {
                 managed.process.context.rax = exit_code as u64;
                 managed.state = ManagedState::Ready;
                 managed.blocked_on = BlockReason::None;
-                crate::serial::print("USER_CHILD_WAKE parent=");
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::print(" child=");
-                crate::serial::print_u64(child_pid as u64);
-                crate::serial::println("");
+                crate::serial::trace::print("USER_CHILD_WAKE parent=");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::print(" child=");
+                crate::serial::trace::print_u64(child_pid as u64);
+                crate::serial::trace::println("");
             }
         }
     }
@@ -4202,11 +4220,11 @@ impl ProcessManager {
             return Err(LaunchError::InvalidResult);
         }
         let record = self.terminate_process_at(index, ManagedState::Killed, Some(137))?;
-        crate::serial::print("USER_KILLED pid=");
-        crate::serial::print_u64(record.pid as u64);
-        crate::serial::print(" task=");
-        crate::serial::print_u64(task_id as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_KILLED pid=");
+        crate::serial::trace::print_u64(record.pid as u64);
+        crate::serial::trace::print(" task=");
+        crate::serial::trace::print_u64(task_id as u64);
+        crate::serial::trace::println("");
         let update = ProcessUpdate {
             task_id: record.task_id,
             pid: record.pid,
@@ -4256,9 +4274,9 @@ impl ProcessManager {
             exit_code: managed.process.exit_code,
         };
         self.slots[index] = None;
-        crate::serial::print("USER_WAIT_REAPED pid=");
-        crate::serial::print_u64(result.pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_WAIT_REAPED pid=");
+        crate::serial::trace::print_u64(result.pid as u64);
+        crate::serial::trace::println("");
         Ok(result)
     }
 
@@ -4479,26 +4497,26 @@ impl ProcessManager {
                         bytes,
                     )
                     .map_err(|_| LaunchError::InvalidResult)?;
-                crate::serial::print(match request.protocol {
+                crate::serial::trace::print(match request.protocol {
                     SocketProtocol::Udp => "USER_SOCKET_UDP_COMPLETE pid=",
                     SocketProtocol::TcpStream => "USER_SOCKET_TCP_COMPLETE pid=",
                 });
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::print(" bytes=");
-                crate::serial::print_u64(bytes.len() as u64);
-                crate::serial::println("");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::print(" bytes=");
+                crate::serial::trace::print_u64(bytes.len() as u64);
+                crate::serial::trace::println("");
             }
             None => {
                 managed
                     .sockets
                     .fail_transport(owner, request.handle, request.protocol, request.request_id)
                     .map_err(|_| LaunchError::InvalidResult)?;
-                crate::serial::print(match request.protocol {
+                crate::serial::trace::print(match request.protocol {
                     SocketProtocol::Udp => "USER_SOCKET_UDP_TIMEOUT pid=",
                     SocketProtocol::TcpStream => "USER_SOCKET_TCP_ERROR pid=",
                 });
-                crate::serial::print_u64(managed.process.pid as u64);
-                crate::serial::println("");
+                crate::serial::trace::print_u64(managed.process.pid as u64);
+                crate::serial::trace::println("");
             }
         }
         Ok(process_update(managed))
@@ -4735,15 +4753,15 @@ pub fn register_init_elf(elf_bytes: &'static [u8]) -> bool {
 
 pub fn run_probe(elf_bytes: &'static [u8]) {
     let faulting = require_process(build_process(1, TOKEN_FAULT, elf_bytes));
-    crate::serial::print("USER_ELF_VALIDATED entry=0x");
-    crate::serial::print_hex(faulting.context.rip);
-    crate::serial::print(" segments=");
-    crate::serial::print_u64(faulting.elf_segments as u64);
-    crate::serial::print(" pages=");
-    crate::serial::print_u64(faulting.elf_pages as u64);
-    crate::serial::print(" bytes=");
-    crate::serial::print_u64(elf_bytes.len() as u64);
-    crate::serial::println("");
+    crate::serial::trace::print("USER_ELF_VALIDATED entry=0x");
+    crate::serial::trace::print_hex(faulting.context.rip);
+    crate::serial::trace::print(" segments=");
+    crate::serial::trace::print_u64(faulting.elf_segments as u64);
+    crate::serial::trace::print(" pages=");
+    crate::serial::trace::print_u64(faulting.elf_pages as u64);
+    crate::serial::trace::print(" bytes=");
+    crate::serial::trace::print_u64(elf_bytes.len() as u64);
+    crate::serial::trace::println("");
     let first = require_process(build_process(2, TOKEN_A, elf_bytes));
     let second = require_process(build_process(3, TOKEN_B, elf_bytes));
     let switch_benchmark = paging::benchmark_address_space_switch(first.space, 32)
@@ -4751,16 +4769,16 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
             result.min_pair_cycles > 0 && result.average_pair_cycles >= result.min_pair_cycles
         })
         .unwrap_or_else(|| fail("SCHED_CONTEXT_BENCH_FAILED"));
-    crate::serial::print("SCHED_CONTEXT_BENCH switches=");
-    crate::serial::print_u64(u64::from(switch_benchmark.samples) * 2);
-    crate::serial::print(" min_pair_cycles=");
-    crate::serial::print_u64(switch_benchmark.min_pair_cycles);
-    crate::serial::print(" avg_pair_cycles=");
-    crate::serial::print_u64(switch_benchmark.average_pair_cycles);
-    crate::serial::println("");
-    crate::serial::println("SCHED_CONTEXT_BENCH_OK");
+    crate::serial::trace::print("SCHED_CONTEXT_BENCH switches=");
+    crate::serial::trace::print_u64(u64::from(switch_benchmark.samples) * 2);
+    crate::serial::trace::print(" min_pair_cycles=");
+    crate::serial::trace::print_u64(switch_benchmark.min_pair_cycles);
+    crate::serial::trace::print(" avg_pair_cycles=");
+    crate::serial::trace::print_u64(switch_benchmark.average_pair_cycles);
+    crate::serial::trace::println("");
+    crate::serial::trace::println("SCHED_CONTEXT_BENCH_OK");
     let mut processes = [faulting, first, second];
-    crate::serial::println("ADDRESS_SPACES_READY count=3");
+    crate::serial::trace::println("ADDRESS_SPACES_READY count=3");
 
     let mut live = PROCESS_COUNT;
     let mut cursor = 0usize;
@@ -4836,13 +4854,13 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
             fail("USER_RECLAIM_FAILED");
         }
     }
-    crate::serial::println("USER_RECLAIM_OK");
+    crate::serial::trace::println("USER_RECLAIM_OK");
     PROBE_PASSED.store(true, Ordering::Release);
-    crate::serial::println("USER_CONTEXT_RESUME_OK");
-    crate::serial::println("USER_PREEMPT_OK");
-    crate::serial::println("USER_FAULT_ISOLATED");
-    crate::serial::println("USER_ISOLATION_OK");
-    crate::serial::println("USERMODE_READY");
+    crate::serial::trace::println("USER_CONTEXT_RESUME_OK");
+    crate::serial::trace::println("USER_PREEMPT_OK");
+    crate::serial::trace::println("USER_FAULT_ISOLATED");
+    crate::serial::trace::println("USER_ISOLATION_OK");
+    crate::serial::trace::println("USERMODE_READY");
 }
 
 pub fn register_shell_elf(elf_bytes: &'static [u8]) {
@@ -4880,44 +4898,6 @@ pub fn completed_input_wait_count() -> u64 {
     COMPLETED_INPUT_WAITS.load(Ordering::Acquire)
 }
 
-pub fn is_user_writable_path(path: &str) -> bool {
-    path.len() > USER_WRITABLE_PREFIX.len()
-        && path
-            .get(..USER_WRITABLE_PREFIX.len())
-            .is_some_and(|prefix| paths_equal(prefix, USER_WRITABLE_PREFIX))
-}
-
-fn is_user_writable_directory(path: &str) -> bool {
-    paths_equal(path, USER_WRITABLE_PREFIX.trim_end_matches('/')) || is_user_writable_path(path)
-}
-
-fn paths_equal(left: &str, right: &str) -> bool {
-    left.len() == right.len()
-        && left
-            .bytes()
-            .zip(right.bytes())
-            .all(|(left, right)| left.eq_ignore_ascii_case(&right))
-}
-
-fn join_child_path(parent: FixedText, name: FixedText) -> Option<FixedText> {
-    let name = name.as_str();
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
-        return None;
-    }
-    let separator = if parent.as_str() == "/" { "" } else { "/" };
-    let length = parent
-        .len()
-        .checked_add(separator.len())?
-        .checked_add(name.len())?;
-    if length > USER_PATH_MAX {
-        return None;
-    }
-    let mut target = parent;
-    target.push_str(separator);
-    target.push_str(name);
-    (target.len() == length).then_some(target)
-}
-
 pub fn opened_file_handle_count() -> u64 {
     OPENED_FILE_HANDLES.load(Ordering::Acquire)
 }
@@ -4944,9 +4924,9 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     let token = TOKEN_DYNAMIC_BASE | pid as u64;
     let mut process =
         build_process(pid, token, elf_bytes).map_err(|_| LaunchError::ProcessBuildFailed)?;
-    crate::serial::print("USER_ELF_LAUNCH pid=");
-    crate::serial::print_u64(pid as u64);
-    crate::serial::println(" image=INIT.ELF");
+    crate::serial::trace::print("USER_ELF_LAUNCH pid=");
+    crate::serial::trace::print_u64(pid as u64);
+    crate::serial::trace::println(" image=INIT.ELF");
 
     for _ in 0..8 {
         if process.completed {
@@ -4977,11 +4957,11 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
     reclaim_process(&mut process).map_err(|_| LaunchError::InvalidResult)?;
     DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
     TOTAL_PREEMPTIONS.fetch_add(result.preemptions, Ordering::AcqRel);
-    crate::serial::print("USER_ELF_LAUNCH_OK pid=");
-    crate::serial::print_u64(pid as u64);
-    crate::serial::print(" preemptions=");
-    crate::serial::print_u64(result.preemptions);
-    crate::serial::println("");
+    crate::serial::trace::print("USER_ELF_LAUNCH_OK pid=");
+    crate::serial::trace::print_u64(pid as u64);
+    crate::serial::trace::print(" preemptions=");
+    crate::serial::trace::print_u64(result.preemptions);
+    crate::serial::trace::println("");
     Ok(result)
 }
 
@@ -5012,7 +4992,7 @@ pub fn run_sdk_probe(elf_bytes: &[u8]) -> bool {
         && process.output.as_str() == "Hello from the standalone GenOS SDK";
     let reclaimed = reclaim_process(&mut process).is_ok();
     if passed && reclaimed {
-        crate::serial::println("SDK_APPLICATION_READY abi=18 exit=0 reclaimed=true");
+        crate::serial::trace::println("SDK_APPLICATION_READY abi=18 exit=0 reclaimed=true");
     }
     passed && reclaimed
 }
@@ -5036,9 +5016,9 @@ pub fn run_memory_rollback_probe(elf_bytes: &[u8]) -> bool {
             break;
         }
         if built {
-            crate::serial::print("MEMORY_ROLLBACK_READY allocation_points=");
-            crate::serial::print_u64(cutoff as u64);
-            crate::serial::println(" leaked_frames=0");
+            crate::serial::trace::print("MEMORY_ROLLBACK_READY allocation_points=");
+            crate::serial::trace::print_u64(cutoff as u64);
+            crate::serial::trace::println(" leaked_frames=0");
             success = cutoff >= 10;
             break;
         }
@@ -5142,8 +5122,8 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_ASYNC_WAIT_FAILED");
     }
-    crate::serial::println("USER_ASYNC_EXIT_OK");
-    crate::serial::println("USER_OUTPUT_ASYNC_OK");
+    crate::serial::trace::println("USER_ASYNC_EXIT_OK");
+    crate::serial::trace::println("USER_OUTPUT_ASYNC_OK");
 
     if manager.spawn_init(HOLD_TASK, true).is_err() {
         fail("USER_ASYNC_HOLD_FAILED");
@@ -5180,8 +5160,8 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_RECLAIM_FAILED");
     }
-    crate::serial::println("USER_KILL_OK");
-    crate::serial::println("USER_WAIT_OK");
+    crate::serial::trace::println("USER_KILL_OK");
+    crate::serial::trace::println("USER_WAIT_OK");
 
     let (parent_pid, child_pid) = manager
         .spawn_coordination_pair(PARENT_TASK, CHILD_TASK)
@@ -5220,10 +5200,10 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_COORDINATION_REAP_FAILED");
     }
-    crate::serial::println("USER_SLEEP_OK");
-    crate::serial::println("USER_CHILD_WAIT_OK");
-    crate::serial::println("USER_MESSAGE_OK");
-    crate::serial::println("USER_COORDINATION_OK");
+    crate::serial::trace::println("USER_SLEEP_OK");
+    crate::serial::trace::println("USER_CHILD_WAIT_OK");
+    crate::serial::trace::println("USER_MESSAGE_OK");
+    crate::serial::trace::println("USER_COORDINATION_OK");
 
     // The fan-in image sleeps 5 / 10 / 800 ticks before its first send, and
     // producer A waits another 2,000 after its refused send, so the stage cannot
@@ -5307,10 +5287,10 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_FANIN_REAP_FAILED");
     }
-    crate::serial::println("USER_ENDPOINT_CAPABILITY_OK");
-    crate::serial::println("USER_CHANNEL_FAIRNESS_OK");
-    crate::serial::println("USER_ENDPOINT_WAKE_OK");
-    crate::serial::println("USER_FANIN_OK");
+    crate::serial::trace::println("USER_ENDPOINT_CAPABILITY_OK");
+    crate::serial::trace::println("USER_CHANNEL_FAIRNESS_OK");
+    crate::serial::trace::println("USER_ENDPOINT_WAKE_OK");
+    crate::serial::trace::println("USER_FANIN_OK");
 
     if manager.spawn_file_init(FILE_TASK).is_err() {
         fail("USER_FILE_SPAWN_FAILED");
@@ -5409,12 +5389,12 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_FILE_PROBE_FAILED");
     }
-    crate::serial::println("USER_STRUCT_COPY_OK");
-    crate::serial::println("USER_VFS_BLOCKING_OK");
-    crate::serial::println("USER_FILE_CAPABILITY_OK");
-    crate::serial::println("USER_FILE_OFFSET_OK");
-    crate::serial::println("USER_FILE_CLOSE_OK");
-    crate::serial::println("USER_ASYNC_ONE_SHOT_OK");
+    crate::serial::trace::println("USER_STRUCT_COPY_OK");
+    crate::serial::trace::println("USER_VFS_BLOCKING_OK");
+    crate::serial::trace::println("USER_FILE_CAPABILITY_OK");
+    crate::serial::trace::println("USER_FILE_OFFSET_OK");
+    crate::serial::trace::println("USER_FILE_CLOSE_OK");
+    crate::serial::trace::println("USER_ASYNC_ONE_SHOT_OK");
 
     if vfs.find("/USER/APP.TXT").is_some() || manager.spawn_write_init(CANCELED_VFS_TASK).is_err() {
         fail("USER_ASYNC_CANCELLATION_SETUP_FAILED");
@@ -5449,8 +5429,8 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_ASYNC_CANCELLATION_FAILED");
     }
-    crate::serial::println("USER_ASYNC_REQUEST_ID_OK");
-    crate::serial::println("USER_ASYNC_CANCELLATION_OK");
+    crate::serial::trace::println("USER_ASYNC_REQUEST_ID_OK");
+    crate::serial::trace::println("USER_ASYNC_CANCELLATION_OK");
 
     if manager.spawn_write_init(WRITE_TASK).is_err() {
         fail("USER_FILE_WRITE_SPAWN_FAILED");
@@ -5557,9 +5537,9 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_FILE_WRITE_PROBE_FAILED");
     }
-    crate::serial::println("USER_FILE_WRITE_OK");
-    crate::serial::println("USER_FILE_WRITE_POLICY_OK");
-    crate::serial::println("USER_FILE_WRITE_READBACK_OK");
+    crate::serial::trace::println("USER_FILE_WRITE_OK");
+    crate::serial::trace::println("USER_FILE_WRITE_POLICY_OK");
+    crate::serial::trace::println("USER_FILE_WRITE_READBACK_OK");
 
     if manager.spawn_input_init(INPUT_TASK).is_err() {
         fail("USER_INPUT_SPAWN_FAILED");
@@ -5631,21 +5611,21 @@ pub fn run_lifecycle_probe(vfs: &mut RamVfs) {
     {
         fail("USER_INPUT_PROBE_FAILED");
     }
-    crate::serial::println("USER_INPUT_BLOCK_OK");
-    crate::serial::println("USER_INPUT_FILTER_OK");
-    crate::serial::println("USER_INPUT_OWNERSHIP_OK");
-    crate::serial::println("USER_INPUT_WAKE_OK");
-    crate::serial::println("USER_ASYNC_LIFECYCLE_OK");
+    crate::serial::trace::println("USER_INPUT_BLOCK_OK");
+    crate::serial::trace::println("USER_INPUT_FILTER_OK");
+    crate::serial::trace::println("USER_INPUT_OWNERSHIP_OK");
+    crate::serial::trace::println("USER_INPUT_WAKE_OK");
+    crate::serial::trace::println("USER_ASYNC_LIFECYCLE_OK");
 }
 
 pub fn run_supervisor_cleanup_probe() {
     run_supervisor_cleanup_case(ManagedState::Exited, 0x1100, 0x1101);
     run_supervisor_cleanup_case(ManagedState::Faulted, 0x1102, 0x1103);
     run_supervisor_cleanup_case(ManagedState::Killed, 0x1104, 0x1105);
-    crate::serial::println("USER_SUPERVISOR_POLICY_OK");
-    crate::serial::println("USER_SUPERVISOR_NO_STALE_TASKS_OK");
-    crate::serial::println("USER_SUPERVISOR_NO_STALE_HANDLES_OK");
-    crate::serial::println("USER_SUPERVISOR_PENDING_CANCEL_OK");
+    crate::serial::trace::println("USER_SUPERVISOR_POLICY_OK");
+    crate::serial::trace::println("USER_SUPERVISOR_NO_STALE_TASKS_OK");
+    crate::serial::trace::println("USER_SUPERVISOR_NO_STALE_HANDLES_OK");
+    crate::serial::trace::println("USER_SUPERVISOR_PENDING_CANCEL_OK");
 }
 
 pub fn run_transactional_rollback_probe() {
@@ -5818,10 +5798,10 @@ pub fn run_transactional_rollback_probe() {
     {
         fail("USER_ROLLBACK_FINAL_LEAK");
     }
-    crate::serial::println("USER_ROLLBACK_FULL_TABLE_OK");
-    crate::serial::println("USER_ROLLBACK_LAUNCH_REFUSED_OK");
-    crate::serial::println("USER_ROLLBACK_COPYOUT_OK");
-    crate::serial::println("USER_ROLLBACK_CANCELLATION_OK");
+    crate::serial::trace::println("USER_ROLLBACK_FULL_TABLE_OK");
+    crate::serial::trace::println("USER_ROLLBACK_LAUNCH_REFUSED_OK");
+    crate::serial::trace::println("USER_ROLLBACK_COPYOUT_OK");
+    crate::serial::trace::println("USER_ROLLBACK_CANCELLATION_OK");
 }
 
 pub fn run_process_generation_stress_probe() {
@@ -5918,9 +5898,9 @@ pub fn run_process_generation_stress_probe() {
     if active_process_count() != active_before || manager.slots.iter().any(Option::is_some) {
         fail("USER_GENERATION_STRESS_FINAL_LEAK");
     }
-    crate::serial::println("USER_PROCESS_GENERATION_STRESS_OK launches=257");
-    crate::serial::println("USER_PID_REUSE_SAFE_OK");
-    crate::serial::println("USER_STALE_PROCESS_HANDLE_REJECTED_OK");
+    crate::serial::trace::println("USER_PROCESS_GENERATION_STRESS_OK launches=257");
+    crate::serial::trace::println("USER_PID_REUSE_SAFE_OK");
+    crate::serial::trace::println("USER_STALE_PROCESS_HANDLE_REJECTED_OK");
 }
 
 fn run_supervisor_cleanup_case(state: ManagedState, owner_task: u32, child_task: u32) {
@@ -6035,8 +6015,8 @@ fn run_supervisor_cleanup_case(state: ManagedState, owner_task: u32, child_task:
     {
         fail("USER_SUPERVISOR_PROBE_STALE_STATE_FAILED");
     }
-    crate::serial::print("USER_SUPERVISOR_CLEANUP_OK mode=");
-    crate::serial::println(match state {
+    crate::serial::trace::print("USER_SUPERVISOR_CLEANUP_OK mode=");
+    crate::serial::trace::println(match state {
         ManagedState::Exited => "exit",
         ManagedState::Faulted => "fault",
         ManagedState::Killed => "kill",
@@ -6146,7 +6126,9 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
                 }
             }
             if paging::map_user_page(space, virtual_address, frame, writable, executable).is_err() {
-                let _ = memory::free_frame(frame);
+                // SAFETY: mapping failed before publishing this new image-page
+                // grant. The constructor is its sole owner and has no live user.
+                let _ = unsafe { memory::free_frame(frame) };
                 return Err(ProcessBuildError::Paging);
             }
             if virtual_address == paging::USER_DATA
@@ -6207,17 +6189,19 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         )
         .is_err()
         {
-            let _ = memory::free_frame(stack_frame);
+            // SAFETY: this newly allocated stack page was never published;
+            // the failed constructor still owns it exclusively.
+            let _ = unsafe { memory::free_frame(stack_frame) };
             let _ = paging::destroy_user_address_space(space);
             return Err(ProcessBuildError::Paging);
         }
     }
 
-    crate::serial::print("USER_ELF_LOADED pid=");
-    crate::serial::print_u64(pid as u64);
-    crate::serial::print(" root=0x");
-    crate::serial::print_hex(space.root());
-    crate::serial::println("");
+    crate::serial::trace::print("USER_ELF_LOADED pid=");
+    crate::serial::trace::print_u64(pid as u64);
+    crate::serial::trace::print(" root=0x");
+    crate::serial::trace::print_hex(space.root());
+    crate::serial::trace::println("");
 
     ADDRESS_SPACES.fetch_add(1, Ordering::AcqRel);
     ACTIVE_PROCESSES.fetch_add(1, Ordering::AcqRel);
@@ -6262,11 +6246,11 @@ fn reclaim_process(process: &mut UserProcess) -> Result<u64, paging::PagingError
     ACTIVE_PROCESSES.fetch_sub(1, Ordering::AcqRel);
     RECLAIMED_SPACES.fetch_add(1, Ordering::AcqRel);
     RECLAIMED_FRAMES.fetch_add(released, Ordering::AcqRel);
-    crate::serial::print("USER_FRAMES_RECLAIMED pid=");
-    crate::serial::print_u64(process.pid as u64);
-    crate::serial::print(" frames=");
-    crate::serial::print_u64(released);
-    crate::serial::println("");
+    crate::serial::trace::print("USER_FRAMES_RECLAIMED pid=");
+    crate::serial::trace::print_u64(process.pid as u64);
+    crate::serial::trace::print(" frames=");
+    crate::serial::trace::print_u64(released);
+    crate::serial::trace::println("");
     Ok(released)
 }
 
@@ -6313,9 +6297,9 @@ pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
         );
     }
     if process.preemptions == 1 {
-        crate::serial::print("USER_PREEMPT pid=");
-        crate::serial::print_u64(process.pid as u64);
-        crate::serial::println("");
+        crate::serial::trace::print("USER_PREEMPT pid=");
+        crate::serial::trace::print_u64(process.pid as u64);
+        crate::serial::trace::println("");
     }
     true
 }
@@ -6337,33 +6321,33 @@ fn terminate_process_fault(process: &mut UserProcess, vector: u8, error: u64, ri
     process.completed = true;
     process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
     LOCAL_FAULTS.fetch_add(1, Ordering::AcqRel);
-    crate::serial::print("USER_FAULT_TERMINATED pid=");
-    crate::serial::print_u64(process.pid as u64);
-    crate::serial::print(" vector=");
-    crate::serial::print_u64(vector as u64);
-    crate::serial::print(" error=0x");
-    crate::serial::print_hex(error);
-    crate::serial::print(" rip=0x");
-    crate::serial::print_hex(rip);
-    crate::serial::print(" cr2=0x");
-    crate::serial::print_hex(cr2);
-    crate::serial::println("");
+    crate::serial::trace::print("USER_FAULT_TERMINATED pid=");
+    crate::serial::trace::print_u64(process.pid as u64);
+    crate::serial::trace::print(" vector=");
+    crate::serial::trace::print_u64(vector as u64);
+    crate::serial::trace::print(" error=0x");
+    crate::serial::trace::print_hex(error);
+    crate::serial::trace::print(" rip=0x");
+    crate::serial::trace::print_hex(rip);
+    crate::serial::trace::print(" cr2=0x");
+    crate::serial::trace::print_hex(cr2);
+    crate::serial::trace::println("");
 }
 
 #[no_mangle]
 extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
     let frame = unsafe { &mut *frame };
     let Some(process) = current_process() else {
-        crate::serial::println("USER_PROCESS_MISSING");
+        crate::serial::trace::println("USER_PROCESS_MISSING");
         return 1;
     };
     if !valid_user_frame(frame, process) {
         terminate_process_fault(process, 13, 0, frame.rip, 0);
-        crate::serial::println("USER_CONTEXT_INVALID");
+        crate::serial::trace::println("USER_CONTEXT_INVALID");
         return 1;
     }
     if !CONTEXT_PASSED.swap(true, Ordering::AcqRel) {
-        crate::serial::println("USER_CONTEXT_OK");
+        crate::serial::trace::println("USER_CONTEXT_OK");
     }
 
     let number = frame.rax;
@@ -6375,14 +6359,14 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             if number == syscall::SYSCALL_PING && value == syscall::PING_REPLY {
                 let count = PING_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
                 if count == PROCESS_COUNT as u8 {
-                    crate::serial::println("USER_SYSCALL_OK");
+                    crate::serial::trace::println("USER_SYSCALL_OK");
                 }
             }
             if number == syscall::SYSCALL_ABI_VERSION && value == syscall::USER_ABI_VERSION {
                 process.preemption_armed = true;
                 let count = ABI_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
                 if count == PROCESS_COUNT as u8 {
-                    crate::serial::println("USER_ABI_OK");
+                    crate::serial::trace::println("USER_ABI_OK");
                 }
             }
             frame.rax = value;
@@ -6393,9 +6377,9 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.context = *frame;
             process.event = ProcessEvent::Yield;
             process.yields = process.yields.saturating_add(1);
-            crate::serial::print("USER_YIELD pid=");
-            crate::serial::print_u64(process.pid as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_YIELD pid=");
+            crate::serial::trace::print_u64(process.pid as u64);
+            crate::serial::trace::println("");
             1
         }
         Ok(SyscallAction::Report { address, length }) => {
@@ -6404,7 +6388,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 frame.rax = value;
                 let count = REPORT_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
                 if count == HEALTHY_PROCESS_COUNT {
-                    crate::serial::println("USER_COPY_OK");
+                    crate::serial::trace::println("USER_COPY_OK");
                 }
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -6417,12 +6401,12 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
                 process.output_pending = true;
                 frame.rax = length;
                 let count = WRITE_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-                crate::serial::print("USER_OUTPUT pid=");
-                crate::serial::print_u64(process.pid as u64);
-                crate::serial::print(" text=");
-                crate::serial::println(text.as_str());
+                crate::serial::trace::print("USER_OUTPUT pid=");
+                crate::serial::trace::print_u64(process.pid as u64);
+                crate::serial::trace::print(" text=");
+                crate::serial::trace::println(text.as_str());
                 if count == HEALTHY_PROCESS_COUNT {
-                    crate::serial::println("USER_OUTPUT_OK");
+                    crate::serial::trace::println("USER_OUTPUT_OK");
                 }
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -6475,7 +6459,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             if length as usize == bytes.len() && copy_to_user_data(process, address, bytes) {
                 frame.rax = length;
                 if !COPY_OUT_PASSED.swap(true, Ordering::AcqRel) {
-                    crate::serial::println("USER_COPY_OUT_OK");
+                    crate::serial::trace::println("USER_COPY_OUT_OK");
                 }
             } else {
                 frame.rax = syscall::error_code(syscall::SyscallError::InvalidArgument);
@@ -7020,11 +7004,11 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
             process.exit_code = code;
             process.completed = true;
             process.completion_order = COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
-            crate::serial::print("USER_EXIT pid=");
-            crate::serial::print_u64(process.pid as u64);
-            crate::serial::print(" code=");
-            crate::serial::print_u64(code as u64);
-            crate::serial::println("");
+            crate::serial::trace::print("USER_EXIT pid=");
+            crate::serial::trace::print_u64(process.pid as u64);
+            crate::serial::trace::print(" code=");
+            crate::serial::trace::print_u64(code as u64);
+            crate::serial::trace::println("");
             1
         }
         // The legacy direct-PID actions stay reserved in the shared ABI but are
@@ -7171,12 +7155,7 @@ fn complete_network_exchange(
 
 fn copy_user_path(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
     let path = copy_user_text(process, address, length)?;
-    if !path.as_str().starts_with('/')
-        || !path
-            .as_str()
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
-    {
+    if !valid_absolute_path(path.as_str()) {
         return None;
     }
     Some(path)
@@ -7184,13 +7163,7 @@ fn copy_user_path(process: &UserProcess, address: u64, length: u64) -> Option<Fi
 
 fn copy_user_name(process: &UserProcess, address: u64, length: u64) -> Option<FixedText> {
     let name = copy_user_text(process, address, length)?;
-    if name.as_str() == "."
-        || name.as_str() == ".."
-        || !name
-            .as_str()
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
+    if !valid_name(name.as_str()) {
         return None;
     }
     Some(name)
@@ -7314,30 +7287,4 @@ fn fail(marker: &str) -> ! {
     paging::activate_kernel();
     crate::serial::println(marker);
     arch::halt_loop();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn namespace_children_stay_beneath_the_owned_directory() {
-        let parent = FixedText::from_str("/USER/PROJECTS");
-        assert_eq!(
-            join_child_path(parent, FixedText::from_str("GENOS"))
-                .expect("valid child")
-                .as_str(),
-            "/USER/PROJECTS/GENOS"
-        );
-        assert!(join_child_path(parent, FixedText::from_str("..")).is_none());
-        assert!(join_child_path(parent, FixedText::from_str("nested/name")).is_none());
-        assert!(paths_equal("/USER/NOTE.TXT", "/user/note.txt"));
-        assert!(is_user_writable_path("/user/note.txt"));
-        assert!(is_user_writable_directory("/user"));
-        assert!(join_child_path(
-            FixedText::from_str("/USER/ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOPQRST"),
-            FixedText::from_str("TOO-LONG")
-        )
-        .is_none());
-    }
 }

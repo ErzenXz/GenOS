@@ -296,8 +296,8 @@ impl NetworkStack {
         }
         if !self.ipv6_reported && host.state == ipv6::State::Ready && host.echo_reply {
             self.ipv6_reported = true;
-            serial::println("IPV6_SLAAC_READY prefix=ra dad=passed");
-            serial::println("IPV6_ICMP_ECHO_OK");
+            serial::trace::println("IPV6_SLAAC_READY prefix=ra dad=passed");
+            serial::trace::println("IPV6_ICMP_ECHO_OK");
         }
     }
 

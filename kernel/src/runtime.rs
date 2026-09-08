@@ -215,11 +215,11 @@ impl RuntimeCoordinator {
             if self.completed_vfs_requests > initial_vfs
                 && self.completed_lifecycle_launches > initial_lifecycle
             {
-                serial::print("HEADLESS_RUNTIME_OK vfs=");
-                serial::print_u64(self.completed_vfs_requests - initial_vfs);
-                serial::print(" lifecycle=");
-                serial::print_u64(self.completed_lifecycle_launches - initial_lifecycle);
-                serial::println("");
+                serial::trace::print("HEADLESS_RUNTIME_OK vfs=");
+                serial::trace::print_u64(self.completed_vfs_requests - initial_vfs);
+                serial::trace::print(" lifecycle=");
+                serial::trace::print_u64(self.completed_lifecycle_launches - initial_lifecycle);
+                serial::trace::println("");
                 return true;
             }
         }
@@ -258,8 +258,8 @@ impl RuntimeCoordinator {
             return false;
         }
         if saw_echo_prompt && saw_echo_output && saw_uname_prompt && saw_uname_output {
-            serial::println("USER_CONSOLE_TRANSCRIPT_OK commands=2");
-            serial::println("USER_CONSOLE_HEADLESS_OK");
+            serial::trace::println("USER_CONSOLE_TRANSCRIPT_OK commands=2");
+            serial::trace::println("USER_CONSOLE_HEADLESS_OK");
             true
         } else {
             false
@@ -354,7 +354,7 @@ impl RuntimeCoordinator {
                 if self.pending_socket_request.is_none() {
                     self.pending_socket_request = Some(request);
                 } else if let Ok(owner) = self.processes.complete_socket_request(request, None) {
-                    serial::println("USER_SOCKET_TRANSPORT_QUEUE_FULL");
+                    serial::trace::println("USER_SOCKET_TRANSPORT_QUEUE_FULL");
                     batch.push(RuntimeEvent::Process(owner));
                 }
             }
@@ -388,7 +388,7 @@ impl RuntimeCoordinator {
             return;
         };
         if !self.processes.lifecycle_request_active(pending) {
-            serial::println("USER_LIFECYCLE_STALE_REQUEST_DROPPED");
+            serial::trace::println("USER_LIFECYCLE_STALE_REQUEST_DROPPED");
             return;
         }
         let userspace::UserLifecycleRequest::Launch(request) = pending;
@@ -417,7 +417,7 @@ impl RuntimeCoordinator {
             return;
         };
         if !self.processes.vfs_request_active(request) {
-            serial::println("USER_VFS_STALE_REQUEST_DROPPED");
+            serial::trace::println("USER_VFS_STALE_REQUEST_DROPPED");
             return;
         }
         let identity = request.identity();
@@ -434,7 +434,7 @@ impl RuntimeCoordinator {
                     || (manageable && !writable && mutable_path);
                 if self.persistent_write_denied(request.path.as_str()) && (writable || manageable) {
                     allowed = false;
-                    serial::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
+                    serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                 }
                 if allowed
                     && writable
@@ -482,7 +482,7 @@ impl RuntimeCoordinator {
             }
             userspace::UserVfsRequest::Write(request) => {
                 let written = if self.persistent_write_denied(request.path.as_str()) {
-                    serial::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
+                    serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     None
                 } else {
                     capture_vfs(&self.vfs);
@@ -501,7 +501,7 @@ impl RuntimeCoordinator {
             }
             userspace::UserVfsRequest::Truncate(request) => {
                 let truncated = if self.persistent_write_denied(request.path.as_str()) {
-                    serial::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
+                    serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     false
                 } else {
                     capture_vfs(&self.vfs);
@@ -534,7 +534,7 @@ impl RuntimeCoordinator {
             }
             userspace::UserVfsRequest::CreateDirectory(request) => {
                 let created = if self.persistent_write_denied(request.target.as_str()) {
-                    serial::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
+                    serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     false
                 } else {
                     capture_vfs(&self.vfs);
@@ -545,7 +545,7 @@ impl RuntimeCoordinator {
             }
             userspace::UserVfsRequest::RemovePath(request) => {
                 let removed = if self.persistent_write_denied(request.target.as_str()) {
-                    serial::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
+                    serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     false
                 } else {
                     capture_vfs(&self.vfs);
@@ -574,7 +574,7 @@ impl RuntimeCoordinator {
             network::cancel_socket_async();
             self.pending_socket_request = None;
             self.socket_transport_started = false;
-            serial::println(match request.protocol {
+            serial::trace::println(match request.protocol {
                 SocketProtocol::Udp => "USER_SOCKET_STALE_REQUEST_DROPPED protocol=udp",
                 SocketProtocol::TcpStream => "USER_SOCKET_STALE_REQUEST_DROPPED protocol=tcp",
             });
@@ -613,7 +613,7 @@ impl RuntimeCoordinator {
                 return;
             }
             self.socket_transport_started = true;
-            serial::println(match request.protocol {
+            serial::trace::println(match request.protocol {
                 SocketProtocol::Udp => "USER_SOCKET_TRANSPORT_STARTED protocol=udp",
                 SocketProtocol::TcpStream => "USER_SOCKET_TRANSPORT_STARTED protocol=tcp",
             });
@@ -649,7 +649,7 @@ impl RuntimeCoordinator {
                 self.socket_transport_started = false;
                 if let Ok(update) = completion {
                     self.last_completed_socket_identity = Some(identity);
-                    serial::println(match request.protocol {
+                    serial::trace::println(match request.protocol {
                         SocketProtocol::Udp => "USER_SOCKET_TRANSPORT_COMPLETE protocol=udp",
                         SocketProtocol::TcpStream => "USER_SOCKET_TRANSPORT_COMPLETE protocol=tcp",
                     });
@@ -719,7 +719,7 @@ impl RuntimeCoordinator {
             if !self.processes.tcp_listener_active(handshake.listener) {
                 network::cancel_tcp_passive(handshake.tuple);
                 self.tcp_handshakes[index] = None;
-                serial::println("TCP_PASSIVE_STALE_LISTENER_DROPPED");
+                serial::trace::println("TCP_PASSIVE_STALE_LISTENER_DROPPED");
             }
         }
         match network::poll_tcp_passive(tick) {
@@ -731,7 +731,7 @@ impl RuntimeCoordinator {
                 };
                 if self.passive_owner_count(listener) >= PASSIVE_TCP_PER_PROCESS_BUDGET {
                     network::reject_tcp_syn(syn);
-                    serial::println("TCP_PASSIVE_OWNER_BUDGET_REFUSED");
+                    serial::trace::println("TCP_PASSIVE_OWNER_BUDGET_REFUSED");
                     return;
                 }
                 let Some(free) = self.tcp_handshakes.iter().position(Option::is_none) else {
@@ -747,7 +747,7 @@ impl RuntimeCoordinator {
                         },
                         listener,
                     });
-                    serial::println("TCP_PASSIVE_SYN_ACCEPTED");
+                    serial::trace::println("TCP_PASSIVE_SYN_ACCEPTED");
                 } else {
                     network::reject_tcp_syn(syn);
                 }
@@ -784,17 +784,17 @@ impl RuntimeCoordinator {
                         false
                     }
                 }) {
-                    serial::println("TCP_PASSIVE_HANDSHAKE_OK");
+                    serial::trace::println("TCP_PASSIVE_HANDSHAKE_OK");
                 } else {
                     network::reject_tcp_peer(peer);
-                    serial::println("TCP_PASSIVE_BACKLOG_REFUSED");
+                    serial::trace::println("TCP_PASSIVE_BACKLOG_REFUSED");
                 }
             }
             network::PassiveTcpProgress::Failed(failure) => {
                 if let Some(index) = self.handshake_index(failure) {
                     self.tcp_handshakes[index] = None;
                 }
-                serial::println("TCP_PASSIVE_TIMEOUT");
+                serial::trace::println("TCP_PASSIVE_TIMEOUT");
             }
         }
     }
@@ -817,7 +817,7 @@ impl RuntimeCoordinator {
             {
                 network::cancel_tcp_passive_stream(state.peer);
                 self.tcp_streams[index] = None;
-                serial::println("TCP_PASSIVE_STREAM_STALE_CAPABILITY");
+                serial::trace::println("TCP_PASSIVE_STREAM_STALE_CAPABILITY");
                 continue;
             }
             if state.stream.is_none() {
@@ -830,7 +830,7 @@ impl RuntimeCoordinator {
                 {
                     network::cancel_tcp_passive_stream(state.peer);
                     self.tcp_streams[index] = None;
-                    serial::println("TCP_PASSIVE_STREAM_UNCLAIMED");
+                    serial::trace::println("TCP_PASSIVE_STREAM_UNCLAIMED");
                     continue;
                 }
             }
@@ -843,7 +843,7 @@ impl RuntimeCoordinator {
                 }
                 network::cancel_tcp_passive_stream(state.peer);
                 self.tcp_streams[index] = None;
-                serial::println("TCP_PASSIVE_STREAM_STALE_SEND");
+                serial::trace::println("TCP_PASSIVE_STREAM_STALE_SEND");
                 continue;
             }
             self.tcp_streams[index] = Some(state);
@@ -863,7 +863,7 @@ impl RuntimeCoordinator {
                         .is_ok()
                 }) && network::consume_tcp_passive_stream_receive(peer)
                 {
-                    serial::println("TCP_PASSIVE_STREAM_RX_OK");
+                    serial::trace::println("TCP_PASSIVE_STREAM_RX_OK");
                 }
             }
             network::PassiveTcpStreamProgress::SendComplete(peer) => {
@@ -876,7 +876,7 @@ impl RuntimeCoordinator {
                         if let Some(state) = self.tcp_streams[index].as_mut() {
                             state.send = None;
                         }
-                        serial::println("TCP_PASSIVE_STREAM_TX_OK");
+                        serial::trace::println("TCP_PASSIVE_STREAM_TX_OK");
                     }
                 }
             }
@@ -889,7 +889,7 @@ impl RuntimeCoordinator {
                     self.processes.mark_tcp_stream_read_closed(stream).is_ok()
                 }) && network::consume_tcp_passive_peer_close(peer)
                 {
-                    serial::println("TCP_PASSIVE_STREAM_PEER_FIN_OK");
+                    serial::trace::println("TCP_PASSIVE_STREAM_PEER_FIN_OK");
                 }
             }
             network::PassiveTcpStreamProgress::Closed(peer) => {
@@ -901,7 +901,7 @@ impl RuntimeCoordinator {
                     .is_some_and(|stream| self.processes.mark_tcp_stream_closed(stream).is_ok())
                     && network::finish_tcp_passive_stream(peer)
                 {
-                    serial::println("TCP_PASSIVE_STREAM_FIN_OK");
+                    serial::trace::println("TCP_PASSIVE_STREAM_FIN_OK");
                 }
                 if let Some(index) = index {
                     self.tcp_streams[index] = None;
@@ -920,7 +920,7 @@ impl RuntimeCoordinator {
                     self.tcp_streams[index] = None;
                 }
                 let _ = network::finish_tcp_passive_stream(peer);
-                serial::println("TCP_PASSIVE_STREAM_FAILED");
+                serial::trace::println("TCP_PASSIVE_STREAM_FAILED");
             }
         }
 
@@ -943,7 +943,7 @@ impl RuntimeCoordinator {
                         let _ = self.processes.fail_tcp_stream(stream);
                         network::cancel_tcp_passive_stream(state.peer);
                         self.tcp_streams[index] = None;
-                        serial::println("TCP_PASSIVE_STREAM_FAILED");
+                        serial::trace::println("TCP_PASSIVE_STREAM_FAILED");
                         continue;
                     }
                 }
@@ -954,12 +954,12 @@ impl RuntimeCoordinator {
             {
                 if network::start_tcp_passive_stream_close(state.peer, tick) {
                     state.close_started = true;
-                    serial::println("TCP_PASSIVE_STREAM_FIN_SENT");
+                    serial::trace::println("TCP_PASSIVE_STREAM_FIN_SENT");
                 } else {
                     let _ = self.processes.fail_tcp_stream(stream);
                     network::cancel_tcp_passive_stream(state.peer);
                     self.tcp_streams[index] = None;
-                    serial::println("TCP_PASSIVE_STREAM_FAILED");
+                    serial::trace::println("TCP_PASSIVE_STREAM_FAILED");
                     continue;
                 }
             }
@@ -972,7 +972,7 @@ impl RuntimeCoordinator {
             return true;
         }
         restore_vfs(&mut self.vfs);
-        serial::println("PERSISTENT_WRITE_FAILED");
+        serial::trace::println("PERSISTENT_WRITE_FAILED");
         false
     }
 

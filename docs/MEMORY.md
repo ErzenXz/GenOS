@@ -21,7 +21,8 @@ Malformed, unissued and duplicate releases perform no page writes. If a release
 preparation callback fails, the allocation remains live. Physical write faults
 halt rather than granting an incompletely scrubbed page to another caller.
 
-Callers must retire references and active mappings before release. The process
+The physical release function is explicitly unsafe: callers must own the grant
+and retire references and active mappings before release. The process
 teardown path switches to the kernel address space before returning user pages;
 page-table rollback releases only its own allocations. A raw frame address is
 still not a caller identity token: foreign live-grant release, physical alias
