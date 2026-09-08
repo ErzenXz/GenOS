@@ -72,7 +72,7 @@ This gate blocks production or hardened-release language. It also blocks broad n
 Goal: every proposed change reaches all tests instead of failing early or depending on an undocumented local environment.
 
 - [x] `main` passes formatting, Clippy for every shipped target, workspace tests, image build, and QEMU boot.
-- [ ] The supported Rust toolchain and minimum supported Rust version are explicit and tested.
+- [x] The supported Rust toolchain and minimum supported Rust version are explicit and tested.
 - [ ] CI runs debug and release image builds where their behavior differs.
 - [ ] Failure artifacts include serial output and enough configuration to reproduce the run.
 - [ ] Required checks cannot be skipped by an earlier non-behavioral warning.
@@ -156,15 +156,15 @@ Acceptance proof:
 
 - [ ] A source-boundary test prevents presentation code from mutating runtime-owned state.
 - [ ] Module documentation identifies ownership, synchronization, failure behavior, and cleanup.
-- [ ] A contributor can change one typed handle family without editing unrelated process-context or ELF-loader code.
-- [ ] The unsafe inventory is generated or checked in CI and cannot silently shrink its review context.
+- [x] A contributor can change one typed handle family without editing unrelated process-context or ELF-loader code.
+- [x] The unsafe inventory is generated or checked in CI and cannot silently shrink its review context.
 
 ### F5 — Explicit single-core and concurrency model
 
 Goal: make the current single-core design safe now and prepare a deliberate path to SMP.
 
-- [ ] Detect and reject accidental application-processor startup until SMP support exists.
-- [ ] Document interrupt masking, nesting, preemption, and shared-state rules.
+- [x] Detect and reject accidental application-processor startup until SMP support exists.
+- [x] Document interrupt masking, nesting, preemption, and shared-state rules.
 - [ ] Replace unsynchronized mutable globals with explicit single-core critical sections or IRQ-safe synchronization.
 - [ ] Move current process, active address space, scheduler-local state, and interrupt-local state behind a per-CPU abstraction before starting a second CPU.
 - [ ] Define lock ordering and which locks may be acquired in interrupt context.
@@ -174,25 +174,34 @@ Acceptance proof:
 
 - [ ] Static or host-side checks find no unguarded mutable global reachable from both normal and interrupt context.
 - [ ] Nested or delayed interrupt tests preserve process and scheduler state.
-- [ ] SMP remains disabled with an explicit diagnostic until per-CPU state and shootdowns pass their tests.
+- [x] SMP remains disabled with an explicit diagnostic until per-CPU state and shootdowns pass their tests.
 
 ### F6 — Test boot, release boot, fuzzing, and fault injection
 
 Goal: preserve deep validation without making a normal boot run development stress suites.
 
-- [ ] Separate deterministic validation boot from the normal release boot through an explicit build or boot policy.
+- [x] Separate deterministic validation boot from the normal release boot through an explicit build or boot policy.
 - [ ] Keep only cheap invariant checks in the release path.
-- [ ] Move process-generation stress, rollback probes, parser corpora, and protocol fault suites into dedicated test modes.
+- [x] Move process-generation stress, rollback probes, parser corpora, and protocol fault suites into dedicated test modes.
 - [ ] Add fuzz targets for ELF, boot contracts, filesystem snapshots, partition metadata, network frames, DNS, and TCP classifiers.
 - [ ] Add deterministic allocation, I/O, packet loss, duplication, delay, reordering, reset, and cancellation injection.
 - [ ] Run long boot and lifecycle repetition outside the fast pull-request lane and publish failures as artifacts.
 
 Acceptance proof:
 
-- [ ] A release boot reaches the shell without executing stress probes.
-- [ ] A test boot proves the same subsystem contracts and fails when a required probe is removed.
+- [x] A release boot reaches the shell without executing stress probes.
+- [x] A test boot proves the same subsystem contracts and fails when a required probe is removed.
 - [ ] Fuzz targets retain regression inputs for every fixed crash or invariant violation.
 - [ ] At least 1,000 repeated reference-VM boots and process lifecycles complete without leaked authority or memory before the hardened-preview label.
+
+The normal/validation continuation adds [explicit boot policies](docs/BOOT_MODES.md),
+[BSP admission and an owned boot stack](docs/SINGLE_CORE.md), a
+[checked lexical unsafe inventory](docs/UNSAFE_INVENTORY.md), and
+[production parser/socket mutation stress](tools/parser-stress/README.md).
+The endpoint capability family now lives in a host-tested module with private
+state. These close selected criteria, not F0-F7 as a whole. New CI jobs and the
+weekly 1000-boot lane require a successful remote run before claiming CI evidence;
+five local repeated boots do not satisfy the 1000-boot acceptance threshold.
 
 ### F7 — Reviewable delivery process
 

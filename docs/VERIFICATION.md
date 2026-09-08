@@ -23,7 +23,7 @@ The [development benchmark](PERFORMANCE.md) records the earlier GenOS 0.55 basel
 
 ## Remaining limits
 
-F0's separate release-image boot still remains open. CPU protection coverage does not establish physical-frame-wide W^X, missing-NX or mixed optional-feature VM proofs, emergency-stack guards/nesting, XSTATE, or physical hardware support. The allocator manages up to 8 GiB of usable frames across 64 regions; firmware-map truncation, larger metadata, per-owner frame tokens, sensitive-page scrubbing, contiguous allocations and SMP remain future work. Validation probes still run in normal development boot.
+The original integration did not include a separate release-image boot; the continuation below closes that local evidence gap. CPU protection coverage does not establish physical-frame-wide W^X, missing-NX or mixed optional-feature VM proofs, emergency-stack guards/nesting, XSTATE, or physical hardware support. The allocator manages up to 8 GiB of usable frames across 64 regions; firmware-map truncation, larger metadata, per-owner frame tokens, sensitive-page scrubbing, contiguous allocations and SMP remain future work. Validation probes ran in normal development boot at the original integration; the continuation below separates those policies.
 
 Production TCP/IPv6 sockets and DNS, identity and reviewed TLS, signed packages, general application launch, userspace graphics/accessibility, ACPI/SMP, xHCI/NVMe, suspend/resume and real-machine validation remain roadmap gates. Run the current console OS with `make run`.
 
@@ -34,3 +34,47 @@ After RX batching removed artificial delays, the native test exposed a second ti
 An intermittent Linux CI persistent-write failure did not recur in eight isolated native serial boots or the next instrumented CI run. ATA status tests did expose two concrete protocol errors: BUSY status could be treated as a completed error, and non-busy DRQ status could be treated as command completion. Those cases now wait correctly. Bounded polling and explicit command-error/timeout diagnostics remain; the exact cause of the earlier CI write failure was not established.
 
 GitHub validation for PR #7: [CI](https://github.com/ErzenXz/GenOS/actions/runs/34171042822) and [exception proofs](https://github.com/ErzenXz/GenOS/actions/runs/34171042829) passed on the final reviewed branch head. The prior local main/history are retained in backup branches.
+
+
+## Foundation continuation — 2026-09-08
+
+The development branch now separates normal and validation startup, rejects
+non-BSP/repeated entry, uses a kernel-owned boot stack, extracts endpoint authority
+into a host-testable module, retains deterministic parser regressions, and checks
+unsafe source context. It also adds a bounded repeat-boot command and independent
+CI jobs, with a separate weekly long-validation lane.
+
+Local evidence:
+
+- `cargo xtask test` passed on immutable source `259a9cb`: storage creation,
+  restore, torn-generation recovery, corruption/read-only behavior, serial input,
+  networking and fault cases, external SDK execution, every process-construction
+  allocation failure, all six CPU protection probes, and both normal boot profiles.
+- All five BSP cases passed on `d0e1420`, including one/four-CPU normal boots,
+  repeated kernel/table entry, and an explicitly injected non-BSP identity sample.
+- Workspace host tests and strict linting pass, including nine newly executable
+  endpoint tests and ordered normal-shell evidence parser tests. Python harness
+  tests pass; the checked inventory retains 367 lexical unsafe/assembly sites.
+- Parser/socket stress passed 100,000 mutations each for seeds 0 and
+  `0x47454e4f53`, plus one million for seed 1, after replaying 12 retained corpus
+  inputs and their 693 proper prefixes. The zero-slot socket case is a real
+  minimized regression, not just a synthetic acceptance fixture.
+- Five consecutive optimized interactive boots passed with fresh disposable
+  volumes. Every boot checked missing validation fixtures, process
+  launch/status/kill/reap, and persistent write/read. This is not 1000-boot evidence.
+- `cargo xtask bench` passes using explicit validation policy and restores the
+  normal image. Its report remains a validation-boot observation, with no
+  cross-OS or normal-startup performance claim.
+
+The new tests found two concrete bugs. Socket and endpoint slot decoding used an
+eager subtraction before rejecting zero. The four-CPU firmware stack also exposed
+a 228-KiB entry-frame stack probe that faulted before the first Rust statement;
+[ADR 0005](adr/0005-owned-kernel-boot-stack.md) records the kernel-owned stack fix.
+A separate release link failed because LTO could not combine the explicit kernel
+code model with the precompiled core library; release builds now disable LTO.
+
+Evidence remains under `build/`: `continue-*.log`, `bsp-evidence/`, ordered normal
+boot manifests, and copied `final-foundation-evidence/` from the immutable system
+run. Logs record the exact tested source. The new CI jobs and scheduled 1000-boot
+lane have been configured but have not been executed remotely during this session.
+The reference build remains experimental; F0-F7 are not collectively complete.

@@ -1,0 +1,75 @@
+name: Long validation
+
+on:
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      boots:
+        description: Number of fresh-volume interactive boots (1 through 1000)
+        default: '1000'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: long-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  repeated-boot:
+    name: Repeated normal release boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install reference VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Exercise fresh boots and real process/file lifecycles
+        shell: bash
+        env:
+          GENOS_REPEAT_COUNT: ${{ inputs.boots || '1000' }}
+        run: |
+          mkdir -p build
+          cargo xtask test-repeat "$GENOS_REPEAT_COUNT" 2>&1 | tee build/repeat-run.log
+      - name: Retain every completed boot and the first failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: repeated-boot-evidence
+          path: |
+            build/repeat-run.log
+            build/serial-repeat-*.log
+            build/normal-repeat-*-manifest.txt
+            build/normal-repeat-*-qemu.log
+          retention-days: 14
+
+  extended-parser-stress:
+    name: Extended production parser stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ['0', '1', '0x47454e4f53']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run a million deterministic mutations
+        shell: bash
+        run: |
+          mkdir -p build
+          cargo run --manifest-path tools/parser-stress/Cargo.toml --release --offline -- --seed ${{ matrix.seed }} --iterations 1000000 2>&1 | tee build/parser-stress.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: extended-parser-stress-${{ matrix.seed }}
+          path: |
+            build/parser-stress.log
+            tools/parser-stress/target/failures/
+          retention-days: 14

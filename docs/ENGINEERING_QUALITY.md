@@ -187,7 +187,7 @@ The current pull-request workflow in `.github/workflows/ci.yml` is the source of
 4. repository-local Markdown link validation;
 5. image construction and the current multi-phase QEMU smoke matrix.
 
-The QEMU job retains phase-specific serial logs and a manifest containing the commit, Rust and Cargo versions, QEMU and OVMF information, and the image hash. These checks narrow F0. They do not implement fuzzing, generated unsafe inventory, scheduled repetition, hardware testing, branch protection, or every target listed below.
+The QEMU job retains phase-specific serial logs and a manifest containing the commit, Rust and Cargo versions, QEMU and OVMF information, and the image hash. These checks narrow F0. Additional independent jobs now verify normal debug and release boots, BSP admission, deterministic parser/socket mutation stress, and the generated unsafe source inventory. The separate `long-validation.yml` lane runs weekly boot repetition and extended parser stress with retained artifacts. These are scoped checks, not coverage-guided fuzzing, complete unsafe review, hardware validation, branch protection, or evidence that the scheduled 1000-boot run has already passed.
 
 ## Target CI lanes
 
