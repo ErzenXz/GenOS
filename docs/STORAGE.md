@@ -45,7 +45,14 @@ Every successful file creation, write, truncate, directory creation, or removal 
 6. Rewrite and flush the first sector with the commit byte and checksum.
 7. Return success to Ring 3 only after the commit completes.
 
-If a device or flush error occurs, GenOS restores the pre-mutation VFS and returns failure to the application. A crash before step 6 leaves the destination uncommitted, so the prior slot remains authoritative. At mount, the higher valid generation wins. A damaged newer generation produces `PERSISTENT_STORAGE_RECOVERED_TORN_WRITE`; a later successful mutation overwrites and repairs the damaged slot.
+If a device or flush error occurs, the current implementation restores the
+pre-mutation VFS in RAM and returns failure. This does not establish that the disk
+contains only the old state: a final commit header/flush can reach media before a
+failure or timeout is reported. There is no explicit unknown-outcome quarantine or
+reconciliation state yet; the [S1 roadmap gate](../ROADMAP.md#stage-4-continuation--storage-integrity-and-useful-capacity)
+requires a deterministic reproducer and that contract. Under the stated ordering
+and successful-flush assumptions, a crash before submitting step 6 leaves the
+destination uncommitted and the prior slot authoritative. At mount, the higher valid generation wins. A damaged newer generation produces `PERSISTENT_STORAGE_RECOVERED_TORN_WRITE`; a later successful mutation overwrites and repairs the damaged slot.
 
 ## Ring 3 durability proof
 
@@ -70,7 +77,10 @@ The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=re
 5. Inject a checksum-invalid newer generation, independently repair a copy, then boot the damaged original, recover the older generation, and prove a later mutation repairs the alternate slot.
 6. Boot an image with a valid MBR but both slots corrupt, surface the storage error to Ring 3, and prove temporary RAM storage still works.
 
-The current format remains deliberately bounded. It has no allocation bitmap, extents, large files, or incremental metadata journal; each mutation commits one full snapshot. Those are later filesystem-growth concerns, not unfinished Stage 4 acceptance items.
+The current format remains deliberately bounded. It has no allocation bitmap, extents, large files, or incremental metadata journal; each mutation commits one full snapshot. Useful capacity and recovery guarantees are required by S2/C5; allocation bitmaps,
+extents, journaling and other commit mechanisms remain alternatives under the S2.1
+design decision. The original milestone does not establish general filesystem
+reliability or close the S1 ambiguous-outcome and recovery-failure work.
 
 ## Host-tool volume preservation (GenOS 0.55)
 

@@ -120,18 +120,20 @@ The system remains single-core and experimental. Emergency-stack nesting/XSTATE,
 
 ## Immediate engineering priority
 
-Before broad product expansion, GenOS is closing a foundation correctness gate:
+The next product is a dependable kernel and useful terminal on a pinned reference
+VM. Graphics stays deferred. The [research-backed roadmap](ROADMAP.md) separates
+implemented local slices, missing contracts and release evidence, with three targets:
+verified kernel reference, useful console preview, then stable console reference.
 
-1. complete and normalize every architectural exception entry;
-2. enable and prove CPU page-protection features;
-3. make physical and virtual memory construction transactional and scalable;
-4. split runtime responsibilities into reviewable modules;
-5. formalize the single-core concurrency model and per-CPU path;
-6. expand parser fuzzing and repeated validation boots;
-7. add fuzzing, fault injection, long-run tests, and reviewable delivery rules;
-8. keep every required CI stage green.
+Next work: complete CPU context/stack containment, enforce frame/alias ownership,
+resolve uncertain storage commits, finish shared-state/module ownership, and extend
+coverage and sustained tests. General application launch and bounded streams come
+before pipelines; scalable recoverable storage comes before trusting editor saves.
 
-The full acceptance criteria live in [ROADMAP.md](ROADMAP.md). The testing and evidence model lives in [docs/ENGINEERING_QUALITY.md](docs/ENGINEERING_QUALITY.md).
+Current work includes scoped local proofs, not a stable release. New CI workflow
+publication is blocked by the GitHub credential's missing `workflow` permission.
+See [current limitations](docs/KNOWN_LIMITATIONS.md), [verification](docs/VERIFICATION.md),
+and the [September 2026 primary-source research](docs/research/README.md).
 
 ## Architecture
 
@@ -259,17 +261,17 @@ docs/             Subsystem contracts, limitations, quality plan, and ADRs
 
 ## Roadmap at a glance
 
-- [x] Experimental UEFI, kernel, serial, desktop, userspace, runtime, storage, and bounded IPv4/TCP vertical slices
-- [ ] Foundation correctness gate: traps, protection, memory rollback, ownership, concurrency, test modes, and green verification
-- [ ] Concurrent production-oriented TCP behavior and interrupt-driven VirtIO
-- [ ] IPv6 dual stack
-- [ ] Security, identity, cryptographic trust, signed packages, and updates
-- [ ] Stable application and service platform
-- [ ] APIC/MSI-X, SMP, NVMe, xHCI, IOMMU, power management, and reference hardware
-- [ ] Userspace compositor and coherent desktop product
-- [ ] Hardened preview and daily-use qualification
+- [x] Experimental UEFI/Ring 3/capability, memory hygiene, readable terminal, bounded storage/network and external SDK slices, with local evidence
+- [ ] R1: complete foundation ownership, CPU context, failure handling and reproducible verification
+- [ ] R2: general native applications/streams, useful storage, complete terminal and recovery workflows
+- [ ] R3: stable console reference under a frozen profile, sustained qualification and independent reproduction
+- [ ] Hardened/network profile: explicit authority, secure entropy/time/trust, reviewed TLS and trusted distribution
+- [ ] Physical console profile: one qualified machine; modern devices and SMP/power as separately tested capabilities
+- [ ] Userspace graphical product after the console and required application/security/device contracts
 
-Delivered checkboxes describe experimental slices. They do not supersede the open foundation gate.
+The current level remains Experimental. A console-only release does not need a
+compositor, full POSIX compatibility, every hardware driver or a microkernel rewrite.
+See [ROADMAP.md](ROADMAP.md) for task IDs, dependencies and measurable exit criteria.
 
 ## Performance and comparisons
 

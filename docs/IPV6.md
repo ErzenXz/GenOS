@@ -28,6 +28,9 @@ The implementation follows the relevant bounded parts of [IPv6](https://www.rfc-
 
 `cargo test -p kernel --lib` exercises actual wire bytes: every RA truncation, checksum corruption, malformed options/extensions, invalid hop limits and lifetimes, duplicate addresses, invalid multicast advertisements, neighbor replies, exact echo matching, expiration, mandatory UDP checksums, and output bounds.
 
-`cargo xtask test-network` requires `IPV6_SLAAC_READY prefix=ra dad=passed` and `IPV6_ICMP_ECHO_OK` in both fault-enabled and production network boots. The existing IPv4 DNS, socket, TCP, and timeout proofs remain required. Serial logs are `build/serial-network.log` and `build/serial-network-normal-run.log`.
+`cargo xtask test-network` requires `IPV6_SLAAC_READY prefix=ra dad=passed` and
+`IPV6_ICMP_ECHO_OK` in fault-enabled and non-fault validation boots. The latter
+excludes deliberate packet fault hooks; it is not the quiet normal startup policy.
+Normal builds retain the control path but suppress these development trace lines. The existing IPv4 DNS, socket, TCP, and timeout proofs remain required. Serial logs are `build/serial-network.log` and `build/serial-network-normal-run.log`.
 
 Still open: IPv6-only initialization, UDP/TCP socket addressing and demultiplexing, DNS AAAA and RDNSS, dual-stack bind/connect policy, route renewal and multi-router selection while a route is live, neighbor cache/reachability state, MLD, DHCPv6, privacy addresses, comprehensive ICMPv6 error handling, PMTU, and physical-network validation. TLS 1.3 and authenticated application traffic belong to Stage 6.

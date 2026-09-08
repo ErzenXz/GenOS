@@ -59,9 +59,9 @@ These foundations do not form a complete production security model.
 
 The material limitations are tracked in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md). Release-blocking areas include:
 
-- incomplete exception and unexpected-interrupt coverage;
-- CPU page-protection features that are not yet explicitly enabled and proven by the kernel;
-- a fixed-capacity physical-frame recycle path and incomplete allocation rollback;
+- incomplete XSTATE, stack-guard and nested emergency/return-fault qualification;
+- incomplete physical-alias permission enforcement despite existing NX/WP/SMEP/SMAP proofs;
+- missing per-owner frame identity and complete retirement contracts despite existing bitmap rollback and scrubbing;
 - single-core assumptions and unsynchronized mutable global state;
 - concentrated runtime ownership in large kernel modules;
 - no user or service identity, filesystem permissions, or general capability delegation;

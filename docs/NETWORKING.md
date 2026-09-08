@@ -1,8 +1,10 @@
 # Networking
 
-GenOS 0.55 combines modern VirtIO transport, asynchronous ABI 16 UDP/TCP clients, and ABI 18 TCP listener/readiness authority with bounded concurrent passive service: four global handshake and accepted-stream slots, at most two per process incarnation, keyed by exact peer tuple. QEMU presents a VirtIO 1.x PCI network device with its legacy interface disabled, and the kernel runs DHCP, ICMP, DNS, Ring 3 UDP/TCP client requests, deterministic sustained-loss/reordering recovery, a 1,024-byte accepted stream, and two host-forwarded inbound clients through that device. No host socket shortcut, firmware network stack, guest agent, or Linux component handles guest packets.
+The current GenOS 0.56 baseline includes modern VirtIO transport, asynchronous ABI 16 UDP/TCP clients, and ABI 18 TCP listener/readiness authority with bounded concurrent passive service: four global handshake and accepted-stream slots, at most two per process incarnation, keyed by exact peer tuple. QEMU presents a VirtIO 1.x PCI network device with its legacy interface disabled, and the kernel runs DHCP, ICMP, DNS, Ring 3 UDP/TCP client requests, deterministic sustained-loss/reordering recovery, a 1,024-byte accepted stream, and two host-forwarded inbound clients through that device. No host socket shortcut, firmware network stack, guest agent, or Linux component handles guest packets.
 
-This is a modern device foundation with bounded client and bounded concurrent server transactions. It is not yet a production Internet stack; multi-segment outbound flight, arbitrary receive windows, more than two clients on one listener, readiness sets, broader fault matrices, physical-device interrupt proof, IPv6, and TLS remain explicit gates below.
+This is a modern device foundation with bounded client and bounded concurrent server transactions. It is not yet a production Internet stack; multi-segment outbound flight, arbitrary receive windows, more than two clients on one listener, readiness sets, broader fault matrices, physical-device interrupt proof, IPv6 application sockets, and TLS remain explicit
+gates below. The separate [IPv6 control-plane foundation](IPV6.md) already supplies
+SLAAC/DAD/router-echo evidence; it is not a complete dual-stack application platform.
 
 ## Device boundary and selection policy
 
@@ -36,7 +38,12 @@ Every receive descriptor owns a 2048-byte device-writable buffer. Modern VirtIO'
 
 GenOS programs PCI MSI-X table entry 0 for IDT vector 48 and assigns RX queue 0 and TX queue 1 to that shared vector. The interrupt stub records one readiness epoch and acknowledges the local APIC; it never validates descriptors, copies packets, or changes ownership. The network coordinator performs those operations after observing interrupt readiness. TX consults the used ring after the interrupt epoch advances. RX normally consults it after interrupt readiness, with one recovery inspection per 32,768 receive calls for lost-interrupt recovery. Recovery polls and completions are counted and release-gated. Per-queue vectors, multiple queue pairs, batching, offloads, and physical-device routing remain open.
 
-The transport follows the [OASIS VirtIO 1.3 specification](https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html). QEMU also recommends VirtIO device models when a guest is not specifically testing historical hardware; see the [QEMU VirtIO documentation](https://www.qemu.org/docs/master/system/devices/virtio/index.html).
+The implementation was developed against the [VirtIO 1.3 CSD01 text](https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html),
+a Committee Specification Draft. This reference is not a conformance claim.
+The [roadmap research](research/2026-09-network-hardware.md) recommends auditing
+negotiated features against a pinned published baseline such as
+[VirtIO 1.2 CS01](https://docs.oasis-open.org/virtio/virtio/v1.2/cs01/virtio-v1.2-cs01.html),
+with draft-specific choices recorded separately. QEMU also recommends VirtIO device models when a guest is not specifically testing historical hardware; see the [QEMU VirtIO documentation](https://www.qemu.org/docs/master/system/devices/virtio/index.html).
 
 ## Packet ownership
 
@@ -56,7 +63,9 @@ The current stack implements:
 - DHCP discover, offer, request, and acknowledgment;
 - DNS A queries over UDP;
 - one active-open TCP exchange with SYN, SYN-ACK, ACK, data, FIN, and RST handling;
-- up to two concurrent passive SYN/SYN-ACK/ACK handshakes feeding exact bound listeners, and up to two concurrent accepted streams that remain open across multiple bounded request/response cycles before peer half-close and guest FIN.
+- four global passive handshake/stream slots with a two-slot per-owner ceiling; the
+  reference validation boot exercises two clients on one listener across bounded
+  request/response cycles, half-close and guest FIN.
 
 IPv4 headers and ICMP, UDP, and TCP payloads are checksum validated. IPv4 fragments, invalid header lengths, inconsistent total lengths, malformed UDP lengths, invalid TCP data offsets, and truncated DNS names are rejected. Host tests feed every truncation of a valid frame plus malformed length and header combinations through the parsers.
 
@@ -72,7 +81,7 @@ ABI 15 exposes three bounded calls:
 
 Every request is copied from a validated caller-owned mapping before the device is touched. Every response is copied back only within the validated output capacity.
 
-`SHELL.ELF` uses the UDP API to construct and send a DNS A query for `example.com`, parses the answer in Ring 3, then uses the TCP API to send an HTTP/1.1 request with a required `Host` header to the deterministic xtask server through QEMU's `10.0.2.2` host alias. It requires `HTTP/1.1 200` and `GENOS_OK` before emitting `USER_HTTP_REQUEST_OK` and `USER_SOCKET_API_READY`. This plaintext endpoint exists only inside the deterministic test network and is not an approved Internet security boundary.
+In validation builds, `SHELL.ELF` uses the UDP API to construct and send a DNS A query for `example.com`, parses the answer in Ring 3, then uses the TCP API to send an HTTP/1.1 request with a required `Host` header to the deterministic xtask server through QEMU's `10.0.2.2` host alias. It requires `HTTP/1.1 200` and `GENOS_OK` before emitting `USER_HTTP_REQUEST_OK` and `USER_SOCKET_API_READY`. This plaintext endpoint exists only inside the deterministic test network and is not an approved Internet security boundary.
 
 ## ABI 16 asynchronous clients and ABI 18 listeners/readiness
 
@@ -84,17 +93,17 @@ For UDP, `ProcessManager` moves one admitted datagram into an in-flight slot and
 
 The UDP state machine allows three attempts separated by scheduler deadlines. Timeout clears the in-flight request, marks the socket `Failed`, and exposes error readiness. Write shutdown or close invalidates the exact request; the coordinator cancels its packet operation and drops any stale completion. A second transport request cannot overwrite the occupied coordinator slot. These limits are deliberate: per-process socket count, send/receive bytes, in-flight bytes, request copies, response copies, retry count, NIC polls per tick, and concurrent coordinator transports are all fixed.
 
-`SHELL.ELF` sends a real DNS A query through `socket_send`, yields while the asynchronous client coordinator progresses it, receives the answer through `socket_receive`, and validates it in Ring 3 before emitting `USER_SOCKET_UDP_ASYNC_READY`. It separately proves bounded timeout and write-shutdown cancellation. The smoke suite requires the start, completion, timeout, cancellation, and current ABI 18 capability markers on both modern VirtIO network boots.
+In validation builds, `SHELL.ELF` sends a real DNS A query through `socket_send`, yields while the asynchronous client coordinator progresses it, receives the answer through `socket_receive`, and validates it in Ring 3 before emitting `USER_SOCKET_UDP_ASYNC_READY`. It separately proves bounded timeout and write-shutdown cancellation. The smoke suite requires the start, completion, timeout, cancellation, and current ABI 18 capability markers on both modern VirtIO network boots.
 
 For TCP, the same exact request identity owns one bounded client transaction. The coordinator resolves ARP, validates the exact SYN-ACK acknowledgment, sends ACK plus at most 128 request bytes, and accepts response segments only from the exact IPv4 address and port with valid checksums, acknowledgment, and next sequence. In-order bytes accumulate into a fixed 128-byte response; duplicate or out-of-order segments receive the current cumulative ACK without entering the queue. FIN is acknowledged and followed by an active close. RST, overflow, exhausted retry deadlines, and invalid completion authority mark the socket `Failed`.
 
-`SHELL.ELF` sends an HTTP/1.1 request with `socket_send`, yields while the coordinator progresses TCP, then validates the 65-byte response returned by `socket_receive` before emitting `USER_SOCKET_TCP_ASYNC_READY`. The deterministic host accepts a second connection for the retained ABI 15 compatibility exchange. Without that server, QEMU returns a real RST; the socket exposes error readiness and the operating system continues booting. A separate in-flight write shutdown proves protocol-specific cancellation and stale-completion rejection.
+In validation builds, `SHELL.ELF` sends an HTTP/1.1 request with `socket_send`, yields while the coordinator progresses TCP, then validates the 65-byte response returned by `socket_receive` before emitting `USER_SOCKET_TCP_ASYNC_READY`. The deterministic host accepts a second connection for the retained ABI 15 compatibility exchange. Without that server, QEMU returns a real RST; the socket exposes error readiness and the operating system continues booting. A separate in-flight write shutdown proves protocol-specific cancellation and stale-completion rejection.
 
 The TCP client path is deliberately one bounded request/response transaction, not a general long-lived byte stream.
 
 ABI 18 retains TCP-only `socket_bind`, `socket_listen`, and non-blocking `socket_accept` and adds `socket_wait`. Ports below 1024 are reserved; every admitted local port has one owner across all live process socket sets. A listener owns a fixed backlog of at most two pending peers. Four passive slots exist globally, with a hard two-slot ceiling per process incarnation. Empty accept returns `USER_ERROR_WOULD_BLOCK`; a queued peer makes the listener readable and accept-ready; an accepted peer becomes a fresh generation-safe TCP capability registered in the caller's unified typed handle table. Child allocation failure preserves the pending peer, typed-table registration failure rolls the child back, and close or process cleanup releases the port.
 
-`SHELL.ELF` first proves the ABI 18 authority contract: low-port and oversized-backlog calls are rejected, an altered handle grants nothing, duplicate bind returns unavailable, empty accept returns `WOULD_BLOCK`, a closed listener is stale, and the same port can be rebound after close. It then binds port 18081, announces `USER_SOCKET_PASSIVE_LISTEN_READY`, and runs a bounded service window. Accept, receive, drain, and close phases wait on exact readiness masks with two-tick safety deadlines instead of sleeping and checking status again. The coordinator accepts only exact checksum-valid SYNs for live destination ports, validates each peer tuple, and queues each established peer through the exact process slot, incarnation, PID, handle, and port. Missing listeners, saturated backlogs, owner-budget exhaustion, and connections beyond the fixed global slot budget receive refusal resets.
+In validation builds, `SHELL.ELF` first proves the ABI 18 authority contract: low-port and oversized-backlog calls are rejected, an altered handle grants nothing, duplicate bind returns unavailable, empty accept returns `WOULD_BLOCK`, a closed listener is stale, and the same port can be rebound after close. It then binds port 18081, announces `USER_SOCKET_PASSIVE_LISTEN_READY`, and runs a bounded service window. Accept, receive, drain, and close phases wait on exact readiness masks with two-tick safety deadlines instead of sleeping and checking status again. The coordinator accepts only exact checksum-valid SYNs for live destination ports, validates each peer tuple, and queues each established peer through the exact process slot, incarnation, PID, handle, and port. Missing listeners, saturated backlogs, owner-budget exhaustion, and connections beyond the fixed global slot budget receive refusal resets.
 
 Passive service is concurrent within fixed budgets. Four global handshake slots and four global stream slots are keyed by exact peer tuple, while the two-slot per-process ceiling prevents one owner from consuming the full transport budget. One shared bounded receive pump decodes each frame exactly once and routes it to the owning stream slot, handshake slot, or a four-cell pending-SYN queue, so concurrent operations never consume each other's frames. A handshake slot admits and acknowledges at most one 128-byte early data segment plus FIN arriving between the peer's final ACK and stream attachment, then seeds the accepted stream with those exact bytes. Stream slots are served in rotation; a slot with unread Ring 3 bytes re-acknowledges its current sequence without admitting new data, so a slow reader neither loses bytes nor starves the sibling stream.
 
@@ -117,7 +126,8 @@ The following are release gates, not optional ideas:
 1. **Larger accepted TCP streams and broader concurrency:** add multi-segment outbound flight, readiness sets, a live multi-process server gate, and more than two concurrent clients on one listener.
 2. **Production TCP behavior:** add larger dynamic windows, broader RTT/loss behavior, more out-of-order slots, fast retransmit, selective acknowledgments where negotiated, and duplication/delay/zero-window/exhaustion tests.
 3. **VirtIO performance expansion:** prove MSI-X on reference hardware, add per-queue vectors, multiple queue pairs where useful, measured batching, and carefully negotiated checksum/segmentation offloads with fallback tests.
-4. **IPv6 dual stack:** IPv6 parsing and routing, ICMPv6, neighbor discovery, router advertisements, SLAAC, DNS AAAA, path-MTU handling, and dual-stack policy tests. IPv4 remains supported but cannot be the only production path.
+4. **IPv6 dual stack:** extend the existing SLAAC/DAD/control path with application
+sockets, DNS AAAA, neighbor/route lifecycle, path-MTU/error handling and IPv6-only/dual-stack policy tests. IPv4 remains supported but cannot be the only production path.
 5. **Secure networking:** kernel entropy first; TLS 1.3 and certificate validation in isolated userspace; HTTPS; trust-store/update policy; time validation; and negative tests for expired, mismatched, revoked, malformed, and untrusted certificates. GenOS will not invent its own cryptography.
 
 No application that handles credentials, tokens, personal data, updates, or packages may treat the current plaintext exchange API as an approved transport.

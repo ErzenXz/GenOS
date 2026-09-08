@@ -1,316 +1,163 @@
-# GenOS known limitations
-
-This document records limitations that materially affect correctness, security, reliability, compatibility, performance, or release claims. It is not a complete bug list.
-
-Baseline audited: GenOS 0.49 at `c26fcecfdeec64e96e3193aab016bc3356154530`.
-
-A limitation remains open until implementation, negative tests, cleanup tests, and the relevant QEMU or hardware proof land. A milestone marked delivered elsewhere means its narrow demonstration worked. It does not override this register.
-
-## Release status
-
-GenOS is an **experimental developer preview**.
-
-Do not use the current image for:
-
-- important or irreplaceable data;
-- secrets, credentials, or personal data;
-- production services;
-- hostile networks;
-- untrusted applications or devices;
-- unsupported physical hardware;
-- workloads that require a maintained compatibility or security-support contract.
-
-The immediate remediation order is defined by the [foundation correctness gate](../ROADMAP.md#immediate-priority-foundation-correctness-gate).
-
-## Exception and interrupt coverage
-
-The current IDT is initialized with a catch-all assembly entry that executes only `iretq`. Later initialization replaces a small set of vectors, including double fault, general protection fault, page fault, timer, keyboard, mouse, and the syscall vector.
-
-Consequences:
-
-- an unhandled exception without an error code may return to the same faulting instruction and loop;
-- an unhandled exception with a CPU-pushed error code does not match a bare `iretq` frame;
-- exceptions such as divide error, invalid opcode, invalid TSS, segment-not-present, stack fault, alignment check, and machine check do not yet have complete deliberate handling;
-- unexpected external interrupts do not yet share a normalized dispatcher and policy.
-
-Required fix: Roadmap F1.
-
-## CPU protection and W^X
-
-The ELF loader rejects writable-and-executable load segments. Page mapping adds the no-execute bit only when `EFER.NXE` is already enabled. The audited baseline reads that state but does not explicitly enable and verify it.
-
-Consequences:
-
-- firmware state can determine whether writable user data and user stacks are executable;
-- the project cannot yet claim hardware-enforced system-wide W^X;
-- `CR0.WP`, SMEP, and SMAP are not yet release-gated and proven by negative tests;
-- kernel text, read-only data, and mutable data do not yet have a published final permission map and proof.
-
-Required fix: Roadmap F2.
-
-## Physical and virtual memory
-
-The current physical allocator is a gap-safe bump allocator with a fixed 256-entry recycled-frame array.
-
-Consequences:
-
-- it cannot represent every reclaimed frame after the fixed recycle array is full;
-- it is not a general fragmented-memory allocator;
-- it does not provide ordered or contiguous allocations as a formal contract;
-- allocator ownership is not yet represented by complete page-state metadata;
-- recursive page-table cloning can allocate several frames before a later out-of-memory return, without a complete transactional rollback path;
-- every address-space construction path has not yet been fault-injected at each allocation boundary.
-
-Required fix: Roadmap F3.
-
-## Single-core and shared state
-
-GenOS is currently a single-core system. Several architecture, memory, paging, process, scheduler, and runtime states are stored in mutable globals or assume only one active kernel execution path.
-
-Consequences:
-
-- starting another processor would introduce races in frame allocation, current-process state, address-space state, scheduling, and cleanup;
-- per-CPU current process, interrupt-local state, run queues, and TLB shootdowns do not exist yet;
-- synchronization and lock-order rules are not yet a public kernel contract;
-- delayed or nested interrupt behavior does not yet have a complete stress matrix.
-
-Required fix: Roadmap F5. SMP must remain disabled until that gate passes.
-
-## Runtime concentration and module ownership
-
-`kernel/src/userspace.rs` currently owns or coordinates many responsibilities, including process construction, contexts, scheduling, user-copy validation, syscall work, typed handles, lifecycle, socket authority, cleanup, and boot proofs.
-
-Consequences:
-
-- unrelated changes touch the same large file;
-- invariants are harder to review at module boundaries;
-- mechanical movement and behavior changes are difficult to separate;
-- future concurrency would multiply the number of mutable relationships inside one module.
-
-The current runtime ownership document improves conceptual ownership, but source ownership still needs decomposition.
-
-Required fix: Roadmap F4.
-
-## Validation work in normal boot
-
-The current boot path performs extensive lifecycle, rollback, generation-reuse, scheduler, console, handle, request-identity, storage, and networking proofs.
-
-Consequences:
-
-- a normal boot and a validation boot are not yet separate product policies;
-- startup cost includes development stress work;
-- release behavior can accidentally depend on state prepared by a probe;
-- disabling one probe may change normal boot in ways the release contract does not expose.
-
-Required fix: Roadmap F6.
-
-## Process and ABI limits
-
-Current userspace is intentionally bounded and does not provide general POSIX or Windows compatibility.
-
-Notable limits include:
-
-- a small fixed process table and one active user process at a time during the current transition model;
-- small per-process typed-handle tables;
-- one published endpoint per process;
-- scalar endpoint messages rather than general byte streams or typed serialization;
-- no capability delegation between processes;
-- no general service name registry;
-- fixed user image, data, stack, path, file, queue, and syscall-buffer budgets;
-- no userspace heap or memory-mapping API;
-- no fork, copy-on-write, shared libraries, dynamic linker, signals, threads, or mature asynchronous event API;
-- no stable external application SDK or compatibility support period;
-- the application ABI is experimental and can change.
-
-These bounds are useful for current reasoning. They must become explicit resource policy rather than hidden system-wide ceilings before a broader application platform.
-
-## Scheduling
-
-The current scheduler is a small round-robin design for the bounded reference workload.
-
-It does not yet provide:
-
-- priorities or scheduling classes for userspace;
-- real-time policy;
-- fair scheduling across large process counts;
-- multi-core load balancing;
-- CPU affinity;
-- general readiness polling or scalable wait queues;
-- comprehensive priority-inversion handling;
-- resource groups or quotas.
-
-Existing scheduler measurements cover narrow policy and CR3-switch behavior, not end-to-end application latency or system scalability.
-
-## Storage
-
-The current persistent system is a bounded custom snapshot format on an MBR partition with an ATA-based reference path.
-
-Notable limits include:
-
-- small node, path, file, cache, and snapshot budgets;
-- whole-snapshot persistence rather than a general extent or block allocator;
-- no journaling filesystem, copy-on-write tree, quotas, sparse files, large files, links, permissions, timestamps, or mature metadata model;
-- no encryption at rest;
-- no production backup, upgrade, migration, or compatibility contract;
-- no NVMe default path;
-- no IOMMU-backed DMA isolation;
-- power-loss and partial-I/O coverage is not yet a complete matrix across every mutation point;
-- important data should not be stored on the current implementation.
-
-The storage documentation describes the exact bounded format and recovery behavior already demonstrated. It should not be read as a general filesystem claim.
-
-## Networking
-
-The current network stack proves bounded IPv4 UDP and TCP vertical slices. It is not a production TCP/IP implementation.
-
-Notable limits include:
-
-- a small fixed number of in-flight client and passive operations;
-- one bounded request and response rather than arbitrary long-lived TCP streams;
-- limited simultaneous listener and accepted-client behavior;
-- fixed small send, receive, and backlog budgets;
-- incomplete segmentation, reassembly, dynamic windows, congestion control, RTT estimation, loss recovery, and fairness;
-- polling remains part of current VirtIO progress and recovery behavior;
-- no completed MSI-X interrupt-driven data path;
-- no IPv6;
-- no TLS, HTTPS, reviewed trust store, secure time, or certificate validation;
-- no firewall, routing policy, network namespace, packet filter, or mature observability;
-- hostile network exposure is unsupported.
-
-Required next work: Roadmap Stage 5.4E, Stage 5.5, and Stage 6.
-
-## Hardware support
-
-The supported development target is the documented QEMU/OVMF `x86_64` reference configuration.
-
-The project does not yet provide a supported physical-hardware matrix. Missing or incomplete areas include:
-
-- ACPI-based discovery and power control;
-- APIC/x2APIC, I/O APIC, MSI, and MSI-X as the normal interrupt path;
-- SMP;
-- xHCI and general USB;
-- NVMe as the primary storage path;
-- IOMMU and DMA isolation;
-- mature PCIe reset, error, power-state, and hotplug behavior;
-- audio;
-- Wi-Fi;
-- a production GPU driver path;
-- laptop battery, thermal, suspend, resume, and low-power states;
-- installer and recovery media for real machines.
-
-Legacy PS/2, PIC/PIT, and ATA paths are development or recovery mechanisms, not the intended modern baseline.
-
-## Security model
-
-Typed capabilities and exact asynchronous request identity are strong experimental foundations, but GenOS does not yet provide a complete production security model.
-
-Missing or incomplete areas include:
-
-- complete exception and page-protection hardening;
-- user and service identity;
-- filesystem permissions and ownership;
-- delegated capabilities with attenuation;
-- application sandbox profiles;
-- cryptographic entropy and a CSPRNG policy;
-- TLS and certificate validation;
-- signed packages and updates;
-- rollback protection;
-- a versioned trust store and secure time;
-- secure or measured boot policy;
-- secrets storage;
-- IOMMU-backed isolation for DMA-capable devices;
-- a published threat model for every trusted boundary;
-- security-maintenance releases and response service-level objectives.
-
-Do not treat Rust as proof that the kernel is memory-safe. Architecture code, page tables, device access, DMA, raw pointers, inline assembly, and interrupt entry still rely on unsafe invariants.
-
-## Graphics and desktop
-
-The active product path is serial-first. The older framebuffer desktop remains development code and is not the quality target.
-
-Missing or incomplete areas include:
-
-- a userspace window server and compositor;
-- isolated graphics surfaces;
-- scalable typography and text shaping;
-- stable input methods, clipboard, drag-and-drop, and accessibility contracts;
-- a physical GPU strategy;
-- visual, interaction, accessibility, memory, and latency regression suites;
-- general application lifecycle and package integration.
-
-Product UI must not become a reason to move service ownership or application logic back into Ring 0.
-
-## Build, CI, and release process
-
-At the audited `main` baseline, CI stopped during Clippy, so workspace tests and QEMU boot did not execute. This PR clears the strict kernel-binary diagnostics and replaces the sequential workflow with independent static-analysis, host-test, release-profile, documentation, and QEMU jobs. The supported Rust toolchain is pinned, and the QEMU job retains phase-specific serial logs plus a reproducibility manifest.
-
-A green run on this branch proves only the checks implemented in `.github/workflows/ci.yml`. It does not make the branch a verified reference build and does not close F0-F7. The project still needs:
-
-- the fixes and negative evidence required by F1-F6;
-- full release-image construction rather than release-profile compilation alone;
-- a separately tested minimum-supported-Rust-version range beyond the pinned toolchain;
-- retained fuzz corpora and changed-parser fuzz smoke;
-- a generated unsafe-code inventory and broader architecture-boundary enforcement;
-- scheduled long-run and physical-hardware lanes;
-- branch protection that requires all release-relevant checks;
-- reproducible release artifacts, hashes, provenance, signing, and supported-configuration metadata.
-
-Required fix: Roadmap F0, F6, and F7.
-
-## Performance claims
-
-GenOS has narrow scheduler and address-space-switch measurements. It does not yet have a complete public performance baseline.
-
-Do not claim that GenOS is faster, lighter, safer, or better than another operating system without the experiment required by [the engineering quality plan](ENGINEERING_QUALITY.md#comparison-with-linux-windows-macos-bsd-or-another-os).
-
-Missing measurements include complete boot time, idle memory, idle CPU, binary-size history, syscall latency, process lifecycle, storage recovery, network throughput and loss recovery, and later graphics latency under pinned configurations.
-
-## Updating this register
-
-A pull request must update this file when it:
-
-- fixes or narrows a listed limitation;
-- introduces a new system-wide bound;
-- changes supported hardware, security, compatibility, storage, or network behavior;
-- changes a release-level claim;
-- discovers a failure that affects user or contributor expectations.
-
-Remove a limitation only in the same change that adds the required implementation and evidence, or in a follow-up change that links directly to already merged proof.
-## Integration update — GenOS 0.56 (2026-09-08)
-
-The audit above preserves its original baseline. The integrated system now has normalized exception entry, dedicated fatal stacks, a CPU-protected IDT, explicit NX/WP and supported SMEP/SMAP, page permissions for the linked kernel sections, bounded UART waits, lossless bitmap reclamation, transactional clone/map rollback, and physical-allocation failure tests. These supersede the corresponding older implementation descriptions without closing the broader security/concurrency release gate. The allocator limit is now 8 GiB of usable memory and 64 managed ranges; the bootloader's own memory-map capacity remains a separate limitation. Inherited physical aliases, owner tokens, sensitive-page scrubbing, nested emergency-stack/XSTATE handling and comprehensive concurrency validation remain unfinished.
-
-
-## Foundation continuation — normal boot and source checks
-
-Normal and validation startup now have separate Cargo policies. Both development
-and optimized normal images boot the real Ring 3 shell without lifecycle stress,
-rollback, generation churn or shell proof fixtures. The release link requires LTO
-to remain disabled with the pinned precompiled core library. See
-[boot modes](BOOT_MODES.md) for commands and evidence boundaries.
-
-The BSP admission guard rejects non-BSP identity and duplicate kernel/table entry
-before shared initialization. This narrows accidental startup risk; it does not
-supply per-CPU state, general locking, TLB shootdowns or nested-interrupt safety.
-The [single-core contract](SINGLE_CORE.md) records those remaining obligations.
-
-The [unsafe inventory](UNSAFE_INVENTORY.md) preserves lexical source and context
-in CI; it does not certify the safety of those sites. The retained
-[parser mutation harness](../tools/parser-stress/README.md) exercises production
-ELF/network parsers and socket state. It found a zero-slot handle arithmetic bug,
-now fixed in socket and endpoint decoders. Coverage-guided fuzzing, the remaining
-parser families, long-run boot evidence, and physical hardware remain open.
-These newer contracts supersede the corresponding original audit descriptions.
-
-
-The [managed-frame contract](MEMORY.md) now implements release-time erasure,
-zero-before-grant, IRQ-scoped allocator access and `mem` diagnostics. This narrows
-F3; it does not provide owner tokens, alias tracking, SMP synchronization or secure
-physical erasure. The read-only diagnostic file is shared across concurrent opens.
-
-
-Normal terminal event tracing is now quiet, `help` uses bounded usage lines, and
-`clear` operates on the serial display. Canonical pathname validation is shared
-by syscall input and VFS insertion, with the former dormant namespace tests now
-compiled in the kernel library. These improve the current terminal; the missing
-everyday-shell features remain explicit in [terminal scope](TERMINAL.md).
+# GenOS current limitations
+
+**Updated 2026-09-08 against code/evidence baseline `5599dc7`. Level: Experimental.**
+This is the current register, not a cumulative historical audit. The
+[previous register](history/2026-09-08-limitations-before-refresh.md) preserves older
+wording that described already-replaced implementations. Research and planned fixes
+below do not mean those fixes have been implemented.
+
+The [roadmap](../ROADMAP.md) owns dependencies and acceptance criteria. The
+[verification record](VERIFICATION.md) owns reported results and exact commits.
+Neither test counts nor an implemented mechanism establish a stable or hardened OS.
+
+## Release and supported configuration
+
+The demonstrated environment is a single active kernel CPU in the x86_64
+QEMU/UEFI reference setup. Normal debug/release images, selected CPU feature/fault
+cases and one/four-vCPU BSP admission have local evidence. There is no supported
+physical-machine matrix, complete untrusted-workload threat model, stable ABI/storage
+support period or qualified daily-use release.
+
+A reliable local-console milestone is the next product target. General Internet
+operation, secrets, hostile applications/devices and automatic updates need additional
+security qualification. Do not infer them from local boot or plaintext test traffic.
+
+## Evidence and integration
+
+The implementation record reports 169 Rust tests, 25 Python checks, parser CLI tests,
+retained mutation runs, selected storage/network/memory suites, eight original CPU
+fault cases, six protection cases and five BSP cases. Those are scoped local results.
+New independent CI jobs and a weekly long-validation workflow are configured locally,
+but the branch push was rejected because the OAuth credential lacks `workflow` scope.
+No draft PR was created and these new jobs have not supplied remote evidence.
+
+Coverage-guided fuzzing, suitable Miri/model-checking coverage, complete operation and
+fault matrices, 1000 boots, sustained qualification, independent reproduction and
+required-check enforcement remain open. The configured 180-minute long-run job is
+not a completed run and cannot establish the proposed 24/72-hour soak durations.
+**Roadmap:** F0, F6, F7, C5, Stage 10.
+
+## CPU state, boot and memory protection
+
+Normalized exception entry, deliberate user fault termination/kernel halt, emergency
+stacks, an IDT protected by the CPU, NX/WP, optional SMEP/SMAP and a kernel-owned boot
+stack are implemented. The former bare catch-all entry and firmware-stack overflow
+are not the current design.
+
+Remaining gaps include complete BootInfo/map validation without descriptor truncation,
+stack overflow guards/high-water accounting, complete process floating-point/vector
+state, kernel SIMD policy, same-IST/NMI/fatal nesting and return-fault behavior, and a
+broader unsupported/mixed-feature matrix. Current explicit mappings reject W+X, but
+physical aliases still prevent a physical-frame-wide permission claim.
+**Roadmap:** F1, F2.
+
+## Memory ownership and concurrency
+
+The bitmap allocator represents up to 8 GiB of managed usable frames in 64 ranges.
+Current paths zero before granting, scrub before reuse, reject selected invalid or
+duplicate releases and roll back tested construction failures. Allocator accesses
+use scoped local IRQ masking. `mem` reports real managed-frame counters.
+
+A live allocation bit still does not identify its rightful caller. Per-owner and
+allocation-generation grants, shared/aliased/pinned-frame retirement, full early/runtime
+allocation policy and explicit contiguous allocation remain incomplete. The physical
+release API is unsafe and depends on caller ownership/retirement obligations.
+`/MEMORY.STATUS` is a shared diagnostic file, not a stable per-open snapshot.
+
+Other process, address-space, scheduler, runtime and device state still needs a full
+ownership/context audit. Local IRQ masking does not protect NMIs or other CPUs.
+Per-CPU state, lock-order enforcement and acknowledged cross-CPU TLB retirement are
+not implemented; SMP remains disabled. **Roadmap:** F3, F5, H-SMP.
+
+## Module and unsafe-code review
+
+Endpoint authority and pathname rules now have production modules with executable
+host tests. Much process/context/loader/syscall/lifecycle coordination remains in
+`kernel/src/userspace.rs`, and other shared globals and presentation dependencies
+need decomposition. The current lexical inventory records 376 unsafe/assembly sites
+across 65 source files at this baseline. It preserves review context; it is not a
+caller-invariant audit, Rust soundness proof or measure of relative OS safety.
+**Roadmap:** F4.
+
+## Application and terminal platform
+
+ABI 18, Ring 3, typed handles, exact request identities and cleanup are real mechanisms.
+The SDK can build an external small ELF and execute it through a test image. The shell
+is readable in normal mode, has bounded help and serial clearing, and supports the
+commands in [TERMINAL.md](TERMINAL.md).
+
+The general application/console platform is still missing: named launch from storage,
+arguments/environment and tailored directory/stdio authority, userspace heap/mapping
+growth, composable streams, service discovery/supervision, stable SDK compatibility,
+working directories, complete line/escape editing, quoting, redirection, pipelines,
+foreground cancellation, background job rules, scripting and guest shutdown/recovery.
+
+There are four managed asynchronous process slots including the shell. Each process
+has 20 unified handle slots, with four file and four socket handles. There is one
+published endpoint per process and small fixed message/queue budgets. The current
+scheduler does not establish fairness/priority behavior for broad workloads, quotas,
+priority inversion or multicore scaling. Full POSIX, fork and dynamic linking are
+possible later design choices, not requirements to copy another OS. **Roadmap:** C1–C5.
+
+## Storage integrity and scale
+
+Current persistence uses two bounded GFS2 snapshots on the ATA/MBR reference path,
+with inspection, repair and read-only recovery. The VFS allows 32 nodes, 64-byte paths
+and 512-byte files. It has no general file-data allocator, scalable metadata model,
+atomic replacement/rename contract, production backup/migration policy or complete
+fault matrix at every mutation/recovery boundary.
+
+**Open audit inference:** a failed/timed-out final commit flush can have an unknown
+on-media result. `PersistentFs::commit` submits the commit header before the final
+flush returns; `RuntimeCoordinator::persist_change` restores RAM on reported failure.
+That does not prove the new generation was absent from disk. There is no explicit
+unknown-outcome quarantine/reconciliation state yet. A deterministic reproducer is
+still required. See [the source-grounded research](research/2026-09-console-platform.md)
+and [storage contract](STORAGE.md); proposed mitigations are not implemented.
+
+The test disk model must also distinguish QEMU termination from physical loss of
+volatile caches. Device flush semantics, torn/reordered/lost writes, recovery failing
+again, format growth, backup/export and interrupted migration require explicit tests.
+**Roadmap:** S1, S2, C4, C5.
+
+## Networking and devices
+
+Modern VirtIO/MSI-X, IPv4/DHCP/ICMP/DNS A, bounded TCP clients/concurrent passive
+streams, socket waits, and selected loss/reordering/congestion tests exist. Four
+passive slots are global, with a two-slot per-owner limit; socket send/receive queues
+are 128 bytes. The control-plane IPv6 work includes SLAAC/DAD/router echo. Claims
+that there is no MSI-X or no IPv6 at all describe an older baseline.
+
+Missing work includes general longer-lived streams and larger flight/windows,
+broader retransmission/persist/reset behavior, fairness across process owners,
+readiness sets, complete device reset/quiescence and fault handling, and reproducible
+performance budgets. IPv6 application sockets, AAAA, IPv6-only initialization,
+address selection, neighbor/route renewal and PMTU/ICMP error policy remain incomplete.
+No TLS, production Internet profile or secure-network claim exists. **Roadmap:**
+5.4E, 5.5, SEC1–SEC3, H-DMA.
+
+## Hardware, trust and later products
+
+There is no qualified physical NVMe/xHCI/APIC platform, full ACPI power policy,
+SMP, IOMMU containment, general hotplug, suspend/resume, battery/thermal support,
+Wi-Fi or audio platform. Existing legacy devices remain explicit development/recovery
+paths; one VirtIO NIC does not make the whole VM modern-only.
+
+User/service identity, filesystem ownership/permissions beyond the current coarse
+policy, attenuated delegation, CSPRNG, reviewed trust/time/TLS, signed package/update
+activation, key rotation and security maintenance are future gates. A compromised
+process must not gain unrelated resources merely through a global pathname or PID.
+
+A compositor, GPU platform, graphical applications and accessibility/UI qualification
+remain deferred. They do not gate a console-only product, but graphics may not bypass
+the application, authority, storage and recovery contracts. **Roadmap:** Stages 6–10.
+
+## Performance and updating this register
+
+There are scoped scheduler/context and validation-boot measurements, not a complete
+normal-console latency, memory, throughput or hardware comparison. Record exact
+workloads, raw samples, spread and feature differences before making comparative claims.
+
+Update this register with each changed public contract. Remove a gap only with its
+implementation and scoped evidence; distinguish confirmed failures from audit inferences,
+configured tests from executed tests, and local results from integrated releases.
