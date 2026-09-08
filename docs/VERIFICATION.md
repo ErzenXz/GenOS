@@ -119,3 +119,16 @@ exit sequence matches the test-session instructions. `docs/TERMINAL.md` records
 what the terminal actually supports. General program launch, shell navigation and
 job-control breadth, owner tokens, full concurrency and physical hardware remain
 open. This is progress on the foundation, not a production-readiness claim.
+
+
+The final BSP admission matrix and all eight original user/kernel exception cases
+also passed on `a384f90`, along with another 100,000 retained-corpus parser mutations
+and two parser CLI tests. This slice's log summary is in
+`build/next-foundation-evidence/summary.json`. The generated inventory now records
+376 lexical unsafe/assembly sites across 65 source files; that count is retained
+review context, not a safety score.
+
+Publishing the series was attempted, but GitHub rejected the branch push because
+the connected OAuth app lacks the `workflow` scope required to update
+`.github/workflows/ci.yml`. No draft PR was created, and the new CI jobs have not
+run remotely. The tested commits remain on `update/normal-boot-hardening` locally.
