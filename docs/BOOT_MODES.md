@@ -1,0 +1,87 @@
+# Normal and validation boot
+
+GenOS has two explicit startup policies. `validation-boot` is an opt-in Cargo
+feature of both `kernel` and `genos-shell`; neither package enables it by default.
+The kernel prints `BOOT_MODE normal` or `BOOT_MODE validation` immediately after
+serial initialization. Compiler optimization level does not select the policy.
+
+| Command | Kernel profile | Boot policy |
+| --- | --- | --- |
+| `cargo xtask build` | Development | Normal |
+| `cargo xtask build-release` | Release | Normal |
+| `cargo xtask run` | Release | Normal |
+| `cargo xtask build-test` | Development | Validation |
+| `cargo xtask test-release` | Release | Normal boot acceptance |
+
+The image builder selects the matching shell feature for the policy. Building
+only one package with `validation-boot` does not create a supported validation
+image: its kernel and shell proof requirements would disagree.
+
+## Normal startup
+
+Normal boot claims the boot CPU before serial or global initialization, checks
+the boot contract, establishes CPU/page protections and the protected IDT,
+initializes memory ownership and networking, mounts the filesystems, and launches
+the supervised Ring 3 shell. The shell checks its ABI and image-layout contract,
+writes its banner through the real console capability, and waits for keyboard
+input through the existing syscall and scheduler path. The serial terminal emits
+`NORMAL_SHELL_READY` only after that input wait is live, then prints `genos>`.
+`GENOS_READY` describes kernel initialization and is not sufficient proof of an
+interactive shell.
+
+Registering `INIT.ELF` is separate from executing it. Registration validates the
+bounded ELF container and retains its immutable initrd slice. The usual process
+constructor still validates mappings, permissions, and ownership on each launch.
+A normal boot does not execute the init probe or mark it passed; the shell's
+`run init` command remains available through the same supervisor capability.
+
+Normal boot does not run lifecycle, supervisor cleanup, transaction rollback,
+process-generation stress, scheduler benchmarks, the headless command transcript,
+or the shell's filesystem, namespace, history, process-control, socket, and
+protocol self-tests. In particular, startup does not create `/USER/SHELL.TXT` or
+`/USER/APP.TXT` as proof fixtures. Normal filesystem mount/recovery behavior is
+unchanged. Shell commands still perform their requested real operations.
+
+## Validation startup
+
+Validation images run the existing kernel and shell proof suites and retain their
+exact success/failure markers. The kernel's `memory-test-faults` and
+`network-test-faults` features imply `validation-boot`; the image builder must also
+select the validation shell. The optional `SDK.ELF` application probe executes
+only in validation mode. These checks deliberately launch and terminate test
+processes, exercise temporary and persistent writes, send network requests, and
+run stress and rollback cases.
+
+Validation-only console marker recognition is compiled out of normal kernels.
+A normal shell banner therefore cannot imply that namespace, history, networking,
+or process-control proof suites ran. `probe_passed()` reports actual init-probe
+completion; the retained graphical recovery status displays `not-run` for normal
+boot.
+
+Both policies retain the same privilege boundary, runtime ownership checks,
+recovery decisions, public ABI, and real shell implementation. Separation does
+not establish production readiness or complete the remaining fuzzing and repeated
+boot requirements in [Roadmap F6](../ROADMAP.md#f6--test-boot-release-boot-fuzzing-and-fault-injection).
+
+## Build compatibility and acceptance evidence
+
+The supported toolchain is the pinned Rust 1.97.0. Release builds retain
+optimization and one codegen unit with cross-crate LTO disabled. The precompiled
+`x86_64-unknown-none` core library and GenOS's explicit large code model have
+incompatible LLVM module flags under LTO; target checking alone did not expose
+that link failure. `test-release` builds and boots both actual images.
+
+The acceptance harness checks exact ordered readiness and console responses,
+rejects validation markers in the normal kernel binary and serial output, and
+uses fresh disposable test volumes. It verifies the absence of the two startup
+fixture files, then executes `uname`, process launch/status/kill/reap, persistent
+write, and read through the real Ring 3 shell. The development case has no NIC;
+the release case uses modern VirtIO and also requires the existing IPv6 echo
+diagnostic. Logs, QEMU errors, image hashes, source status, tool versions and
+commands are retained in `build/serial-normal-debug.log`, `build/serial-release.log`
+and `build/normal-*-manifest.txt`. An incomplete manifest never proves a pass.
+Host parser tests reject missing, duplicate, embedded and out-of-order evidence.
+
+`make bench` explicitly selects validation policy for its scheduler probes and
+restores a normal image even when the benchmark fails. Its timing remains a
+validation-boot measurement and must not be presented as normal startup latency.

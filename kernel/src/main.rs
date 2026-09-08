@@ -23,8 +23,16 @@ use kernel::vfs::RamVfs;
 
 #[no_mangle]
 pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
+    if !arch::claim_boot_cpu() {
+        arch::halt_loop();
+    }
     serial::init();
     serial::println("GenOS kernel entered");
+    serial::println(if cfg!(feature = "validation-boot") {
+        "BOOT_MODE validation"
+    } else {
+        "BOOT_MODE normal"
+    });
 
     if boot_info.magic != BOOT_INFO_MAGIC || boot_info.version != BOOT_INFO_VERSION {
         serial::println("Invalid BootInfo; halting");
@@ -67,23 +75,29 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
         serial::println("USER_SHELL_MISSING");
         arch::halt_loop();
     };
+    if !userspace::register_init_elf(init_program.data) {
+        serial::println("USER_ELF_INVALID");
+        arch::halt_loop();
+    }
     userspace::register_shell_elf(shell_program.data);
     #[cfg(feature = "memory-test-faults")]
     if !userspace::run_memory_rollback_probe(init_program.data) {
         serial::println("MEMORY_ROLLBACK_FAILED");
         arch::halt_loop();
     }
-    userspace::run_probe(init_program.data);
-    let dynamic_probe = match userspace::launch_init() {
-        Ok(result) => result,
-        Err(_) => {
-            serial::println("USER_ELF_BOOT_LAUNCH_FAILED");
-            arch::halt_loop();
-        }
-    };
-    serial::print("USER_BOOT_INIT pid=");
-    serial::print_u64(dynamic_probe.pid as u64);
-    serial::println("");
+    if cfg!(feature = "validation-boot") {
+        userspace::run_probe(init_program.data);
+        let dynamic_probe = match userspace::launch_init() {
+            Ok(result) => result,
+            Err(_) => {
+                serial::println("USER_ELF_BOOT_LAUNCH_FAILED");
+                arch::halt_loop();
+            }
+        };
+        serial::print("USER_BOOT_INIT pid=");
+        serial::print_u64(dynamic_probe.pid as u64);
+        serial::println("");
+    }
     let mut vfs = RamVfs::new();
     vfs.init_root();
     let _ = vfs.mkdir("/USER");
@@ -99,36 +113,40 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     serial::println("RAMFS_TEMPORARY_READY");
     let (_, persistent_fs) = storage::mount_or_create(&mut vfs);
     serial::println("VFS_READY");
-    userspace::run_lifecycle_probe(&mut vfs);
-    // The lifecycle probe deliberately exercises a write through a temporary
-    // manager. Do not let its fixture become part of the mounted user volume.
-    let _ = vfs.remove("/USER/APP.TXT");
-    userspace::run_supervisor_cleanup_probe();
-    serial::println("SUPERVISOR_CLEANUP_READY");
-    userspace::run_transactional_rollback_probe();
-    serial::println("RUNTIME_ROLLBACK_READY");
-    userspace::run_process_generation_stress_probe();
-    serial::println("PROCESS_GENERATION_STRESS_READY");
-    if let Some(application) = initrd.find("SDK.ELF") {
-        if !userspace::run_sdk_probe(application.data) {
-            serial::println("SDK_APPLICATION_FAILED");
+    if cfg!(feature = "validation-boot") {
+        userspace::run_lifecycle_probe(&mut vfs);
+        // The lifecycle probe deliberately exercises a write through a temporary
+        // manager. Do not let its fixture become part of the mounted user volume.
+        let _ = vfs.remove("/USER/APP.TXT");
+        userspace::run_supervisor_cleanup_probe();
+        serial::println("SUPERVISOR_CLEANUP_READY");
+        userspace::run_transactional_rollback_probe();
+        serial::println("RUNTIME_ROLLBACK_READY");
+        userspace::run_process_generation_stress_probe();
+        serial::println("PROCESS_GENERATION_STRESS_READY");
+        if let Some(application) = initrd.find("SDK.ELF") {
+            if !userspace::run_sdk_probe(application.data) {
+                serial::println("SDK_APPLICATION_FAILED");
+                arch::halt_loop();
+            }
+        }
+
+        let scheduler_benchmark = kernel::tasks::benchmark_scheduler_policy();
+        if scheduler_benchmark.dispatches == 0
+            || scheduler_benchmark.max_dispatch_latency_ticks == 0
+        {
+            serial::println("SCHED_DISPATCH_BENCH_FAILED");
             arch::halt_loop();
         }
+        serial::print("SCHED_DISPATCH_BENCH dispatches=");
+        serial::print_u64(scheduler_benchmark.dispatches);
+        serial::print(" max_latency_ticks=");
+        serial::print_u64(scheduler_benchmark.max_dispatch_latency_ticks);
+        serial::print(" avg_latency_milliticks=");
+        serial::print_u64(scheduler_benchmark.average_latency_milliticks());
+        serial::println("");
+        serial::println("SCHED_DISPATCH_BENCH_OK");
     }
-
-    let scheduler_benchmark = kernel::tasks::benchmark_scheduler_policy();
-    if scheduler_benchmark.dispatches == 0 || scheduler_benchmark.max_dispatch_latency_ticks == 0 {
-        serial::println("SCHED_DISPATCH_BENCH_FAILED");
-        arch::halt_loop();
-    }
-    serial::print("SCHED_DISPATCH_BENCH dispatches=");
-    serial::print_u64(scheduler_benchmark.dispatches);
-    serial::print(" max_latency_ticks=");
-    serial::print_u64(scheduler_benchmark.max_dispatch_latency_ticks);
-    serial::print(" avg_latency_milliticks=");
-    serial::print_u64(scheduler_benchmark.average_latency_milliticks());
-    serial::println("");
-    serial::println("SCHED_DISPATCH_BENCH_OK");
 
     let mut tasks = TaskRegistry::new();
     let task_ids = runtime::TaskIds {
@@ -147,34 +165,38 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     });
     let mut runtime =
         runtime::RuntimeCoordinator::new(tasks, task_ids, processes, vfs, persistent_fs);
-    if !runtime.run_headless_boot_probe(4096) {
-        serial::println("HEADLESS_RUNTIME_FAILED");
-        arch::halt_loop();
-    }
-    if !runtime.run_console_transcript_probe() {
-        serial::println("CONSOLE_TRANSCRIPT_FAILED");
-        arch::halt_loop();
-    }
-    if !runtime.process_snapshot_is_authoritative() {
-        serial::println("PROCESS_SNAPSHOT_FAILED");
-        arch::halt_loop();
-    }
-    if !runtime.unified_handle_table_is_authoritative() {
-        serial::println("UNIFIED_HANDLE_TABLE_FAILED");
-        arch::halt_loop();
-    }
-    if !runtime.async_request_identity_is_authoritative() {
-        serial::println("ASYNC_REQUEST_IDENTITY_FAILED");
-        arch::halt_loop();
+    if cfg!(feature = "validation-boot") {
+        if !runtime.run_headless_boot_probe(4096) {
+            serial::println("HEADLESS_RUNTIME_FAILED");
+            arch::halt_loop();
+        }
+        if !runtime.run_console_transcript_probe() {
+            serial::println("CONSOLE_TRANSCRIPT_FAILED");
+            arch::halt_loop();
+        }
+        if !runtime.process_snapshot_is_authoritative() {
+            serial::println("PROCESS_SNAPSHOT_FAILED");
+            arch::halt_loop();
+        }
+        if !runtime.unified_handle_table_is_authoritative() {
+            serial::println("UNIFIED_HANDLE_TABLE_FAILED");
+            arch::halt_loop();
+        }
+        if !runtime.async_request_identity_is_authoritative() {
+            serial::println("ASYNC_REQUEST_IDENTITY_FAILED");
+            arch::halt_loop();
+        }
     }
     serial::println("TASKS_READY");
     serial::println("SCHED_READY");
     serial::println("RUNTIME_COORDINATOR_READY");
-    serial::println("HEADLESS_RUNTIME_READY");
-    serial::println("PROCESS_SNAPSHOT_READY");
-    serial::println("UNIFIED_HANDLE_TABLE_READY");
-    serial::println("ASYNC_REQUEST_IDENTITY_READY");
-    serial::println("CONSOLE_TRANSCRIPT_READY");
+    if cfg!(feature = "validation-boot") {
+        serial::println("HEADLESS_RUNTIME_READY");
+        serial::println("PROCESS_SNAPSHOT_READY");
+        serial::println("UNIFIED_HANDLE_TABLE_READY");
+        serial::println("ASYNC_REQUEST_IDENTITY_READY");
+        serial::println("CONSOLE_TRANSCRIPT_READY");
+    }
 
     serial::println("SERVER_TERMINAL_READY mode=serial ui=off");
     serial::println("SERIAL_TERMINAL_READY port=com1");

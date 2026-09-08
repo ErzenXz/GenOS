@@ -3,6 +3,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod boot_cpu;
 pub mod capability;
 pub mod display;
 pub mod elf;

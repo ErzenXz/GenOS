@@ -20,9 +20,11 @@ genos_abi.workspace = true
 
 [features]
 default = []
+# Run deterministic boot proof suites; normal images omit all stress execution.
+validation-boot = []
 # Enables deterministic, bounded packet fault injection used only by the
 # `cargo xtask test-network` QEMU acceptance gate. Production images never
 # compile the trigger payloads or deliberate packet delay/drop paths.
-network-test-faults = []
+network-test-faults = ["validation-boot"]
 # Explicit validation images only: inject failures before physical allocation.
-memory-test-faults = []
+memory-test-faults = ["validation-boot"]

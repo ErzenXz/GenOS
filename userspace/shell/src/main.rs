@@ -15,14 +15,20 @@ const UNKNOWN: &[u8] = b"unknown userspace command";
 const DIRECTORY_ERROR: &[u8] = b"directory unavailable";
 const FILE_ERROR: &[u8] = b"file unavailable";
 const MUTATION_ERROR: &[u8] = b"file change denied; use /USER/FILE";
+#[cfg(feature = "validation-boot")]
 const MUTATION_PROOF_PATH: &[u8] = b"/USER/SHELL.TXT";
+#[cfg(feature = "validation-boot")]
 const MUTATION_PROOF_FIRST: &[u8] = b"Ring 3 shell file mutation";
+#[cfg(feature = "validation-boot")]
 const MUTATION_PROOF_APPEND: &[u8] = b" is ready.";
+#[cfg(feature = "validation-boot")]
 const MUTATION_PROOF_EXPECTED: &[u8] = b"Ring 3 shell file mutation is ready.";
 const JOB_CAPACITY: usize = runtime::PROCESS_HANDLE_CAPACITY as usize;
 const HISTORY_CAPACITY: usize = 8;
+#[cfg(feature = "validation-boot")]
 const NAMESPACE_PROOF_DIRECTORY: &[u8] = b"ABI14";
 
+#[cfg(feature = "validation-boot")]
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum StorageMode {
     Writable,
@@ -94,15 +100,51 @@ pub extern "C" fn _start(console: u64, supervisor: u64) -> ! {
     if runtime::ping() != runtime::PING_REPLY || runtime::abi_version() != runtime::ABI_VERSION {
         runtime::exit(255);
     }
-    while unsafe { read_volatile(addr_of!(DATA.header.preemptions)) } == 0 {
-        core::hint::spin_loop();
-    }
     let info = unsafe { &mut *addr_of_mut!(DATA.system_info) };
     if runtime::system_info(info) != core::mem::size_of::<runtime::UserSystemInfo>() as u64
         || info.image_layout_version != runtime::IMAGE_LAYOUT_VERSION
         || info.executable_page_capacity != runtime::EXECUTABLE_PAGE_CAPACITY
     {
         runtime::exit(246);
+    }
+    #[cfg(feature = "validation-boot")]
+    run_startup_validation(console, supervisor);
+    if runtime::console_write(console, READY, runtime::CONSOLE_LINE_STATUS) != READY.len() as u64 {
+        runtime::exit(254);
+    }
+
+    loop {
+        let event = unsafe { &mut *addr_of_mut!(DATA.event) };
+        if runtime::wait_input(event, runtime::INPUT_MASK_KEYBOARD)
+            != core::mem::size_of::<runtime::UserInputEvent>() as u64
+        {
+            runtime::exit(253);
+        }
+        if event.kind != runtime::INPUT_KIND_KEY {
+            continue;
+        }
+        match event.code {
+            runtime::KEY_CHAR if (0x20..=0x7e).contains(&event.value0) => push(event.value0 as u8),
+            runtime::KEY_BACKSPACE => backspace(),
+            runtime::KEY_ENTER => execute(console, supervisor),
+            runtime::KEY_ARROW_UP => history_up(),
+            runtime::KEY_ARROW_DOWN => history_down(),
+            _ => continue,
+        }
+        let line = unsafe { &DATA.line[..DATA.len] };
+        if runtime::console_set_input(console, line) != line.len() as u64 {
+            runtime::exit(252);
+        }
+    }
+}
+
+#[cfg(feature = "validation-boot")]
+fn run_startup_validation(console: u64, supervisor: u64) {
+    // SAFETY: the kernel updates the aligned preemption counter in this process
+    // header on timer return; volatile reads observe it without creating a
+    // mutable alias. Only the validation image deliberately waits for a tick.
+    while unsafe { read_volatile(addr_of!(DATA.header.preemptions)) } == 0 {
+        core::hint::spin_loop();
     }
     let root = runtime::open_file(b"/");
     if handle_error(root) {
@@ -145,35 +187,9 @@ pub extern "C" fn _start(console: u64, supervisor: u64) -> ! {
     if !prove_process_control(supervisor) {
         runtime::exit(247);
     }
-    if runtime::console_write(console, READY, runtime::CONSOLE_LINE_STATUS) != READY.len() as u64 {
-        runtime::exit(254);
-    }
-
-    loop {
-        let event = unsafe { &mut *addr_of_mut!(DATA.event) };
-        if runtime::wait_input(event, runtime::INPUT_MASK_KEYBOARD)
-            != core::mem::size_of::<runtime::UserInputEvent>() as u64
-        {
-            runtime::exit(253);
-        }
-        if event.kind != runtime::INPUT_KIND_KEY {
-            continue;
-        }
-        match event.code {
-            runtime::KEY_CHAR if (0x20..=0x7e).contains(&event.value0) => push(event.value0 as u8),
-            runtime::KEY_BACKSPACE => backspace(),
-            runtime::KEY_ENTER => execute(console, supervisor),
-            runtime::KEY_ARROW_UP => history_up(),
-            runtime::KEY_ARROW_DOWN => history_down(),
-            _ => continue,
-        }
-        let line = unsafe { &DATA.line[..DATA.len] };
-        if runtime::console_set_input(console, line) != line.len() as u64 {
-            runtime::exit(252);
-        }
-    }
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_socket_capabilities(console: u64) -> bool {
     let config = unsafe { &mut *addr_of_mut!(DATA.network_config) };
     let network_available = match runtime::network_config(config) {
@@ -258,6 +274,7 @@ fn prove_socket_capabilities(console: u64) -> bool {
     runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS) == message.len() as u64
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_listener_authority(console: u64, status: &mut runtime::UserSocketStatus) -> bool {
     const PORT: u16 = 18081;
     let listener = runtime::socket_open(runtime::SOCKET_PROTOCOL_TCP_STREAM);
@@ -305,6 +322,7 @@ fn prove_listener_authority(console: u64, status: &mut runtime::UserSocketStatus
     runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS) == message.len() as u64
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_passive_tcp_accept(console: u64, status: &mut runtime::UserSocketStatus) -> bool {
     const PORT: u16 = 18081;
     const REQUEST_PREFIX: &[u8] = b"GENOS_PING";
@@ -528,6 +546,7 @@ fn prove_passive_tcp_accept(console: u64, status: &mut runtime::UserSocketStatus
     true
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_async_tcp(
     console: u64,
     config: Option<&runtime::UserNetworkConfig>,
@@ -635,6 +654,7 @@ fn prove_async_tcp(
     true
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_socket_timeout_and_cancellation(
     config: &runtime::UserNetworkConfig,
     status: &mut runtime::UserSocketStatus,
@@ -684,6 +704,7 @@ fn prove_socket_timeout_and_cancellation(
     true
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_storage_status(console: u64) -> Option<StorageMode> {
     if runtime::open_file_with_rights(
         b"/STORAGE.STATUS",
@@ -736,6 +757,7 @@ fn prove_storage_status(console: u64) -> Option<StorageMode> {
         .then_some(storage_mode)
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_network(console: u64) -> bool {
     let config = unsafe { &mut *addr_of_mut!(DATA.network_config) };
     let configured = runtime::network_config(config);
@@ -799,6 +821,7 @@ fn prove_network(console: u64) -> bool {
         == diagnostics.len() as u64
 }
 
+#[cfg(feature = "validation-boot")]
 fn dns_first_a(response: &[u8]) -> Option<u32> {
     if response.len() < 12
         || response[0..2] != [0x47, 0x45]
@@ -833,6 +856,7 @@ fn dns_first_a(response: &[u8]) -> Option<u32> {
     None
 }
 
+#[cfg(feature = "validation-boot")]
 fn skip_dns_name(packet: &[u8], mut cursor: usize) -> Option<usize> {
     for _ in 0..128 {
         let length = *packet.get(cursor)?;
@@ -854,6 +878,7 @@ fn skip_dns_name(packet: &[u8], mut cursor: usize) -> Option<usize> {
     None
 }
 
+#[cfg(feature = "validation-boot")]
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack
@@ -929,6 +954,7 @@ fn remember_history(line: &[u8]) {
     }
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_history() -> bool {
     remember_history(b"uname");
     remember_history(b"echo history");
@@ -1040,6 +1066,7 @@ fn network_status(console: u64) {
     let _ = runtime::console_write(console, message, runtime::CONSOLE_LINE_OUTPUT);
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_process_control(supervisor: u64) -> bool {
     let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };
     if runtime::process_launch(
@@ -1221,6 +1248,7 @@ fn parse_u64(bytes: &[u8]) -> Option<u64> {
     (value != 0).then_some(value)
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_file_mutation(console: u64, persistent_available: bool) -> bool {
     let existing = runtime::open_file(MUTATION_PROOF_PATH);
     let restored = if !handle_error(existing) {
@@ -1291,6 +1319,7 @@ fn prove_file_mutation(console: u64, persistent_available: bool) -> bool {
             == message.len() as u64
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_read_only_storage(console: u64) -> bool {
     let handle = runtime::open_file(MUTATION_PROOF_PATH);
     if handle_error(handle) {
@@ -1320,6 +1349,7 @@ fn prove_read_only_storage(console: u64) -> bool {
             == message.len() as u64
 }
 
+#[cfg(feature = "validation-boot")]
 fn prove_namespace_mutation() -> bool {
     let parent = runtime::open_file_with_rights(
         b"/USER",
