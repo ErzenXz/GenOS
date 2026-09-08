@@ -47,6 +47,7 @@ pub struct Transcript {
     kernel_ready: bool,
     shell_ready: bool,
     step: usize,
+    command_seen: bool,
 }
 
 impl Transcript {
@@ -89,6 +90,17 @@ impl Transcript {
             _ => {}
         }
         if self.shell_ready && self.step < STEPS.len() {
+            let echo = line.strip_prefix("USER_CONSOLE_WRITE pid=4 text=/> ");
+            if echo == Some(STEPS[self.step].0.trim_end_matches('\r')) {
+                self.command_seen = true;
+                return Ok(None);
+            }
+            // Launch itself emits process status before the shell can execute
+            // the following `ps`. Require that command's echo so a delayed
+            // response from the preceding operation cannot satisfy this step.
+            if !self.command_seen {
+                return Ok(None);
+            }
             let response = STEPS[self.step].1;
             let matches = if response.starts_with("text=") {
                 line.strip_prefix("USER_CONSOLE_WRITE pid=4 ") == Some(response)
@@ -96,6 +108,7 @@ impl Transcript {
                 line.starts_with(response)
             };
             if matches {
+                self.command_seen = false;
                 self.step += 1;
                 return Ok(STEPS.get(self.step).map(|step| step.0));
             }
@@ -140,7 +153,12 @@ mod tests {
     #[test]
     fn real_console_responses_drive_commands_in_order() {
         let mut proof = ready();
-        for (index, (_, response)) in STEPS.iter().enumerate() {
+        for (index, (command, response)) in STEPS.iter().enumerate() {
+            let echo = format!(
+                "USER_CONSOLE_WRITE pid=4 text=/> {}",
+                command.trim_end_matches('\r')
+            );
+            assert_eq!(proof.observe(&echo).unwrap(), None);
             let line = if response.starts_with("text=") {
                 format!("USER_CONSOLE_WRITE pid=4 {response}")
             } else {
@@ -150,6 +168,28 @@ mod tests {
                 proof.observe(&line).unwrap(),
                 STEPS.get(index + 1).map(|s| s.0)
             );
+        }
+        assert!(proof.complete());
+    }
+
+    #[test]
+    fn a_response_before_its_command_echo_does_not_count() {
+        let mut proof = ready();
+        for (index, (command, response)) in STEPS.iter().enumerate() {
+            let line = if response.starts_with("text=") {
+                format!("USER_CONSOLE_WRITE pid=4 {response}")
+            } else {
+                format!("{response}pid=5")
+            };
+            assert_eq!(proof.observe(&line).unwrap(), None);
+            assert_eq!(proof.step(), index);
+            let echo = format!(
+                "USER_CONSOLE_WRITE pid=4 text=/> {}",
+                command.trim_end_matches('\r')
+            );
+            proof.observe(&echo).unwrap();
+            proof.observe(&line).unwrap();
+            assert_eq!(proof.step(), index + 1);
         }
         assert!(proof.complete());
     }
