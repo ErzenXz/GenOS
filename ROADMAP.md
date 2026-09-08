@@ -128,9 +128,9 @@ Goal: every failed allocation leaves the exact pre-operation ownership state.
 - [ ] Track frame ownership and reject double free, foreign free, reserved-memory allocation, and aliasing.
 - [ ] Support contiguous or ordered allocations only through an explicit contract.
 - [x] Roll back partial page-table cloning, user image loading, stack construction, and mapping failures.
-- [ ] Define zeroing policy for newly granted user pages and reclaimed sensitive pages.
+- [x] Define zeroing policy for newly granted user pages and reclaimed sensitive pages.
 - [ ] Separate early-boot allocation from the normal allocator when their invariants differ.
-- [ ] Publish allocator counters and consistency checks that remain usable without graphics.
+- [x] Publish allocator counters and consistency checks that remain usable without graphics.
 
 Acceptance proof:
 
@@ -139,7 +139,7 @@ Acceptance proof:
 - [x] Reclaiming more than 256 frames remains lossless.
 - [x] A failed address-space clone leaks no page-table frame.
 
-GenOS 0.56 implements [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md): all ten allocations in the reference process constructor are injected in QEMU, and every allocation in a branched host clone fixture is injected. The kernel manages up to 8 GiB of usable frames and fails closed on allocator metadata exhaustion. Per-owner frame tokens, sensitive-page scrubbing and larger-memory support remain open.
+GenOS 0.56 implements [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md): all ten allocations in the reference process constructor are injected in QEMU, and every allocation in a branched host clone fixture is injected. The kernel manages up to 8 GiB of usable frames and fails closed on allocator metadata exhaustion. The [managed-frame contract](docs/MEMORY.md) now supplies zero-before-grant, scrub-before-release, scoped IRQ access and terminal counters. Per-owner frame tokens and larger-memory support remain open.
 
 ### F4 — Kernel ownership and decomposition
 

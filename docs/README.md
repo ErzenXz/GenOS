@@ -18,6 +18,7 @@ These documents describe the exact bounded behavior demonstrated by the current 
 - [Userspace boundary and ABI](USERSPACE.md)
 - [Runtime ownership and coordination](RUNTIME.md)
 - [Storage format and recovery](STORAGE.md)
+- [Managed-frame memory and diagnostics](MEMORY.md)
 - [Networking contracts](NETWORKING.md)
 - [Normal and validation boot policies](BOOT_MODES.md)
 - [Single-core admission and interrupt contract](SINGLE_CORE.md)

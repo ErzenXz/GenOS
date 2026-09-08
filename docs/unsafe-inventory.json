@@ -5,7 +5,7 @@
     "global_asm_macro": 2,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 266,
+    "unsafe_block": 267,
     "unsafe_extern": 2,
     "unsafe_fn": 61,
     "unsafe_impl": 2,
@@ -43,9 +43,9 @@
       "sha256": "ecf8bff9b341e7f4506ec73de79d19ddf9cdea0d7cf8cbcd2fbb693f0f183c68"
     },
     {
-      "lines": 449,
+      "lines": 468,
       "path": "kernel/src/arch.rs",
-      "sha256": "1957fd066418f9433901fdf039bfdf3fb15bc1034e357467332a1bdca33b86b5"
+      "sha256": "583cb21df98db6f4fb7d200bd3e461f95ad36680a5f0841ba8b1101338e674ca"
     },
     {
       "lines": 179,
@@ -158,14 +158,14 @@
       "sha256": "6e8750566f6727187fdb75ae160b868c36010bcd7f3d668424e3e1951d768132"
     },
     {
-      "lines": 227,
+      "lines": 247,
       "path": "kernel/src/main.rs",
-      "sha256": "ea7b3f1355424b7c2d33d8311c8913e175dbb4b944b10d44c8cbeb4ce01c0869"
+      "sha256": "4d882607b92b87df9190bcf410fe0062c09f5ab9801155c1a273074697e578b7"
     },
     {
-      "lines": 74,
+      "lines": 189,
       "path": "kernel/src/memory.rs",
-      "sha256": "4b86e3b9554d7b0481416495d47a945d1e798c817a3b75c0d0bf03030c7f8214"
+      "sha256": "6629f83adb1562c237bd1caa7a41cf7cac76f422341738f27919e468a281ccf1"
     },
     {
       "lines": 348,
@@ -198,14 +198,14 @@
       "sha256": "b2ad9e32a3d9fccc1478e7fa438e2aa8549b01edc6eb641e4f3b4f2fadd2eb9d"
     },
     {
-      "lines": 519,
+      "lines": 517,
       "path": "kernel/src/paging.rs",
-      "sha256": "ebf930c12b2733823774cb9440d8722adb67815fde9620343f7051613c30a8b6"
+      "sha256": "322d778e5c199eead1f80187e18c851eea975401d5fa68cac4c92bf1c084b86a"
     },
     {
-      "lines": 342,
+      "lines": 563,
       "path": "kernel/src/physmem.rs",
-      "sha256": "8a393f8eba2e2d1e69204bc70e8f607553759ded92cf224869e0eb0fdd3c1dde"
+      "sha256": "eb9e1de7fa777566919be266c2cbd8e094c0263297813020447318b935336cc0"
     },
     {
       "lines": 66,
@@ -233,9 +233,9 @@
       "sha256": "d4b4cb634a96eb1d7bd96be673ee9fce211085c913a7a1ed0f5df5ec8e637db0"
     },
     {
-      "lines": 1002,
+      "lines": 1010,
       "path": "kernel/src/runtime.rs",
-      "sha256": "895c53a1b6cf3383a574463183af2430518e1e60c582d7acfbde769d906909d8"
+      "sha256": "fac52fe981a45e44630f2aa62079da8ab74ef69aa496f269319e5b6e1282c9a3"
     },
     {
       "lines": 102,
@@ -293,14 +293,14 @@
       "sha256": "111fd79dc29c34f17752fd0cba0d615b7b6cdb6881255727b7ed6f356fe68477"
     },
     {
-      "lines": 2490,
+      "lines": 2492,
       "path": "tools/xtask/src/main.rs",
-      "sha256": "51e1c760ca1f7380655b779eea9bfe37547f1d1404fcf2ad6232653966ee9d73"
+      "sha256": "a1908d9d1d66c0d016ecd267433ff366a5dba6d7abfcad7152707998e2fba035"
     },
     {
-      "lines": 237,
+      "lines": 242,
       "path": "tools/xtask/src/normal_boot.rs",
-      "sha256": "3badb70fe982e8ce375d08ef09bd3a7486ce6b69fcdffd31feb1906509386cc9"
+      "sha256": "4cbc42b02cd65f7d3969dda11d53ec54fe4c747dc24e127405f3e435675bd69f"
     },
     {
       "lines": 174,
@@ -328,9 +328,9 @@
       "sha256": "aa1f09d0ebb535abf8b7ca3276671967e61e20d5974489b0f24f1d12f8b06110"
     },
     {
-      "lines": 1679,
+      "lines": 1681,
       "path": "userspace/shell/src/main.rs",
-      "sha256": "8504323f5fbcdf3c2fabf174dda3a26cf8b97c6bea6239b6ceaaf013690fbaa7"
+      "sha256": "852dab4b6bb34c86db99ebdb2703a6902a45da934bbb98d85968b0d2a1b8a913"
     }
   ],
   "schema_version": 1,
@@ -700,7 +700,7 @@
     {
       "column": 5,
       "construct_sha256": "cd52d7566b69583c91e3b31a9e0e6dd50fd9d4ed194ac5f0a61fb0ec4819529f",
-      "context": "    // SAFETY: CPL0 only. CLI clears IF without changing the stack. The\n    // implicit memory clobber prevents memory accesses escaping a critical\n    // section. This masks local IRQs, not NMIs, exceptions or other CPUs.\n    unsafe { asm!(\"cli\", options(nostack)) };\n}\n\npub fn interrupts_enabled() -> bool {",
+      "context": "    // SAFETY: CPL0 only. CLI clears IF without changing the stack. The\n    // implicit memory clobber prevents memory accesses escaping a critical\n    // section. This masks local IRQs, not NMIs, exceptions or other CPUs.\n    unsafe { asm!(\"cli\", options(nostack)) };\n}\n\n/// Execute a bounded operation with local IRQs masked, restoring the caller's",
       "context_start_line": 359,
       "end_line": 362,
       "kind": "unsafe_block",
@@ -710,7 +710,7 @@
     {
       "column": 14,
       "construct_sha256": "39a7f71fe66f5f1b2e56550f7d135b964f1bc120cff0cc5641967a22218f9b05",
-      "context": "    // SAFETY: CPL0 only. CLI clears IF without changing the stack. The\n    // implicit memory clobber prevents memory accesses escaping a critical\n    // section. This masks local IRQs, not NMIs, exceptions or other CPUs.\n    unsafe { asm!(\"cli\", options(nostack)) };\n}\n\npub fn interrupts_enabled() -> bool {",
+      "context": "    // SAFETY: CPL0 only. CLI clears IF without changing the stack. The\n    // implicit memory clobber prevents memory accesses escaping a critical\n    // section. This masks local IRQs, not NMIs, exceptions or other CPUs.\n    unsafe { asm!(\"cli\", options(nostack)) };\n}\n\n/// Execute a bounded operation with local IRQs masked, restoring the caller's",
       "context_start_line": 359,
       "end_line": 362,
       "kind": "asm_macro",
@@ -721,200 +721,200 @@
       "column": 5,
       "construct_sha256": "eedf275d64f0c96c29cafcc5275a011caff6518d99400f50cb47e03b536deb71",
       "context": "\npub fn interrupts_enabled() -> bool {\n    let flags: u64;\n    unsafe {\n        asm!(\n            \"pushfq\",\n            \"pop {}\",",
-      "context_start_line": 364,
-      "end_line": 374,
+      "context_start_line": 383,
+      "end_line": 393,
       "kind": "unsafe_block",
-      "line": 367,
+      "line": 386,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 9,
       "construct_sha256": "657038adc2b88b395efe9fb7849ec16ee2dbadd916d4b937bcc6b0640f527c74",
       "context": "pub fn interrupts_enabled() -> bool {\n    let flags: u64;\n    unsafe {\n        asm!(\n            \"pushfq\",\n            \"pop {}\",\n            out(reg) flags,",
-      "context_start_line": 365,
-      "end_line": 373,
+      "context_start_line": 384,
+      "end_line": 392,
       "kind": "asm_macro",
-      "line": 368,
+      "line": 387,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "54a6069793e6b0e3b45da8a989027460f1d2261806c561a6bfbcaee539d55d68",
       "context": "pub fn timestamp_cycles() -> u64 {\n    let low: u32;\n    let high: u32;\n    unsafe {\n        asm!(\n            \"lfence\",\n            \"rdtsc\",",
-      "context_start_line": 378,
-      "end_line": 389,
+      "context_start_line": 397,
+      "end_line": 408,
       "kind": "unsafe_block",
-      "line": 381,
+      "line": 400,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 9,
       "construct_sha256": "71317829bd47894f2c8e8b040904eaec1b04a3e13f7b0a90b54f227e9a9ca924",
       "context": "    let low: u32;\n    let high: u32;\n    unsafe {\n        asm!(\n            \"lfence\",\n            \"rdtsc\",\n            out(\"eax\") low,",
-      "context_start_line": 379,
-      "end_line": 388,
+      "context_start_line": 398,
+      "end_line": 407,
       "kind": "asm_macro",
-      "line": 382,
+      "line": 401,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 9,
       "construct_sha256": "70125fe19f2970887d973a8b0ee3caf39c7882149e8a999aebfcd62b24969b38",
       "context": "\npub fn halt_loop() -> ! {\n    loop {\n        unsafe { asm!(\"hlt\", options(nomem, nostack, preserves_flags)) };\n    }\n}\n",
-      "context_start_line": 392,
-      "end_line": 395,
+      "context_start_line": 411,
+      "end_line": 414,
       "kind": "unsafe_block",
-      "line": 395,
+      "line": 414,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 18,
       "construct_sha256": "684884ea282c2c083b822364139a469a6c2b595ba1c8f8f78a06eca64aae255e",
       "context": "\npub fn halt_loop() -> ! {\n    loop {\n        unsafe { asm!(\"hlt\", options(nomem, nostack, preserves_flags)) };\n    }\n}\n",
-      "context_start_line": 392,
-      "end_line": 395,
+      "context_start_line": 411,
+      "end_line": 414,
       "kind": "asm_macro",
-      "line": 395,
+      "line": 414,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "7d67faa54cf2ac0b65a8d1f477c46e1d3d8dd860b42f2202a3728722303d3663",
       "context": "#[allow(dead_code)]\n// Retained for the legacy recovery console until ROADMAP F4 isolates that path.\npub fn reboot() -> ! {\n    unsafe {\n        loop {\n            if inb(0x64) & 0x02 == 0 {\n                outb(0x64, 0xfe);",
-      "context_start_line": 399,
-      "end_line": 408,
+      "context_start_line": 418,
+      "end_line": 427,
       "kind": "unsafe_block",
-      "line": 402,
+      "line": 421,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "09401b53fe87d15f9d722532fccdba00d1f1d092e8f89cae209bb78d5f8d9b10",
       "context": "#[allow(dead_code)]\n// Retained for the legacy recovery console until ROADMAP F4 isolates that path.\npub fn shutdown() -> ! {\n    unsafe {\n        outw(0x604, 0x2000);\n        outw(0xb004, 0x2000);\n    }",
-      "context_start_line": 411,
-      "end_line": 417,
+      "context_start_line": 430,
+      "end_line": 436,
       "kind": "unsafe_block",
-      "line": 414,
+      "line": 433,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "1f3d45accceab405fc50ea89e5d84e0f7d97e652a01332bebf6f8ff2f6978b20",
       "context": "    halt_loop();\n}\n\npub unsafe fn inb(port: u16) -> u8 {\n    let value: u8;\n    asm!(\"in al, dx\", out(\"al\") value, in(\"dx\") port, options(nomem, nostack, preserves_flags));\n    value",
-      "context_start_line": 418,
-      "end_line": 425,
+      "context_start_line": 437,
+      "end_line": 444,
       "kind": "unsafe_fn",
-      "line": 421,
+      "line": 440,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "abcfdf541eac61114a4342dbcc29db79b94fe4d86e7f6aa7057a0ad6e8cc9c6b",
       "context": "\npub unsafe fn inb(port: u16) -> u8 {\n    let value: u8;\n    asm!(\"in al, dx\", out(\"al\") value, in(\"dx\") port, options(nomem, nostack, preserves_flags));\n    value\n}\n",
-      "context_start_line": 420,
-      "end_line": 423,
+      "context_start_line": 439,
+      "end_line": 442,
       "kind": "asm_macro",
-      "line": 423,
+      "line": 442,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "03177d3d28ce0acbf43d8d9cc966f3c6627421a5b45199c5b0cc96d51a7c40dd",
       "context": "    value\n}\n\npub unsafe fn inw(port: u16) -> u16 {\n    let value: u16;\n    asm!(\"in ax, dx\", out(\"ax\") value, in(\"dx\") port, options(nomem, nostack, preserves_flags));\n    value",
-      "context_start_line": 424,
-      "end_line": 431,
+      "context_start_line": 443,
+      "end_line": 450,
       "kind": "unsafe_fn",
-      "line": 427,
+      "line": 446,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "f9f0f90f96d1a56dc299e81c8673ce22665177b7f003d3abc1787c2344594cdc",
       "context": "\npub unsafe fn inw(port: u16) -> u16 {\n    let value: u16;\n    asm!(\"in ax, dx\", out(\"ax\") value, in(\"dx\") port, options(nomem, nostack, preserves_flags));\n    value\n}\n",
-      "context_start_line": 426,
-      "end_line": 429,
+      "context_start_line": 445,
+      "end_line": 448,
       "kind": "asm_macro",
-      "line": 429,
+      "line": 448,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "0f75e8fe7c0142abdfa59845858a7ff333e079041946778d8029646b4b61b99e",
       "context": "    value\n}\n\npub unsafe fn inl(port: u16) -> u32 {\n    let value: u32;\n    asm!(\"in eax, dx\", out(\"eax\") value, in(\"dx\") port, options(nomem, nostack, preserves_flags));\n    value",
-      "context_start_line": 430,
-      "end_line": 437,
+      "context_start_line": 449,
+      "end_line": 456,
       "kind": "unsafe_fn",
-      "line": 433,
+      "line": 452,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "21474644a66acb5a79400c46a184a4b391a6dc12f09995e75459654d4e547cd3",
       "context": "\npub unsafe fn inl(port: u16) -> u32 {\n    let value: u32;\n    asm!(\"in eax, dx\", out(\"eax\") value, in(\"dx\") port, options(nomem, nostack, preserves_flags));\n    value\n}\n",
-      "context_start_line": 432,
-      "end_line": 435,
+      "context_start_line": 451,
+      "end_line": 454,
       "kind": "asm_macro",
-      "line": 435,
+      "line": 454,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "f2a21db44e47d628c640f89aeaeaf7e173733bd2c1d3ed6b4faaf3144e475763",
       "context": "    value\n}\n\npub unsafe fn outb(port: u16, value: u8) {\n    asm!(\"out dx, al\", in(\"dx\") port, in(\"al\") value, options(nomem, nostack, preserves_flags));\n}\n",
-      "context_start_line": 436,
-      "end_line": 441,
+      "context_start_line": 455,
+      "end_line": 460,
       "kind": "unsafe_fn",
-      "line": 439,
+      "line": 458,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "66ae64c21bb0adab3c6b3a3977730d907cabfc8c94ad879e757d870f6db70721",
       "context": "}\n\npub unsafe fn outb(port: u16, value: u8) {\n    asm!(\"out dx, al\", in(\"dx\") port, in(\"al\") value, options(nomem, nostack, preserves_flags));\n}\n\npub unsafe fn outw(port: u16, value: u16) {",
-      "context_start_line": 437,
-      "end_line": 440,
+      "context_start_line": 456,
+      "end_line": 459,
       "kind": "asm_macro",
-      "line": 440,
+      "line": 459,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "238d8eaa3090d319dbb3facb6e3a78ab8203e3d16027790f8dbda29cf4da3a41",
       "context": "    asm!(\"out dx, al\", in(\"dx\") port, in(\"al\") value, options(nomem, nostack, preserves_flags));\n}\n\npub unsafe fn outw(port: u16, value: u16) {\n    asm!(\"out dx, ax\", in(\"dx\") port, in(\"ax\") value, options(nomem, nostack, preserves_flags));\n}\n",
-      "context_start_line": 440,
-      "end_line": 445,
+      "context_start_line": 459,
+      "end_line": 464,
       "kind": "unsafe_fn",
-      "line": 443,
+      "line": 462,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "cac7e18656cb8807d4b6d9f324f2082af116bd2a8b5158fa21f66f6d238ad1f2",
       "context": "}\n\npub unsafe fn outw(port: u16, value: u16) {\n    asm!(\"out dx, ax\", in(\"dx\") port, in(\"ax\") value, options(nomem, nostack, preserves_flags));\n}\n\npub unsafe fn outl(port: u16, value: u32) {",
-      "context_start_line": 441,
-      "end_line": 444,
+      "context_start_line": 460,
+      "end_line": 463,
       "kind": "asm_macro",
-      "line": 444,
+      "line": 463,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "c9d22a1ab914509806f3353a31e10303d24be6d2df3356b8a8a84a805aa395f8",
       "context": "    asm!(\"out dx, ax\", in(\"dx\") port, in(\"ax\") value, options(nomem, nostack, preserves_flags));\n}\n\npub unsafe fn outl(port: u16, value: u32) {\n    asm!(\"out dx, eax\", in(\"dx\") port, in(\"eax\") value, options(nomem, nostack, preserves_flags));\n}",
-      "context_start_line": 444,
-      "end_line": 449,
+      "context_start_line": 463,
+      "end_line": 468,
       "kind": "unsafe_fn",
-      "line": 447,
+      "line": 466,
       "path": "kernel/src/arch.rs"
     },
     {
       "column": 5,
       "construct_sha256": "1227728381e5a7366532fb62e177f2c7c037a9f1a8205b9ab88fb35254dda626",
       "context": "}\n\npub unsafe fn outl(port: u16, value: u32) {\n    asm!(\"out dx, eax\", in(\"dx\") port, in(\"eax\") value, options(nomem, nostack, preserves_flags));\n}",
-      "context_start_line": 445,
-      "end_line": 448,
+      "context_start_line": 464,
+      "end_line": 467,
       "kind": "asm_macro",
-      "line": 448,
+      "line": 467,
       "path": "kernel/src/arch.rs"
     },
     {
@@ -1320,7 +1320,7 @@
     {
       "column": 21,
       "construct_sha256": "31950c8786d211bd75868a79375dcd89fbf6fe67aa8b041a61dce548f9bb4455",
-      "context": "pub fn init(boot_info: &BootInfo) {\n    // SAFETY: BSP initialization with interrupts disabled is the only owner.\n    // Initialize in static storage: the bitmap is larger than the boot stack.\n    let allocator = unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) };\n    for region in boot_info\n        .memory_map\n        .regions",
+      "context": "pub fn init(boot_info: &BootInfo) {\n    // SAFETY: BSP initialization with interrupts disabled is the only owner.\n    // Initialize in static storage to avoid copying the 256-KiB bitmap.\n    let allocator = unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) };\n    for region in boot_info\n        .memory_map\n        .regions",
       "context_start_line": 8,
       "end_line": 11,
       "kind": "unsafe_block",
@@ -1328,73 +1328,73 @@
       "path": "kernel/src/memory.rs"
     },
     {
-      "column": 5,
-      "construct_sha256": "c899f6e44b308a67c8cd74e20447854f32866937b2bc8021584d8bd05faae55a",
-      "context": "#[allow(dead_code)]\n// Retained for deferred diagnostics and allocator telemetry.\npub fn usable_bytes() -> u64 {\n    unsafe { (*core::ptr::addr_of!(ALLOCATOR)).usable_bytes() }\n}\n\npub fn alloc_frame() -> Option<u64> {",
-      "context_start_line": 34,
-      "end_line": 37,
+      "column": 19,
+      "construct_sha256": "31950c8786d211bd75868a79375dcd89fbf6fe67aa8b041a61dce548f9bb4455",
+      "context": "    crate::arch::without_interrupts(|| {\n        // SAFETY: the admitted BSP is the sole owner. Local IRQs are masked\n        // before creating this exclusive reference and no borrow escapes it.\n        operation(unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) })\n    })\n}\n",
+      "context_start_line": 38,
+      "end_line": 41,
       "kind": "unsafe_block",
-      "line": 37,
+      "line": 41,
       "path": "kernel/src/memory.rs"
     },
     {
-      "column": 5,
-      "construct_sha256": "81c953f799d21c066600538b0f0983bcf5c995e3f7d43ee8ef0d74da4d5831ce",
-      "context": "pub fn alloc_frame() -> Option<u64> {\n    #[cfg(feature = \"memory-test-faults\")]\n    // SAFETY: validation probe runs with IF clear, before untrusted execution.\n    unsafe {\n        if let Some(remaining) = *core::ptr::addr_of!(FAIL_AFTER) {\n            if remaining == 0 {\n                return None;",
-      "context_start_line": 40,
-      "end_line": 50,
+      "column": 9,
+      "construct_sha256": "aaf4c0b947214d3f36610fa4a886766137cd0d6a290a4e576934e85b8d98a163",
+      "context": "    with_allocator(|allocator| {\n        #[cfg(feature = \"memory-test-faults\")]\n        // SAFETY: the same IRQ-masked BSP section protects fault configuration.\n        unsafe {\n            if let Some(remaining) = *core::ptr::addr_of!(FAIL_AFTER) {\n                if remaining == 0 {\n                    return None;",
+      "context_start_line": 52,
+      "end_line": 62,
       "kind": "unsafe_block",
-      "line": 43,
+      "line": 55,
       "path": "kernel/src/memory.rs"
     },
     {
-      "column": 5,
-      "construct_sha256": "9b2070f39a69e7f842c2a0ee4992e4cff82f0736e7eac377d62cd149a31f13d0",
-      "context": "            core::ptr::addr_of_mut!(FAIL_AFTER).write(Some(remaining - 1));\n        }\n    }\n    unsafe { (*core::ptr::addr_of_mut!(ALLOCATOR)).alloc_frame() }\n}\n\n#[cfg(feature = \"memory-test-faults\")]",
-      "context_start_line": 48,
-      "end_line": 51,
-      "kind": "unsafe_block",
-      "line": 51,
-      "path": "kernel/src/memory.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "aa8ad9e15ad6017703194358b33c8da001fdfaeb60737ef4405ab6e23182f1bb",
-      "context": "#[cfg(feature = \"memory-test-faults\")]\npub fn fail_after(allocations: Option<usize>) {\n    // SAFETY: only the single-core validation probe calls this with IF clear.\n    unsafe {\n        core::ptr::addr_of_mut!(FAIL_AFTER).write(allocations);\n    }\n}",
-      "context_start_line": 54,
-      "end_line": 59,
-      "kind": "unsafe_block",
-      "line": 57,
-      "path": "kernel/src/memory.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "bffbce160d5607502fc592769e9581cecce77d44b28466394fcdc1db15cda7b2",
-      "context": "}\n\npub fn free_frame(frame: u64) -> bool {\n    unsafe { (*core::ptr::addr_of_mut!(ALLOCATOR)).free_frame(frame) }\n}\n\npub fn allocated_frames() -> u64 {",
-      "context_start_line": 60,
-      "end_line": 63,
-      "kind": "unsafe_block",
-      "line": 63,
-      "path": "kernel/src/memory.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "503ef915ec97e9a7298b99fbe41654fc693f350e5c7b75252889c7b03f37eae8",
-      "context": "}\n\npub fn allocated_frames() -> u64 {\n    unsafe { (*core::ptr::addr_of!(ALLOCATOR)).allocated_frames() }\n}\n\n#[allow(dead_code)]",
+      "column": 9,
+      "construct_sha256": "50a8decb8b4e67177b20c8ce71b4c2660372c680c2f6fd12d1baf37538938ab2",
+      "context": "        // SAFETY: the bitmap just granted this usable, aligned page exclusively.\n        // Firmware/retained supervisor identity mappings cover managed RAM.\n        // It is zeroed before any caller can publish a user or table mapping.\n        unsafe {\n            core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize);\n        }\n        Some(frame)",
       "context_start_line": 64,
-      "end_line": 67,
+      "end_line": 69,
       "kind": "unsafe_block",
       "line": 67,
       "path": "kernel/src/memory.rs"
     },
     {
-      "column": 5,
-      "construct_sha256": "69aa8b16e73b03c2d6596e9a0e0f071a7a947d3da8009a90237cb4a01c4bd7f8",
-      "context": "#[allow(dead_code)]\n// Retained for serial diagnostics of returned, reusable frame grants.\npub fn recycled_frames() -> usize {\n    unsafe { (*core::ptr::addr_of!(ALLOCATOR)).recycled_frames() }\n}",
-      "context_start_line": 70,
-      "end_line": 73,
+      "column": 9,
+      "construct_sha256": "d1c87ed16d27dda35949fddf74f0efc736c06e77c2d88c50a6e06dd9c63b1dbe",
+      "context": "pub fn fail_after(allocations: Option<usize>) {\n    crate::arch::without_interrupts(|| {\n        // SAFETY: fault configuration shares the allocator's BSP/IRQ ownership.\n        unsafe {\n            core::ptr::addr_of_mut!(FAIL_AFTER).write(allocations);\n        }\n    });",
+      "context_start_line": 75,
+      "end_line": 80,
       "kind": "unsafe_block",
-      "line": 73,
+      "line": 78,
+      "path": "kernel/src/memory.rs"
+    },
+    {
+      "column": 24,
+      "construct_sha256": "6abf10e13660a9fee46d43b60619e021a9f1539d1d3cc4deca32676c94563ee3",
+      "context": "            // SAFETY: the live-grant check established aligned managed RAM before\n            // this callback. The caller retired all users, the BSP owns this page,\n            // IRQs are masked, and supervisor identity mappings still cover it.\n            let page = unsafe { &mut *(frame as *mut [u8; PAGE_SIZE as usize]) };\n            scrub_page(page);\n            true\n        })",
+      "context_start_line": 89,
+      "end_line": 92,
+      "kind": "unsafe_block",
+      "line": 92,
+      "path": "kernel/src/memory.rs"
+    },
+    {
+      "column": 53,
+      "construct_sha256": "77351dc3f5e756f162ce69614031c38c8e582e545d286555a80d53cb00083403",
+      "context": "        // IRQs stay masked throughout poisoning, release, inspection and reuse.\n        // The post-release reads deliberately inspect the free page before any\n        // allocator caller can acquire it, proving release-time scrubbing.\n        let (initial_zero, poison_intact, erased) = unsafe {\n            let initial_zero = (0..PAGE_SIZE)\n                .all(|offset| core::ptr::read_volatile((frame + offset) as *const u8) == 0);\n            for offset in 0..PAGE_SIZE {",
+      "context_start_line": 151,
+      "end_line": 168,
+      "kind": "unsafe_block",
+      "line": 154,
+      "path": "kernel/src/memory.rs"
+    },
+    {
+      "column": 26,
+      "construct_sha256": "64ef024c66eea2c7dca893363353868e5fe8d586c4998c8fe7d1b28ee7d17488",
+      "context": "            return false;\n        };\n        // SAFETY: the new live grant remains exclusively owned by this probe.\n        let reuse_zero = unsafe {\n            (0..PAGE_SIZE)\n                .all(|offset| core::ptr::read_volatile((reused + offset) as *const u8) == 0)\n        };",
+      "context_start_line": 171,
+      "end_line": 177,
+      "kind": "unsafe_block",
+      "line": 174,
       "path": "kernel/src/memory.rs"
     },
     {
@@ -2299,10 +2299,10 @@
     },
     {
       "column": 1,
-      "construct_sha256": "7d63876e5a5e4606cef376adfab93d494413902c36989dda2426e5fdeba3b7e7",
-      "context": "    Ok(*entry & TABLE_ADDRESS_MASK)\n}\n\nunsafe fn allocate_table() -> Result<u64, PagingError> {\n    let frame = memory::alloc_frame().ok_or(PagingError::OutOfMemory)?;\n    core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize);\n    Ok(frame)",
+      "construct_sha256": "da8c644ec6945b59cb2846c0d31797957280e16933d536bd8f89b346c3d9f942",
+      "context": "    Ok(*entry & TABLE_ADDRESS_MASK)\n}\n\nunsafe fn allocate_table() -> Result<u64, PagingError> {\n    memory::alloc_frame().ok_or(PagingError::OutOfMemory)\n}\n",
       "context_start_line": 447,
-      "end_line": 454,
+      "end_line": 452,
       "kind": "unsafe_fn",
       "line": 450,
       "path": "kernel/src/paging.rs"
@@ -2310,92 +2310,102 @@
     {
       "column": 1,
       "construct_sha256": "4824a560719a2f6f18aef1633a31e01d56a45c6aca0551c45c124bbef4c6b2cf",
-      "context": "    Ok(frame)\n}\n\nunsafe fn release_user_table(table_phys: u64, level: u8) -> Result<u64, PagingError> {\n    let entries = table_mut(table_phys);\n    let mut released = 0u64;\n    for entry in entries.iter_mut() {",
-      "context_start_line": 453,
-      "end_line": 482,
+      "context": "    memory::alloc_frame().ok_or(PagingError::OutOfMemory)\n}\n\nunsafe fn release_user_table(table_phys: u64, level: u8) -> Result<u64, PagingError> {\n    let entries = table_mut(table_phys);\n    let mut released = 0u64;\n    for entry in entries.iter_mut() {",
+      "context_start_line": 451,
+      "end_line": 480,
       "kind": "unsafe_fn",
-      "line": 456,
+      "line": 454,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 1,
       "construct_sha256": "224c98b2f660b9a1f5b2303723c82e66f699a5d0bea06eafd429fc1355fab2fc",
       "context": "    Ok(released)\n}\n\nunsafe fn table(physical: u64) -> &'static [u64; ENTRY_COUNT] {\n    &*(physical as *const [u64; ENTRY_COUNT])\n}\n",
-      "context_start_line": 481,
-      "end_line": 486,
+      "context_start_line": 479,
+      "end_line": 484,
       "kind": "unsafe_fn",
-      "line": 484,
+      "line": 482,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 1,
       "construct_sha256": "5785a87561cf15f6a6f38fd3b0f2390e9cf92d620c73e10d75f47c2a5f7d5b96",
       "context": "    &*(physical as *const [u64; ENTRY_COUNT])\n}\n\nunsafe fn table_mut(physical: u64) -> &'static mut [u64; ENTRY_COUNT] {\n    &mut *(physical as *mut [u64; ENTRY_COUNT])\n}\n",
-      "context_start_line": 485,
-      "end_line": 490,
+      "context_start_line": 483,
+      "end_line": 488,
       "kind": "unsafe_fn",
-      "line": 488,
+      "line": 486,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 1,
       "construct_sha256": "3d52edfad43a3e6c27973dff8340b674dba51b31d6f4b3c2e81385eaa09d16cf",
       "context": "    &mut *(physical as *mut [u64; ENTRY_COUNT])\n}\n\nunsafe fn write_cr3(root: u64) {\n    asm!(\"mov cr3, {root}\", root = in(reg) root, options(nostack, preserves_flags));\n}\n",
-      "context_start_line": 489,
-      "end_line": 494,
+      "context_start_line": 487,
+      "end_line": 492,
       "kind": "unsafe_fn",
-      "line": 492,
+      "line": 490,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 5,
       "construct_sha256": "47d8d2aa952cdf6f92f53be037f295d7510f2ba19cacbc73e98d02e46b517c2b",
       "context": "}\n\nunsafe fn write_cr3(root: u64) {\n    asm!(\"mov cr3, {root}\", root = in(reg) root, options(nostack, preserves_flags));\n}\n\nfn read_cr3() -> u64 {",
-      "context_start_line": 490,
-      "end_line": 493,
+      "context_start_line": 488,
+      "end_line": 491,
       "kind": "asm_macro",
-      "line": 493,
+      "line": 491,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 5,
       "construct_sha256": "63d08af8ada6d1e5917189ead72ff0d9a81be44af960a7a5dae7f5a31c742f70",
       "context": "\nfn read_cr3() -> u64 {\n    let value: u64;\n    unsafe { asm!(\"mov {}, cr3\", out(reg) value, options(nomem, nostack, preserves_flags)) };\n    value\n}\n",
-      "context_start_line": 495,
-      "end_line": 498,
+      "context_start_line": 493,
+      "end_line": 496,
       "kind": "unsafe_block",
-      "line": 498,
+      "line": 496,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 14,
       "construct_sha256": "8ac444808c92f34bac30a8b33286ae9faa81e489f5fceb916683f6227b752767",
       "context": "\nfn read_cr3() -> u64 {\n    let value: u64;\n    unsafe { asm!(\"mov {}, cr3\", out(reg) value, options(nomem, nostack, preserves_flags)) };\n    value\n}\n",
-      "context_start_line": 495,
-      "end_line": 498,
+      "context_start_line": 493,
+      "end_line": 496,
       "kind": "asm_macro",
-      "line": 498,
+      "line": 496,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 5,
       "construct_sha256": "fbb0a06dbe1cfd366b2787d5bb95776efd5cb9f92a910b2ec69aeb7c80c794be",
       "context": "fn nx_enabled() -> bool {\n    let low: u32;\n    let high: u32;\n    unsafe {\n        asm!(\n            \"rdmsr\",\n            in(\"ecx\") 0xc000_0080u32,",
-      "context_start_line": 502,
-      "end_line": 513,
+      "context_start_line": 500,
+      "end_line": 511,
       "kind": "unsafe_block",
-      "line": 505,
+      "line": 503,
       "path": "kernel/src/paging.rs"
     },
     {
       "column": 9,
       "construct_sha256": "aec7f649982aadf48f8a24b5b0a05ac680676a6a4e1aef765296838eb715c1af",
       "context": "    let low: u32;\n    let high: u32;\n    unsafe {\n        asm!(\n            \"rdmsr\",\n            in(\"ecx\") 0xc000_0080u32,\n            out(\"eax\") low,",
-      "context_start_line": 503,
-      "end_line": 512,
+      "context_start_line": 501,
+      "end_line": 510,
       "kind": "asm_macro",
-      "line": 506,
+      "line": 504,
       "path": "kernel/src/paging.rs"
+    },
+    {
+      "column": 9,
+      "construct_sha256": "e060f95dd4cb5b6a5fcf4a17eb1c8c612a6788a7da2b730a3088d457cee0bc96",
+      "context": "    for byte in page {\n        // SAFETY: each pointer refers to an initialized byte in this exclusively\n        // borrowed array. Byte stores need no stronger alignment and cannot escape it.\n        unsafe {\n            core::ptr::write_volatile(byte, 0);\n        }\n    }",
+      "context_start_line": 71,
+      "end_line": 76,
+      "kind": "unsafe_block",
+      "line": 74,
+      "path": "kernel/src/physmem.rs"
     },
     {
       "column": 21,
@@ -2421,20 +2431,20 @@
       "column": 5,
       "construct_sha256": "3b530e927b541856674d5ba884b81df48b40181bdcfab395e1f0335c9ece1c3b",
       "context": "}\n\nfn capture_vfs(vfs: &RamVfs) {\n    unsafe {\n        core::ptr::copy_nonoverlapping(vfs, core::ptr::addr_of_mut!(VFS_ROLLBACK), 1);\n    }\n}",
-      "context_start_line": 990,
-      "end_line": 995,
+      "context_start_line": 998,
+      "end_line": 1003,
       "kind": "unsafe_block",
-      "line": 993,
+      "line": 1001,
       "path": "kernel/src/runtime.rs"
     },
     {
       "column": 5,
       "construct_sha256": "9484dee2404f124ee5e38b52e1ded62f65e84dc7362bbc543b2f1c136c8acd2f",
       "context": "}\n\nfn restore_vfs(vfs: &mut RamVfs) {\n    unsafe {\n        core::ptr::copy_nonoverlapping(core::ptr::addr_of!(VFS_ROLLBACK), vfs, 1);\n    }\n}",
-      "context_start_line": 996,
-      "end_line": 1001,
+      "context_start_line": 1004,
+      "end_line": 1009,
       "kind": "unsafe_block",
-      "line": 999,
+      "line": 1007,
       "path": "kernel/src/runtime.rs"
     },
     {
@@ -3821,116 +3831,106 @@
       "column": 5,
       "construct_sha256": "bef7f57039ef04b83e38a63325caf69bb6e3635bb5c0289eb2f2455f81fe0f56",
       "context": "    } else if !line.is_empty() {\n        let _ = runtime::console_write(console, UNKNOWN, runtime::CONSOLE_LINE_ERROR);\n    }\n    unsafe {\n        DATA.len = 0;\n        DATA.history_cursor = DATA.history_len;\n    }",
-      "context_start_line": 1049,
-      "end_line": 1055,
+      "context_start_line": 1051,
+      "end_line": 1057,
       "kind": "unsafe_block",
-      "line": 1052,
+      "line": 1054,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "1ef1736fd577dcaf2bef291493115e0c4b5e6b418504ed9c90d5e63318541fbd",
       "context": "}\n\nfn network_status(console: u64) {\n    let config = unsafe { &mut *addr_of_mut!(DATA.network_config) };\n    let result = runtime::network_config(config);\n    let message: &[u8] = if result == core::mem::size_of::<runtime::UserNetworkConfig>() as u64 {\n        b\"network online - DHCP configuration available\"",
-      "context_start_line": 1056,
-      "end_line": 1059,
+      "context_start_line": 1058,
+      "end_line": 1061,
       "kind": "unsafe_block",
-      "line": 1059,
+      "line": 1061,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
       "context": "\n#[cfg(feature = \"validation-boot\")]\nfn prove_process_control(supervisor: u64) -> bool {\n    let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n    if runtime::process_launch(\n        supervisor ^ 1,\n        runtime::PROCESS_IMAGE_INIT,",
-      "context_start_line": 1068,
-      "end_line": 1071,
+      "context_start_line": 1070,
+      "end_line": 1073,
       "kind": "unsafe_block",
-      "line": 1071,
+      "line": 1073,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
       "context": "}\n\nfn launch_job(console: u64, supervisor: u64, mode: u64) {\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    let slot = jobs.iter().position(|job| job.id == 0);\n    let Some(slot) = slot else {\n        let _ = runtime::console_write(console, b\"job table full\", runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1102,
-      "end_line": 1105,
+      "context_start_line": 1104,
+      "end_line": 1107,
       "kind": "unsafe_block",
-      "line": 1105,
+      "line": 1107,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 14,
       "construct_sha256": "d5debf7dab1dd25435ff74e46e0da8009d989ddd7bf4e0db4f54e55cf1159454",
       "context": "        );\n        return;\n    }\n    let id = unsafe { read_volatile(addr_of!(DATA.next_job_id)) };\n    unsafe {\n        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };",
-      "context_start_line": 1117,
-      "end_line": 1120,
+      "context_start_line": 1119,
+      "end_line": 1122,
       "kind": "unsafe_block",
-      "line": 1120,
+      "line": 1122,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 5,
       "construct_sha256": "bcfd10e082c2b7f8c9c4ae9379b32fdca189ebbf793165af3e1978d9d574a278",
       "context": "        return;\n    }\n    let id = unsafe { read_volatile(addr_of!(DATA.next_job_id)) };\n    unsafe {\n        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };\n    }",
-      "context_start_line": 1118,
-      "end_line": 1124,
+      "context_start_line": 1120,
+      "end_line": 1126,
       "kind": "unsafe_block",
-      "line": 1121,
+      "line": 1123,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
       "context": "        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };\n    }\n    let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n    let mut output = [0u8; LINE_CAPACITY];\n    let mut len = 0usize;\n    append(&mut output, &mut len, b\"job \");",
-      "context_start_line": 1122,
-      "end_line": 1125,
+      "context_start_line": 1124,
+      "end_line": 1127,
       "kind": "unsafe_block",
-      "line": 1125,
+      "line": 1127,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
       "context": "\nfn list_jobs(console: u64) {\n    let mut any = false;\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    for job in jobs.iter().filter(|job| job.id != 0) {\n        any = true;\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };",
-      "context_start_line": 1140,
-      "end_line": 1143,
+      "context_start_line": 1142,
+      "end_line": 1145,
       "kind": "unsafe_block",
-      "line": 1143,
+      "line": 1145,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
       "context": "    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    for job in jobs.iter().filter(|job| job.id != 0) {\n        any = true;\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        let result = runtime::process_status(job.handle, status);\n        let mut output = [0u8; LINE_CAPACITY];\n        let mut len = 0usize;",
-      "context_start_line": 1143,
-      "end_line": 1146,
+      "context_start_line": 1145,
+      "end_line": 1148,
       "kind": "unsafe_block",
-      "line": 1146,
+      "line": 1148,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
       "context": "        let _ = runtime::console_write(console, b\"job id required\", runtime::CONSOLE_LINE_ERROR);\n        return;\n    };\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    let slot = jobs.iter().position(|job| job.id == id);\n    let Some(slot) = slot else {\n        let _ = runtime::console_write(console, b\"job not found\", runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1171,
-      "end_line": 1174,
+      "context_start_line": 1173,
+      "end_line": 1176,
       "kind": "unsafe_block",
-      "line": 1174,
+      "line": 1176,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "8c6f4e15450f8ab3d54cfd0a7cf877a3c4aee5edd21ba6e73ab9f825897f498f",
       "context": "        let _ = runtime::console_write(console, b\"job not found\", runtime::CONSOLE_LINE_ERROR);\n        return;\n    };\n    let handle = unsafe { DATA.jobs[slot].handle };\n    let result = if reap {\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        runtime::process_reap(handle, status)",
-      "context_start_line": 1177,
-      "end_line": 1180,
-      "kind": "unsafe_block",
-      "line": 1180,
-      "path": "userspace/shell/src/main.rs"
-    },
-    {
-      "column": 22,
-      "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
-      "context": "    };\n    let handle = unsafe { DATA.jobs[slot].handle };\n    let result = if reap {\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        runtime::process_reap(handle, status)\n    } else {\n        runtime::process_kill(handle)",
       "context_start_line": 1179,
       "end_line": 1182,
       "kind": "unsafe_block",
@@ -3938,93 +3938,103 @@
       "path": "userspace/shell/src/main.rs"
     },
     {
+      "column": 22,
+      "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
+      "context": "    };\n    let handle = unsafe { DATA.jobs[slot].handle };\n    let result = if reap {\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        runtime::process_reap(handle, status)\n    } else {\n        runtime::process_kill(handle)",
+      "context_start_line": 1181,
+      "end_line": 1184,
+      "kind": "unsafe_block",
+      "line": 1184,
+      "path": "userspace/shell/src/main.rs"
+    },
+    {
       "column": 9,
       "construct_sha256": "14994e6c69879bdd1727e45e95a2ca766d52a69aa793d49314f18cdee0f9fae9",
       "context": "        runtime::process_kill(handle)\n    };\n    if reap && result == process_status_size() {\n        unsafe { DATA.jobs[slot] = Job::empty() };\n        write_job_result(console, b\"reaped job \", id, runtime::CONSOLE_LINE_STATUS);\n    } else if !reap && result == 0 {\n        write_job_result(console, b\"killed job \", id, runtime::CONSOLE_LINE_STATUS);",
-      "context_start_line": 1185,
-      "end_line": 1188,
+      "context_start_line": 1187,
+      "end_line": 1190,
       "kind": "unsafe_block",
-      "line": 1188,
+      "line": 1190,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "fn prove_file_mutation(console: u64, persistent_available: bool) -> bool {\n    let existing = runtime::open_file(MUTATION_PROOF_PATH);\n    let restored = if !handle_error(existing) {\n        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n        let count = runtime::read_handle(existing, buffer);\n        let restored = count == MUTATION_PROOF_EXPECTED.len() as u64\n            && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED",
-      "context_start_line": 1252,
-      "end_line": 1255,
+      "context_start_line": 1254,
+      "end_line": 1257,
       "kind": "unsafe_block",
-      "line": 1255,
+      "line": 1257,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "        let _ = runtime::close_handle(handle);\n        return false;\n    }\n    let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n    let count = runtime::read_handle(handle, buffer);\n    let verified = count == MUTATION_PROOF_EXPECTED.len() as u64\n        && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED;",
-      "context_start_line": 1301,
-      "end_line": 1304,
+      "context_start_line": 1303,
+      "end_line": 1306,
       "kind": "unsafe_block",
-      "line": 1304,
+      "line": 1306,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "    if handle_error(handle) {\n        return false;\n    }\n    let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n    let count = runtime::read_handle(handle, buffer);\n    let restored = count == MUTATION_PROOF_EXPECTED.len() as u64\n        && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED",
-      "context_start_line": 1325,
-      "end_line": 1328,
+      "context_start_line": 1327,
+      "end_line": 1330,
       "kind": "unsafe_block",
-      "line": 1328,
+      "line": 1330,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "652d957c69800dbcfcaf92653b694705b5499538c15a13e98edd5120628f4b60",
       "context": "    if handle_error(parent) {\n        return false;\n    }\n    let stat = unsafe { &mut *addr_of_mut!(DATA.file_stat) };\n    let valid_parent = runtime::stat_handle(parent, stat)\n        == core::mem::size_of::<runtime::UserFileStat>() as u64\n        && stat.kind == runtime::FILE_KIND_DIRECTORY",
-      "context_start_line": 1358,
-      "end_line": 1361,
+      "context_start_line": 1360,
+      "end_line": 1363,
       "kind": "unsafe_block",
-      "line": 1361,
+      "line": 1363,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "652d957c69800dbcfcaf92653b694705b5499538c15a13e98edd5120628f4b60",
       "context": "        let _ = runtime::console_write(console, FILE_ERROR, runtime::CONSOLE_LINE_ERROR);\n        return;\n    }\n    let stat = unsafe { &mut *addr_of_mut!(DATA.file_stat) };\n    if runtime::stat_handle(handle, stat) != core::mem::size_of::<runtime::UserFileStat>() as u64 {\n        let _ = runtime::close_handle(handle);\n        let _ = runtime::console_write(console, FILE_ERROR, runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1385,
-      "end_line": 1388,
+      "context_start_line": 1387,
+      "end_line": 1390,
       "kind": "unsafe_block",
-      "line": 1388,
+      "line": 1390,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "\nfn advance_to_end(handle: u64) -> bool {\n    loop {\n        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n        let count = runtime::read_handle(handle, buffer);\n        if handle_error(count) {\n            return false;",
-      "context_start_line": 1508,
-      "end_line": 1511,
+      "context_start_line": 1510,
+      "end_line": 1513,
       "kind": "unsafe_block",
-      "line": 1511,
+      "line": 1513,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 21,
       "construct_sha256": "adfe84fd63799b0eaac409d6b94b535efba0aef3233e2943b4c8777b0cf9243a",
       "context": "    }\n    let mut cursor = 0u64;\n    loop {\n        let entry = unsafe { &mut *addr_of_mut!(DATA.directory_entry) };\n        let result = runtime::read_directory(handle, cursor, entry);\n        if result == 0 {\n            break;",
-      "context_start_line": 1544,
-      "end_line": 1547,
+      "context_start_line": 1546,
+      "end_line": 1549,
       "kind": "unsafe_block",
-      "line": 1547,
+      "line": 1549,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "    let mut output = [0u8; LINE_CAPACITY];\n    let mut output_len = 0usize;\n    loop {\n        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n        let count = runtime::read_handle(handle, buffer);\n        if count == runtime::ERROR_INVALID_ARGUMENT || count == runtime::ERROR_UNAVAILABLE {\n            let _ = runtime::console_write(console, FILE_ERROR, runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1589,
-      "end_line": 1592,
+      "context_start_line": 1591,
+      "end_line": 1594,
       "kind": "unsafe_block",
-      "line": 1592,
+      "line": 1594,
       "path": "userspace/shell/src/main.rs"
     }
   ]

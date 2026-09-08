@@ -448,9 +448,7 @@ unsafe fn ensure_user_table(entry: &mut u64) -> Result<u64, PagingError> {
 }
 
 unsafe fn allocate_table() -> Result<u64, PagingError> {
-    let frame = memory::alloc_frame().ok_or(PagingError::OutOfMemory)?;
-    core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize);
-    Ok(frame)
+    memory::alloc_frame().ok_or(PagingError::OutOfMemory)
 }
 
 unsafe fn release_user_table(table_phys: u64, level: u8) -> Result<u64, PagingError> {
