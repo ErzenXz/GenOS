@@ -258,3 +258,13 @@ By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 ### Exact CPU evidence
 
 The full `make test` suite now includes six CPU page-protection probes through `cargo xtask test-protections`, in addition to the eight exception cases in the existing CI lane. Commit source changes on a development branch before the full suite: the CPU harness refuses dirty source so its artifact identifies the actual tested commit. Host tests and static analysis remain available before committing. Each run retains its own serial log and manifest; the full suite copies protection evidence into the existing CI artifact paths.
+
+
+Normal images and validation images are selected explicitly; see
+[boot modes](docs/BOOT_MODES.md). Before committing source changes, run the
+workspace and Python harness tests, strict linting for both normal and validation
+features, and the [parser stress harness](tools/parser-stress/README.md).
+Review unsafe source changes with `python3 tools/check_unsafe.py --diff`, then
+explicitly regenerate the baseline with `--write-baseline` and check it with
+`--check`. A baseline is retained context, not a safety approval. The full QEMU
+suite and `python3 tools/test_bsp.py` require committed source for exact evidence.

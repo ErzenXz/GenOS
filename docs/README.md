@@ -19,6 +19,10 @@ These documents describe the exact bounded behavior demonstrated by the current 
 - [Runtime ownership and coordination](RUNTIME.md)
 - [Storage format and recovery](STORAGE.md)
 - [Networking contracts](NETWORKING.md)
+- [Normal and validation boot policies](BOOT_MODES.md)
+- [Single-core admission and interrupt contract](SINGLE_CORE.md)
+- [Unsafe source inventory](UNSAFE_INVENTORY.md)
+- [Production parser stress harness](../tools/parser-stress/README.md)
 
 ## Architecture decisions
 
