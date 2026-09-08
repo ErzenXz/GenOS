@@ -1006,7 +1006,7 @@ fn socket_slot(handle: u64) -> Option<usize> {
         return None;
     }
     let slot = (handle & 0xff) as usize;
-    (1..=SOCKET_CAPACITY).contains(&slot).then_some(slot - 1)
+    (1..=SOCKET_CAPACITY).contains(&slot).then(|| slot - 1)
 }
 
 #[cfg(test)]
@@ -1030,6 +1030,33 @@ mod tests {
             remote_sequence: 100,
             local_sequence: 200,
             source_mac: [1, 2, 3, 4, 5, 6],
+        }
+    }
+
+    #[test]
+    fn malformed_slot_bytes_are_rejected_without_mutating_live_sockets() {
+        let mut sockets = SocketSet::new();
+        let handle = sockets.open(OWNER, SocketProtocol::Udp).unwrap();
+        let before = sockets.status(OWNER, handle).unwrap();
+        for slot in 0..=255 {
+            let candidate = (handle & !0xff) | slot;
+            if candidate == handle {
+                continue;
+            }
+            assert_eq!(
+                sockets.status(OWNER, candidate),
+                Err(SocketError::InvalidHandle)
+            );
+            assert_eq!(
+                sockets.close(OWNER, candidate),
+                Err(SocketError::InvalidHandle)
+            );
+            assert_eq!(
+                sockets.send(OWNER, candidate, b"x"),
+                Err(SocketError::InvalidHandle)
+            );
+            assert_eq!(sockets.status(OWNER, handle), Ok(before));
+            assert_eq!(sockets.len_owner(OWNER), 1);
         }
     }
 
