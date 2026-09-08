@@ -422,7 +422,7 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
             failure.as_deref().unwrap_or("timeout or exited process")
         ));
     }
-    manifest.push_str("status=passed\n");
+    manifest = manifest.replacen("status=incomplete\n", "status=passed\n", 1);
     fs::write(&manifest_path, manifest).map_err(|e| e.to_string())?;
     println!("{label} boot passed: no startup proofs; real uname, launch/status/kill/reap and persistent file I/O");
     Ok(())

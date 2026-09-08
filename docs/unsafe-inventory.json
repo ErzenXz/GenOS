@@ -295,12 +295,12 @@
     {
       "lines": 2490,
       "path": "tools/xtask/src/main.rs",
-      "sha256": "8bea73f27678639d0c8347dab11f73aeb28b5114fb3edc5b918e340af0e015a5"
+      "sha256": "51e1c760ca1f7380655b779eea9bfe37547f1d1404fcf2ad6232653966ee9d73"
     },
     {
-      "lines": 197,
+      "lines": 237,
       "path": "tools/xtask/src/normal_boot.rs",
-      "sha256": "68575c07526dc7cd0aa20b182a7482b6bd37e58ea92adcb4d40575dc867dc1ff"
+      "sha256": "3badb70fe982e8ce375d08ef09bd3a7486ce6b69fcdffd31feb1906509386cc9"
     },
     {
       "lines": 174,

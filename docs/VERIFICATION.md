@@ -50,6 +50,8 @@ Local evidence:
   restore, torn-generation recovery, corruption/read-only behavior, serial input,
   networking and fault cases, external SDK execution, every process-construction
   allocation failure, all six CPU protection probes, and both normal boot profiles.
+- All eight original CPU exception cases also passed on `5ea37bb`: user/kernel
+  divide error, invalid opcode, general protection and page fault.
 - All five BSP cases passed on `d0e1420`, including one/four-CPU normal boots,
   repeated kernel/table entry, and an explicitly injected non-BSP identity sample.
 - Workspace host tests and strict linting pass, including nine newly executable
