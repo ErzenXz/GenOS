@@ -14,3 +14,8 @@ bench = false
 
 [dependencies]
 genos-user-runtime = { path = "../runtime" }
+
+[features]
+default = []
+# Startup self-tests are available only in explicitly built validation images.
+validation-boot = []

@@ -900,7 +900,7 @@ fn endpoint_handle_slot(handle: u64) -> Option<usize> {
     let slot = (handle & 0xff) as usize;
     (1..=ENDPOINT_HANDLE_CAPACITY)
         .contains(&slot)
-        .then_some(slot - 1)
+        .then(|| slot - 1)
 }
 
 impl EndpointState {
@@ -2119,89 +2119,94 @@ impl ProcessManager {
                     crate::serial::print(" text=");
                     crate::serial::print(text.as_str());
                     crate::serial::println("");
-                    if text.as_str() == "storage status visible" {
-                        crate::serial::println("USER_STORAGE_STATUS_VISIBLE_OK");
-                    }
-                    if text.as_str() == "storage failure visible" {
-                        crate::serial::println("USER_STORAGE_FAILURE_VISIBLE_OK");
-                        crate::serial::println("STORAGE_FAILURE_SURFACE_READY");
-                    }
-                    if text.as_str() == "storage read-only visible" {
-                        crate::serial::println("USER_STORAGE_READ_ONLY_OK");
-                    }
-                    if text.as_str() == "RAMFS temp visible" {
-                        crate::serial::println("USER_RAMFS_TEMP_APP_OK");
-                    }
-                    if text.as_str() == "network DNS resolved" {
-                        crate::serial::println("USER_DNS_RESOLVE_OK");
-                    }
-                    if text.as_str() == "network HTTP complete" {
-                        crate::serial::println("USER_HTTP_REQUEST_OK");
-                        crate::serial::println("USER_SOCKET_API_READY");
-                    }
-                    if text.as_str() == "network timeout handled" {
-                        crate::serial::println("USER_NETWORK_TIMEOUT_OK");
-                    }
-                    if text.as_str() == "network diagnostics ready" {
-                        crate::serial::println("USER_NETWORK_DIAGNOSTICS_READY");
-                    }
-                    if text.as_str() == "nonblocking socket capabilities ready" {
-                        crate::serial::println("USER_SOCKET_CAPABILITY_READY abi=18");
-                    }
-                    if text.as_str() == "asynchronous UDP socket ready" {
-                        crate::serial::println("USER_SOCKET_UDP_ASYNC_READY");
-                    }
-                    if text.as_str() == "asynchronous TCP socket ready" {
-                        crate::serial::println("USER_SOCKET_TCP_ASYNC_READY");
-                    }
-                    if text.as_str() == "listener capability authority ready" {
-                        crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=18");
-                    }
-                    if text.as_str() == "passive TCP listener ready" {
-                        crate::serial::println("USER_SOCKET_PASSIVE_LISTEN_READY port=18081");
-                    }
-                    if text.as_str() == "passive TCP listener ready" {
-                        crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
-                    }
-                    if text.as_str() == "passive TCP listener ready" {
-                        crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
-                    }
-                    if text.as_str() == "passive TCP accept ready" {
-                        crate::serial::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
-                    }
-                    if text.as_str() == "passive TCP stream ready" {
-                        crate::serial::println("USER_SOCKET_PASSIVE_STREAM_READY");
-                    }
-                    if text.as_str() == "concurrent passive TCP streams ready" {
-                        crate::serial::println("USER_SOCKET_PASSIVE_CONCURRENT_READY streams=2");
-                    }
-                    if text.as_str() == "socket readiness wait ready" {
-                        crate::serial::println(
-                            "USER_SOCKET_READINESS_WAIT_READY abi=18 wake_budget=2",
-                        );
-                    }
-                    if text.as_str() == "durable file committed" {
-                        crate::serial::println("USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT");
-                    }
-                    if text.as_str() == "durable file restored" {
-                        crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
-                    }
-                    if text.as_str() == "durable file restored read-only" {
-                        crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
-                        crate::serial::println("USER_READ_ONLY_MUTATION_DENIED_OK");
-                    }
-                    if text.as_str() == "session file written" {
-                        crate::serial::println("USER_SESSION_WRITE_OK path=/USER/SHELL.TXT");
-                    }
-                    if text.as_str().starts_with("SHELL.ELF ready") {
-                        if text.as_str().contains("process control") {
-                            crate::serial::println("USER_SHELL_PROCESS_CONTROL_OK");
+                    #[cfg(feature = "validation-boot")]
+                    {
+                        if text.as_str() == "storage status visible" {
+                            crate::serial::println("USER_STORAGE_STATUS_VISIBLE_OK");
                         }
-                        if text.as_str().contains("filesystem") {
-                            crate::serial::println("USER_SHELL_NAMESPACE_OK");
-                            crate::serial::println("USER_SHELL_HISTORY_OK");
+                        if text.as_str() == "storage failure visible" {
+                            crate::serial::println("USER_STORAGE_FAILURE_VISIBLE_OK");
+                            crate::serial::println("STORAGE_FAILURE_SURFACE_READY");
                         }
-                        crate::serial::println("USER_SHELL_READY");
+                        if text.as_str() == "storage read-only visible" {
+                            crate::serial::println("USER_STORAGE_READ_ONLY_OK");
+                        }
+                        if text.as_str() == "RAMFS temp visible" {
+                            crate::serial::println("USER_RAMFS_TEMP_APP_OK");
+                        }
+                        if text.as_str() == "network DNS resolved" {
+                            crate::serial::println("USER_DNS_RESOLVE_OK");
+                        }
+                        if text.as_str() == "network HTTP complete" {
+                            crate::serial::println("USER_HTTP_REQUEST_OK");
+                            crate::serial::println("USER_SOCKET_API_READY");
+                        }
+                        if text.as_str() == "network timeout handled" {
+                            crate::serial::println("USER_NETWORK_TIMEOUT_OK");
+                        }
+                        if text.as_str() == "network diagnostics ready" {
+                            crate::serial::println("USER_NETWORK_DIAGNOSTICS_READY");
+                        }
+                        if text.as_str() == "nonblocking socket capabilities ready" {
+                            crate::serial::println("USER_SOCKET_CAPABILITY_READY abi=18");
+                        }
+                        if text.as_str() == "asynchronous UDP socket ready" {
+                            crate::serial::println("USER_SOCKET_UDP_ASYNC_READY");
+                        }
+                        if text.as_str() == "asynchronous TCP socket ready" {
+                            crate::serial::println("USER_SOCKET_TCP_ASYNC_READY");
+                        }
+                        if text.as_str() == "listener capability authority ready" {
+                            crate::serial::println("USER_SOCKET_LISTENER_CAPABILITY_READY abi=18");
+                        }
+                        if text.as_str() == "passive TCP listener ready" {
+                            crate::serial::println("USER_SOCKET_PASSIVE_LISTEN_READY port=18081");
+                        }
+                        if text.as_str() == "passive TCP listener ready" {
+                            crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
+                        }
+                        if text.as_str() == "passive TCP listener ready" {
+                            crate::serial::println("USER_SOCKET_PASSIVE_LISTENER_READY");
+                        }
+                        if text.as_str() == "passive TCP accept ready" {
+                            crate::serial::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
+                        }
+                        if text.as_str() == "passive TCP stream ready" {
+                            crate::serial::println("USER_SOCKET_PASSIVE_STREAM_READY");
+                        }
+                        if text.as_str() == "concurrent passive TCP streams ready" {
+                            crate::serial::println(
+                                "USER_SOCKET_PASSIVE_CONCURRENT_READY streams=2",
+                            );
+                        }
+                        if text.as_str() == "socket readiness wait ready" {
+                            crate::serial::println(
+                                "USER_SOCKET_READINESS_WAIT_READY abi=18 wake_budget=2",
+                            );
+                        }
+                        if text.as_str() == "durable file committed" {
+                            crate::serial::println("USER_DURABLE_WRITE_OK path=/USER/SHELL.TXT");
+                        }
+                        if text.as_str() == "durable file restored" {
+                            crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
+                        }
+                        if text.as_str() == "durable file restored read-only" {
+                            crate::serial::println("USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT");
+                            crate::serial::println("USER_READ_ONLY_MUTATION_DENIED_OK");
+                        }
+                        if text.as_str() == "session file written" {
+                            crate::serial::println("USER_SESSION_WRITE_OK path=/USER/SHELL.TXT");
+                        }
+                        if text.as_str().starts_with("SHELL.ELF ready") {
+                            if text.as_str().contains("process control") {
+                                crate::serial::println("USER_SHELL_PROCESS_CONTROL_OK");
+                            }
+                            if text.as_str().contains("filesystem") {
+                                crate::serial::println("USER_SHELL_NAMESPACE_OK");
+                                crate::serial::println("USER_SHELL_HISTORY_OK");
+                            }
+                            crate::serial::println("USER_SHELL_READY");
+                        }
                     }
                 }
                 ProcessEvent::ConsoleSetInput { handle, text } => {
@@ -4996,13 +5001,25 @@ pub fn syscall_handler() -> unsafe extern "C" fn() {
     genos_syscall_stub
 }
 
-pub fn run_probe(elf_bytes: &'static [u8]) {
+/// Register the immutable initrd image independently of the validation suite.
+/// Actual launches still perform all ELF layout, mapping, and ownership checks.
+pub fn register_init_elf(elf_bytes: &'static [u8]) -> bool {
+    if ElfImage::parse(elf_bytes).is_err() || ELF_READY.load(Ordering::Acquire) {
+        return false;
+    }
+    // SAFETY: the claimed boot CPU calls this once before launching userspace.
+    // The initrd slice is immutable and lives for the entire boot. Interrupts
+    // cannot read these fields; ELF_READY publishes both values after writing.
     unsafe {
         core::ptr::addr_of_mut!(USER_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
         core::ptr::addr_of_mut!(USER_ELF_LENGTH).write(elf_bytes.len());
     }
-    let faulting = require_process(build_process(1, TOKEN_FAULT, elf_bytes));
     ELF_READY.store(true, Ordering::Release);
+    true
+}
+
+pub fn run_probe(elf_bytes: &'static [u8]) {
+    let faulting = require_process(build_process(1, TOKEN_FAULT, elf_bytes));
     crate::serial::print("USER_ELF_VALIDATED entry=0x");
     crate::serial::print_hex(faulting.context.rip);
     crate::serial::print(" segments=");
@@ -5114,6 +5131,8 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
 }
 
 pub fn register_shell_elf(elf_bytes: &'static [u8]) {
+    // SAFETY: the claimed boot CPU registers this immutable, boot-lifetime
+    // initrd slice before any process manager reads or launches the shell.
     unsafe {
         core::ptr::addr_of_mut!(SHELL_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
         core::ptr::addr_of_mut!(SHELL_ELF_LENGTH).write(elf_bytes.len());
@@ -5121,7 +5140,7 @@ pub fn register_shell_elf(elf_bytes: &'static [u8]) {
 }
 
 #[allow(dead_code)]
-// Retained as explicit probe telemetry while validation and release boot remain combined.
+// Reports actual validation execution; normal boot never marks this passed.
 pub fn probe_passed() -> bool {
     PROBE_PASSED.load(Ordering::Acquire)
 }
@@ -6311,11 +6330,18 @@ fn run_supervisor_cleanup_case(state: ManagedState, owner_task: u32, child_task:
 }
 
 fn user_elf() -> Result<&'static [u8], LaunchError> {
+    if !ELF_READY.load(Ordering::Acquire) {
+        return Err(LaunchError::ImageUnavailable);
+    }
+    // SAFETY: the boot CPU published this immutable, boot-lifetime slice once
+    // through ELF_READY; runtime readers never mutate or free its storage.
     let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };
+    // SAFETY: published together with USER_ELF_ADDRESS, with the same lifetime.
     let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };
     if address == 0 || length == 0 {
         return Err(LaunchError::ImageUnavailable);
     }
+    // SAFETY: these are the unchanged pointer and length of the registered slice.
     Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
 }
 

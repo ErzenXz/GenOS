@@ -1,4 +1,41 @@
 use core::arch::asm;
+use kernel::boot_cpu::{BootClaim, Features as BootFeatures};
+
+static BOOT_CLAIM: BootClaim = BootClaim::new();
+const IA32_APIC_BASE: u32 = 0x1b;
+
+/// First operation at the kernel entry point, before UART, tables or memory.
+/// Rejected entrants must halt without accessing BSP-owned mutable state.
+/// IF remains clear on both success and rejection.
+pub fn claim_boot_cpu() -> bool {
+    disable_interrupts();
+    let (features, apic_base) = boot_cpu_identity();
+    BOOT_CLAIM.claim(features, apic_base)
+}
+
+fn boot_cpu_identity() -> (BootFeatures, Option<u64>) {
+    use core::arch::x86_64::__cpuid;
+    // CPUID exists in long mode. Do not query a missing basic feature leaf.
+    if __cpuid(0).eax < 1 {
+        return (BootFeatures::from_cpuid(0, 0), None);
+    }
+    let leaf = __cpuid(1);
+    let features = BootFeatures::from_cpuid(leaf.ebx, leaf.edx);
+    if !features.can_read_apic_base() {
+        return (features, None);
+    }
+    let (low, high): (u32, u32);
+    // SAFETY: CPL0 x86_64 entry with a valid firmware-provided stack and IF
+    // clear. CPUID reported both MSR and local APIC support, establishing the
+    // architectural IA32_APIC_BASE read contract. No shared memory or APIC
+    // state is mutated. EDX:EAX are outputs and ECX selects the register;
+    // RDMSR leaves flags and stack intact and returns to the caller.
+    unsafe {
+        asm!("rdmsr", in("ecx") IA32_APIC_BASE, out("eax") low, out("edx") high,
+             options(nomem, nostack, preserves_flags));
+    }
+    (features, Some((u64::from(high) << 32) | u64::from(low)))
+}
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
@@ -85,9 +122,8 @@ impl IdtEntry {
     }
 }
 
-// BSP initialization owns these objects with IF clear. The IDT has its own
-// page so F2 can protect it without making unrelated mutable data read-only.
-// Alignment alone is not hardware write protection; that gate remains open.
+// The atomic BSP entry/table gates own these objects with IF clear. The IDT
+// has its own page and becomes CPU-enforced read-only after IRQ installation.
 static mut IDT: Idt = Idt([IdtEntry::missing(); 256]);
 static mut GDT: [u64; 7] = [0; 7];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
@@ -106,7 +142,17 @@ static mut DEBUG_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE
 
 pub fn init() {
     disable_interrupts();
-    // SAFETY: only the BSP executes this initialization. All table entries and
+    let (features, apic_base) = boot_cpu_identity();
+    if !BOOT_CLAIM.begin_table_init(features, apic_base) {
+        halt_loop();
+    }
+    crate::serial::print("SMP_DISABLED policy=bsp-only active_cpus=1 initial_apic_id=");
+    crate::serial::print_u64(u64::from(features.initial_apic_id));
+    crate::serial::print(" cpuid_max_logical_per_package=");
+    crate::serial::print_u64(u64::from(features.max_logical_per_package));
+    crate::serial::println("");
+    // SAFETY: the hardware BSP role and irreversible atomic table-init claim
+    // above admit exactly one entrant. IF is clear. All table entries and
     // stack addresses are initialized before LIDT publishes the new table.
     unsafe {
         init_gdt();
@@ -268,11 +314,17 @@ pub unsafe fn set_user_idt_handler(vector: usize, handler: unsafe extern "C" fn(
 }
 
 pub fn enable_interrupts() {
-    unsafe { asm!("sti", options(nomem, nostack, preserves_flags)) };
+    // SAFETY: CPL0 only; callers must install valid interrupt state first.
+    // STI changes IF and preserves the stack. The implicit memory clobber
+    // prevents protected memory operations moving past this boundary.
+    unsafe { asm!("sti", options(nostack)) };
 }
 
 pub fn disable_interrupts() {
-    unsafe { asm!("cli", options(nomem, nostack, preserves_flags)) };
+    // SAFETY: CPL0 only. CLI clears IF without changing the stack. The
+    // implicit memory clobber prevents memory accesses escaping a critical
+    // section. This masks local IRQs, not NMIs, exceptions or other CPUs.
+    unsafe { asm!("cli", options(nostack)) };
 }
 
 pub fn interrupts_enabled() -> bool {

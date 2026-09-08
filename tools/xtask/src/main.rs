@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod normal_boot;
 mod sdk;
 
 const BUILD_DIR: &str = "build";
@@ -40,6 +41,9 @@ fn main() {
     let command = args.next().unwrap_or_else(|| "build".to_string());
     let result = match command.as_str() {
         "build" => build(),
+        "build-test" => build_validation(),
+        "build-release" => build_mode(BuildMode::Release, None),
+        "test-release" => test_normal_boots(),
         "run" => run(),
         "test" => test(),
         "test-network" => test_network(),
@@ -64,15 +68,53 @@ fn main() {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildMode {
+    Normal,
+    Validation,
+    Release,
+}
+
+impl BuildMode {
+    fn kernel_path(self) -> &'static str {
+        if self == Self::Release {
+            "target/x86_64-unknown-none/release/kernel"
+        } else {
+            "target/x86_64-unknown-none/debug/kernel"
+        }
+    }
+    fn bootloader_path(self) -> &'static str {
+        if self == Self::Release {
+            "target/x86_64-unknown-uefi/release/bootloader.efi"
+        } else {
+            "target/x86_64-unknown-uefi/debug/bootloader.efi"
+        }
+    }
+}
+
 fn build() -> Result<(), String> {
+    build_mode(BuildMode::Normal, None)
+}
+fn build_validation() -> Result<(), String> {
+    build_mode(BuildMode::Validation, None)
+}
+
+fn build_mode(mode: BuildMode, fault: Option<&str>) -> Result<(), String> {
+    if fault.is_some() && mode != BuildMode::Validation {
+        return Err("fault injection requires validation boot".to_string());
+    }
     fs::create_dir_all(BUILD_DIR).map_err(|e| e.to_string())?;
-    cargo([
+    let mut loader = vec![
         "build",
         "-p",
         "bootloader",
         "--target",
         "x86_64-unknown-uefi",
-    ])?;
+    ];
+    if mode == BuildMode::Release {
+        loader.push("--release");
+    }
+    cargo(loader)?;
     cargo([
         "build",
         "-p",
@@ -82,7 +124,7 @@ fn build() -> Result<(), String> {
         "--target",
         "x86_64-unknown-none",
     ])?;
-    cargo([
+    let mut shell = vec![
         "build",
         "-p",
         "genos-shell",
@@ -90,15 +132,42 @@ fn build() -> Result<(), String> {
         "userspace",
         "--target",
         "x86_64-unknown-none",
-    ])?;
-    cargo(["build", "-p", "kernel", "--target", "x86_64-unknown-none"])?;
+    ];
+    if mode == BuildMode::Validation {
+        shell.extend(["--features", "validation-boot"]);
+    }
+    cargo(shell)?;
+    let mut kernel = vec!["build", "-p", "kernel", "--target", "x86_64-unknown-none"];
+    if mode == BuildMode::Release {
+        kernel.push("--release");
+    }
+    let features = match fault {
+        Some("network-test-faults") => "validation-boot,network-test-faults",
+        Some("memory-test-faults") => "validation-boot,memory-test-faults",
+        Some(_) => return Err("unknown validation fault mode".to_string()),
+        None => "validation-boot",
+    };
+    if mode == BuildMode::Validation {
+        kernel.extend(["--features", features]);
+    }
+    cargo(kernel)?;
     write_initrd(Path::new(INITRD))?;
-    create_image()?;
-    ensure_data_image()
+    create_image_for(mode)?;
+    ensure_data_image()?;
+    fs::write(
+        "build/image-mode.txt",
+        format!(
+            "{mode:?}\n{}\n{}\n",
+            mode.kernel_path(),
+            mode.bootloader_path()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn run() -> Result<(), String> {
-    build()?;
+    build_mode(BuildMode::Release, None)?;
     let firmware = find_ovmf_code()?;
     let status = Command::new("qemu-system-x86_64")
         .arg("-machine")
@@ -142,18 +211,189 @@ fn test() -> Result<(), String> {
     cargo(["test", "-p", "genos_abi"])?;
     cargo(["test", "-p", "kernel", "--lib"])?;
     cargo(["test", "-p", "xtask"])?;
-    build()?;
+    build_validation()?;
     ensure_test_data_image(true)?;
     smoke_qemu()?;
     test_sdk()?;
     test_memory()?;
-    test_protections()
+    test_protections()?;
+    test_normal_boots()
 }
 
 fn test_serial() -> Result<(), String> {
-    build()?;
+    build_validation()?;
     ensure_test_data_image(false)?;
     smoke_serial_terminal_input()
+}
+
+fn verify_normal_binary(mode: BuildMode) -> Result<(), String> {
+    let bytes = fs::read(mode.kernel_path()).map_err(|e| e.to_string())?;
+    for marker in normal_boot::FORBIDDEN {
+        if bytes
+            .windows(marker.len())
+            .any(|part| part == marker.as_bytes())
+        {
+            return Err(format!(
+                "normal kernel retained validation marker: {marker}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn test_normal_boots() -> Result<(), String> {
+    for mode in [BuildMode::Normal, BuildMode::Release] {
+        build_mode(mode, None)?;
+        verify_normal_binary(mode)?;
+        smoke_normal_qemu(mode)?;
+    }
+    Ok(())
+}
+
+fn smoke_normal_qemu(mode: BuildMode) -> Result<(), String> {
+    let label = if mode == BuildMode::Release {
+        "release"
+    } else {
+        "normal-debug"
+    };
+    let data_image = PathBuf::from(format!("build/genos-data-{label}-test.img"));
+    write_partitioned_image(&data_image, false)?;
+    let firmware = find_ovmf_code()?;
+    let mut command = Command::new("qemu-system-x86_64");
+    command
+        .args([
+            "-machine",
+            "q35",
+            "-m",
+            "512M",
+            "-display",
+            "none",
+            "-monitor",
+            "none",
+            "-serial",
+            "stdio",
+            "-no-reboot",
+        ])
+        .arg("-drive")
+        .arg(format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            firmware.display()
+        ))
+        .arg("-drive")
+        .arg(format!("format=raw,file={IMAGE}"))
+        .args(["-device", "piix3-ide,id=genos-storage", "-drive"])
+        .arg(format!(
+            "if=none,id=genos-data,format=raw,cache=writeback,file={}",
+            data_image.display()
+        ))
+        .args([
+            "-device",
+            "ide-hd,drive=genos-data,bus=genos-storage.0,unit=0",
+        ]);
+    if mode == BuildMode::Release {
+        command.args(["-netdev", "user,id=net0", "-device", MODERN_NETWORK_DEVICE]);
+    } else {
+        command.args(["-net", "none"]);
+    }
+    let manifest_path = format!("build/normal-{label}-manifest.txt");
+    let describe = |program: &str, args: &[&str]| -> String {
+        Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .unwrap_or_else(|| "unavailable".into())
+    };
+    let hash = describe(
+        "python3",
+        &[
+            "-c",
+            "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())",
+            IMAGE,
+        ],
+    );
+    let mut manifest = format!("status=incomplete\nmode={mode:?}\ncommit={}\nworking_tree_status={:?}\nrust={}\nqemu={}\nimage_sha256={hash}\ncommand={command:?}\n",
+        describe("git", &["rev-parse", "HEAD"]),
+        describe("git", &["status", "--porcelain"]),
+        describe("rustc", &["-Vv"]),
+        describe("qemu-system-x86_64", &["--version"]));
+    fs::write(&manifest_path, &manifest).map_err(|e| e.to_string())?;
+    let stderr =
+        File::create(format!("build/normal-{label}-qemu.log")).map_err(|e| e.to_string())?;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut input = child.stdin.take().ok_or("missing normal-boot stdin")?;
+    let stdout = child.stdout.take().ok_or("missing normal-boot stdout")?;
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) => {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let mut transcript = normal_boot::Transcript::default();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut output = String::new();
+    let mut passed = false;
+    let mut failure = None;
+    while Instant::now() < deadline {
+        if let Ok(line) = receiver.recv_timeout(Duration::from_millis(100)) {
+            output.push_str(&line);
+            output.push('\n');
+            match transcript.observe(&line) {
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+                Ok(Some(command)) => {
+                    if let Err(error) = input
+                        .write_all(command.as_bytes())
+                        .and_then(|()| input.flush())
+                    {
+                        failure = Some(format!("serial command write failed: {error}"));
+                        break;
+                    }
+                }
+                Ok(None) => {}
+            }
+            if transcript.complete()
+                && (mode != BuildMode::Release || output.contains("IPV6_ICMP_ECHO_OK"))
+            {
+                passed = true;
+                break;
+            }
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(input);
+    let _ = reader.join();
+    fs::write(format!("build/serial-{label}.log"), &output).map_err(|e| e.to_string())?;
+    if !passed {
+        return Err(format!(
+            "{label} interactive boot failed at step {}: {}; serial:\n{output}",
+            transcript.step(),
+            failure.as_deref().unwrap_or("timeout or exited process")
+        ));
+    }
+    manifest.push_str("status=passed\n");
+    fs::write(&manifest_path, manifest).map_err(|e| e.to_string())?;
+    println!("{label} boot passed: no startup proofs; real uname, launch/status/kill/reap and persistent file I/O");
+    Ok(())
 }
 
 fn test_protections() -> Result<(), String> {
@@ -212,7 +452,7 @@ fn test_protections() -> Result<(), String> {
 }
 
 fn test_memory() -> Result<(), String> {
-    build()?;
+    build_validation()?;
     ensure_test_data_image(false)?;
     let result = (|| {
         cargo([
@@ -220,7 +460,7 @@ fn test_memory() -> Result<(), String> {
             "-p",
             "kernel",
             "--features",
-            "memory-test-faults",
+            "validation-boot,memory-test-faults",
             "--target",
             "x86_64-unknown-none",
         ])?;
@@ -246,7 +486,7 @@ fn test_memory() -> Result<(), String> {
 
 fn test_sdk() -> Result<(), String> {
     let (workspace, elf) = sdk::build_external_example()?;
-    build()?;
+    build_validation()?;
     ensure_test_data_image(false)?;
     let result = (|| {
         write_initrd_with_sdk(Path::new(INITRD), Some(elf))?;
@@ -274,7 +514,12 @@ fn test_sdk() -> Result<(), String> {
 }
 
 fn benchmark() -> Result<(), String> {
-    build()?;
+    let result = benchmark_validation();
+    restore_production_after(result)
+}
+
+fn benchmark_validation() -> Result<(), String> {
+    build_validation()?;
     let mut samples = Vec::new();
     let data_image = Path::new("build/genos-data-benchmark.img");
     let mut evidence = String::new();
@@ -329,7 +574,7 @@ fn benchmark() -> Result<(), String> {
         let bytes = fs::metadata(path).map_err(|e| e.to_string())?.len();
         sizes.push_str(&format!("| `{path}` | {bytes} |\n"));
     }
-    let report = format!("# GenOS development benchmark\n\nHost: {} / {}. {}. {}.\n\nThree separate QEMU q35 boots, 512 MiB RAM, no NIC, fresh disposable data disk each run, headless serial terminal. The normal user disk is not used. Development kernel; optimized userspace.\n\n| Metric | Milliseconds |\n|---|---:|\n| Fastest boot | {} |\n| Median boot | {} |\n| Slowest boot | {} |\n\nTiming starts before QEMU launch and ends after its serial readiness markers and process teardown. It includes firmware, kernel acceptance probes, fresh-volume initialization, and up to 100 ms harness polling. These are end-to-end development-boot observations, not kernel-only latency or comparative speed claims.\n\n| Artifact | Bytes on disk |\n|---|---:|\n{}\nThe disk image is sparse; apparent size is shown, not resident memory or allocated disk blocks.\n\n```text\n{}```\n\nReproduce with `cargo xtask bench`. Raw logs: `build/serial-benchmark-0.log` through `build/serial-benchmark-2.log`.\n",
+    let report = format!("# GenOS development benchmark\n\nHost: {} / {}. {}. {}.\n\nThree separate QEMU q35 boots, 512 MiB RAM, no NIC, fresh disposable data disk each run, headless serial terminal. The normal user disk is not used. Validation boot policy; development kernel; optimized userspace.\n\n| Metric | Milliseconds |\n|---|---:|\n| Fastest boot | {} |\n| Median boot | {} |\n| Slowest boot | {} |\n\nTiming starts before QEMU launch and ends after its serial readiness markers and process teardown. It includes firmware, kernel acceptance probes, fresh-volume initialization, and up to 100 ms harness polling. These are end-to-end development-boot observations, not kernel-only latency or comparative speed claims.\n\n| Artifact | Bytes on disk |\n|---|---:|\n{}\nThe disk image is sparse; apparent size is shown, not resident memory or allocated disk blocks.\n\n```text\n{}```\n\nReproduce with `cargo xtask bench`. Raw logs: `build/serial-benchmark-0.log` through `build/serial-benchmark-2.log`.\n",
         std::env::consts::OS, std::env::consts::ARCH, version("qemu-system-x86_64"), version("rustc"),
         samples[0], samples[1], samples[2], sizes, evidence);
     fs::write("build/benchmarks.md", report).map_err(|e| e.to_string())?;
@@ -358,48 +603,15 @@ fn test_network() -> Result<(), String> {
         smoke_network_qemu()
     })();
     restore_production_after(result)?;
-    smoke_network_without_http_server()
+    let normal_server_result = (|| {
+        build_validation()?;
+        smoke_network_without_http_server()
+    })();
+    restore_production_after(normal_server_result)
 }
 
 fn build_network_test_image() -> Result<(), String> {
-    fs::create_dir_all(BUILD_DIR).map_err(|e| e.to_string())?;
-    cargo([
-        "build",
-        "-p",
-        "bootloader",
-        "--target",
-        "x86_64-unknown-uefi",
-    ])?;
-    cargo([
-        "build",
-        "-p",
-        "genos-init",
-        "--profile",
-        "userspace",
-        "--target",
-        "x86_64-unknown-none",
-    ])?;
-    cargo([
-        "build",
-        "-p",
-        "genos-shell",
-        "--profile",
-        "userspace",
-        "--target",
-        "x86_64-unknown-none",
-    ])?;
-    cargo([
-        "build",
-        "-p",
-        "kernel",
-        "--features",
-        "network-test-faults",
-        "--target",
-        "x86_64-unknown-none",
-    ])?;
-    write_initrd(Path::new(INITRD))?;
-    create_image()?;
-    ensure_data_image()
+    build_mode(BuildMode::Validation, Some("network-test-faults"))
 }
 
 fn verify_production_fault_hooks_absent() -> Result<(), String> {
@@ -542,8 +754,12 @@ fn write_initrd_with_sdk(path: &Path, sdk_elf: Option<Vec<u8>>) -> Result<(), St
 }
 
 fn create_image() -> Result<(), String> {
-    let bootloader = Path::new("target/x86_64-unknown-uefi/debug/bootloader.efi");
-    let kernel = Path::new("target/x86_64-unknown-none/debug/kernel");
+    create_image_for(BuildMode::Normal)
+}
+
+fn create_image_for(mode: BuildMode) -> Result<(), String> {
+    let bootloader = Path::new(mode.bootloader_path());
+    let kernel = Path::new(mode.kernel_path());
     if !bootloader.exists() {
         return Err(format!("missing {}", bootloader.display()));
     }

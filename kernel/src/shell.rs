@@ -20,8 +20,11 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
     let mut awaiting_command_completion = false;
     let mut last_was_cr = false;
     let mut serial_rx_marker_sent = false;
+    let mut initial_prompt_sent = cfg!(feature = "validation-boot");
     serial::println("");
-    serial::print("genos> ");
+    if initial_prompt_sent {
+        serial::print("genos> ");
+    }
 
     loop {
         let tick = interrupts::poll_fallback_tick();
@@ -81,6 +84,15 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
             last_tick = tick;
         }
 
+        if !initial_prompt_sent && runtime.console_input_ready() {
+            // This is emitted only after the real Ring 3 shell has written its
+            // banner and armed the existing input capability through syscalls.
+            if !cfg!(feature = "validation-boot") {
+                serial::println("NORMAL_SHELL_READY");
+            }
+            serial::print("genos> ");
+            initial_prompt_sent = true;
+        }
         if awaiting_command_completion && runtime.console_input_ready() {
             serial::print("genos> ");
             awaiting_command_completion = false;
@@ -314,7 +326,9 @@ fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &Boo
             display.push_fixed(LineKind::Output, line);
 
             let mut state = FixedText::from_str("ring3-probe=");
-            state.push_str(if userspace::probe_passed() {
+            state.push_str(if !cfg!(feature = "validation-boot") {
+                "not-run"
+            } else if userspace::probe_passed() {
                 "passed"
             } else {
                 "failed"

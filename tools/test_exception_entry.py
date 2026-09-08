@@ -256,7 +256,7 @@ def main() -> None:
             (evidence / "fixture.patch").write_text(patch)
             manifest["fixture_sha256"] = hashlib.sha256(patch.encode()).hexdigest()
             with (evidence / "build.log").open("w") as output:
-                subprocess.run(["cargo", "xtask", "build"], cwd=root, stdout=output,
+                subprocess.run(["cargo", "xtask", "build-test"], cwd=root, stdout=output,
                                stderr=subprocess.STDOUT, check=True, timeout=600)
             image = root / "build/genos.img"
             manifest["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
