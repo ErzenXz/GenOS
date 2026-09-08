@@ -81,6 +81,8 @@ diagnostic. Logs, QEMU errors, image hashes, source status, tool versions and
 commands are retained in `build/serial-normal-debug.log`, `build/serial-release.log`
 and `build/normal-*-manifest.txt`. An incomplete manifest never proves a pass.
 Host parser tests reject missing, duplicate, embedded and out-of-order evidence.
+Each interactive boot has a 120-second wall-clock limit for cross-architecture
+TCG and loaded hosts; passing still requires every ordered command response.
 
 `make bench` explicitly selects validation policy for its scheduler probes and
 restores a normal image even when the benchmark fails. Its timing remains a
