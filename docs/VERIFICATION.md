@@ -80,3 +80,17 @@ boot manifests, and copied `final-foundation-evidence/` from the immutable syste
 run. Logs record the exact tested source. The new CI jobs and scheduled 1000-boot
 lane have been configured but have not been executed remotely during this session.
 The reference build remains experimental; F0-F7 are not collectively complete.
+
+Final local check totals: **162 workspace Rust tests**, **25 Python harness
+regressions**, and **2 parser CLI integration tests** passed. Strict Clippy passed
+for the ABI, build tool, UEFI bootloader, kernel library, normal and validation
+kernel binaries, runtime, init, both shell policies, and standalone parser harness.
+The final normal-shell evidence parser additionally requires each command's own
+echo before its response. Both normal profiles and a final committed release boot
+passed that stronger check; success manifests now contain one unambiguous status.
+The source change is `371a71c`; the build image remains an optimized normal image.
+
+A machine-readable local summary is written to
+`build/final-foundation-evidence/summary.json`, alongside retained serial logs,
+fixture manifests, exception outcomes, repeat-boot evidence and entry disassembly.
+The temporary verification checkout has been removed after copying its evidence.
