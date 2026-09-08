@@ -5,7 +5,8 @@ GenOS documentation separates current contracts, future sequence, material limit
 ## Start here
 
 1. [Project overview](../README.md)
-2. [Roadmap and acceptance gates](../ROADMAP.md)
+2. [Roadmap and acceptance gates](../ROADMAP.md) — current R1/R2/R3 kernel-and-console targets
+   - [Primary-source research and selection rationale](research/README.md)
 3. [Known limitations](KNOWN_LIMITATIONS.md)
 4. [Engineering quality plan](ENGINEERING_QUALITY.md)
 5. [Contribution guide](../CONTRIBUTING.md)

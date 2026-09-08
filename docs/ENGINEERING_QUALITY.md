@@ -25,9 +25,17 @@ A release cannot average these dimensions together. Excellent performance does n
 | Experimental | A development image that demonstrates selected mechanisms | Builds and boots on the documented development configuration |
 | Verified reference build | The current reference VM passes the complete foundation correctness gate | Roadmap F0-F7 complete |
 | Hardened preview | Security boundaries, fuzzing, fault injection, long-run tests, signed distribution, and supported configurations are published | Foundation gate plus Stage 6 criteria |
-| Production candidate | Upgrade, rollback, compatibility, hardware, support, and independent reproduction requirements pass | Stages 7-10 criteria |
+| Production candidate | Upgrade, rollback, compatibility, supported-profile, support, and independent reproduction requirements pass | Stage 10 plus the applicable console/security/network/hardware gates; Stage 9 only for a graphical product |
 
-The current project level is **Experimental**.
+The current project level is **Experimental**. Roadmap R1–R3 are product milestones:
+R1 is the verified kernel reference, R2 a useful console preview, and R3 a stable
+console reference qualified only for its named configuration and workload. They do
+not imply broad hardware, untrusted-network, secrets or production-service support.
+The [roadmap](../ROADMAP.md) owns their acceptance criteria. Its independent console
+release checklist consumes C5 evidence; the later production promotion gate consumes
+completed R3 and the applicable hardened/profile qualifications. The initial local console
+may be explicitly offline; advertised security/network capabilities require their
+own gates. Graphics is not a prerequisite for console-only qualification.
 
 ## Verified-reference target invariants
 
@@ -74,13 +82,14 @@ These invariants are mandatory before GenOS may claim the **Verified reference b
 | Workstream | Required implementation evidence | Required negative evidence |
 | --- | --- | --- |
 | F0 verification | all supported targets build; workspace tests and QEMU matrix run | a removed marker or broken target makes CI fail |
-| F1 traps | normalized frame and vector-specific entry | malformed return, user `#UD`, user `#GP`, and kernel fault tests |
-| F2 protection | NX, write-protect, SMEP, and SMAP state recorded | execute-from-data, write-read-only, and supervisor-user execution tests |
-| F3 memory | complete page-state accounting and rollback | OOM at each construction step, double free, reserved free, and >256 reclamation |
+| F1 traps/context | normalized entry, admitted CPU/XSTATE policy and guarded stacks | malformed return, register-state isolation, stack overflow, nested fault/NMI policy and real CPU faults |
+| F2 protection | NX/WP/SMEP/SMAP plus mapping/physical-alias policy | execute-from-data, write-read-only, forbidden aliases and stale-translation access tests |
+| F3 memory | page/owner/generation accounting, retirement, scrubbing and rollback | OOM, wrong-owner/stale/duplicate/pinned release, alias retirement and lossless reclamation |
 | F4 architecture | documented owner and interface for each mutable subsystem | dependency check rejects presentation-to-runtime mutation |
 | F5 concurrency | explicit critical sections and per-CPU preparation | delayed, nested, and adversarial interrupt sequencing |
 | F6 test modes | release and validation boot policies | release build cannot accidentally depend on a stress probe |
 | F7 delivery | focused commits, ADRs, migration and rollback notes | PR check rejects missing evidence for affected risk classes |
+| S1 storage | explicit visibility/durability/unknown-outcome and recovery contract | final-flush failure, torn/reordered/lost writes and failure during recovery |
 
 ## Verification architecture
 
@@ -153,7 +162,8 @@ A failed operation must expose an application-visible error when possible and pr
 
 The scheduled lane should include:
 
-- at least 1,000 reference-VM boots;
+- at least 1,000 reference-VM boots, with the profile and completed count recorded;
+- the proposed F6 kernel-fixture soak and later C5 72-hour mixed console qualification, using environments that can run uninterrupted for those durations;
 - process creation and reclamation across PID and generation reuse;
 - repeated mount, mutation, commit, restore, and repair cycles;
 - sustained bounded network concurrency and injected loss;
@@ -179,7 +189,10 @@ A physical-machine result includes:
 
 ## Current implemented checks
 
-The current pull-request workflow in `.github/workflows/ci.yml` is the source of truth for checks enforced now. It runs independent jobs for:
+The tracked workflow definitions describe intended CI coverage. Existing integrated
+checks and newer local-only jobs must be distinguished by the exact successful run.
+The latest workflow changes cannot yet be published with the connected OAuth app's
+permissions; no remote result is claimed for those additions. The baseline lanes cover:
 
 1. formatting and strict Clippy for the ABI, build tool, UEFI bootloader, kernel library, complete kernel binary, userspace runtime, init, and shell;
 2. workspace host tests;
@@ -187,7 +200,14 @@ The current pull-request workflow in `.github/workflows/ci.yml` is the source of
 4. repository-local Markdown link validation;
 5. image construction and the current multi-phase QEMU smoke matrix.
 
-The QEMU job retains phase-specific serial logs and a manifest containing the commit, Rust and Cargo versions, QEMU and OVMF information, and the image hash. These checks narrow F0. Additional independent jobs now verify normal debug and release boots, BSP admission, deterministic parser/socket mutation stress, and the generated unsafe source inventory. The separate `long-validation.yml` lane runs weekly boot repetition and extended parser stress with retained artifacts. These are scoped checks, not coverage-guided fuzzing, complete unsafe review, hardware validation, branch protection, or evidence that the scheduled 1000-boot run has already passed.
+The QEMU harness retains phase-specific serial logs and reproducibility metadata.
+Local commands cover normal debug/release boot, BSP admission, deterministic parser
+stress and a checked lexical unsafe inventory. The new CI definitions also configure
+those lanes and weekly repetition. Configuration is not execution: there is no new
+remote CI or completed 1000-boot/24-hour/72-hour qualification result. The scheduled
+180-minute job cannot establish the longer soak targets; those need an appropriate
+dedicated test environment. Coverage-guided fuzzing and semantic unsafe review remain
+open. See [current evidence](VERIFICATION.md) and [research](research/README.md).
 
 ## Target CI lanes
 

@@ -1,431 +1,421 @@
 # GenOS roadmap
 
-GenOS is a from-scratch Rust operating system. The project is intentionally ambitious, but ambition does not replace evidence. This roadmap defines the order in which GenOS must earn correctness, security, reliability, performance, hardware support, and product quality.
+**Updated: 2026-09-08. Code/evidence baseline: `5599dc7`. Current level: Experimental.**
 
-The roadmap is a set of acceptance gates, not a feature wishlist. A stage is complete only when its observable criteria pass in automation or on documented reference hardware. Previous milestone labels describe delivered experimental slices. They do not imply production readiness.
+GenOS is an independent Rust operating system. The immediate product goal is a
+reliable kernel and useful terminal on a precisely defined reference machine.
+Graphical UI comes after that console milestone. “Best” means measurable correctness,
+recovery, latency, resource use and maintainability for supported workloads; it is
+not a claim of universal superiority or absence of bugs.
+
+This refresh reconciles the code, retained local tests, older roadmap entries and
+[primary-source research](docs/research/README.md). It changes the plan, not the
+running kernel. Previous stage numbers remain for links and history. The
+[previous roadmap](docs/history/2026-09-08-roadmap-before-refresh.md) is archived.
 
 ## Status language
 
-- **Delivered:** the scoped behavior exists and has a repeatable proof.
-- **In progress:** implementation or required evidence is incomplete.
-- **Planned:** the contract is defined, but implementation has not started.
-- **Blocked:** work must not become the default path until its dependency gates pass.
-- **Deferred:** intentionally outside the current product path.
+- **Implemented, local evidence:** the named behavior has code and a retained local proof.
+- **Integrated:** the exact change is merged and its required remote checks passed.
+- **Partial:** a bounded slice exists; remaining criteria are listed explicitly.
+- **Planned:** required implementation or evidence is missing.
+- **Blocked:** a named dependency or external permission prevents progress on that item.
+- **Deferred:** outside the current target; not a hidden release prerequisite.
 
-Dates are omitted until contributor velocity makes forecasts useful.
+`[x]` below records only the scoped implementation/evidence stated beside it.
+It does not close its containing gate, establish remote CI enforcement, or raise
+the release level. An untested or unpublished requirement stays `[ ]`. Test counts,
+markers, architecture names and programming languages are not safety certifications.
 
-## Engineering rules
+## Target and release sequence
 
-1. Keep `main` green and bootable.
-2. Fix correctness and security gaps before expanding product surface.
-3. Build one reviewable vertical slice at a time.
-4. Preserve explicit ownership across kernel, runtime, drivers, and userspace.
-5. Treat firmware, devices, files, packets, and userspace pointers as untrusted input.
-6. Make allocation, mutation, and cleanup transactional.
-7. Bound interrupt work and all untrusted-input parsing.
-8. Measure performance before making performance claims.
-9. Keep legacy hardware behind explicit fallback policy.
-10. Prefer a small proven contract over several partial contracts.
+| Milestone | Required result | Scope |
+| --- | --- | --- |
+| **R1 — Verified kernel reference** | F0–F7 and applicable S1 failure-semantics gates pass, with explicit assumptions and supported limits | One admitted CPU; pinned x86_64 QEMU/firmware profile; real isolation, ownership, fault and cleanup evidence |
+| **R2 — Useful console preview** | R1 plus S1/S2 and C1–C4 | Native applications, usable storage, streams, editing, process control and recovery through the terminal |
+| **R3 — Stable console reference** | R2 plus C5 and Stage 10's console qualification | Repeatable local developer workflows and long-run reliability on the named VM; no GUI dependency |
+| **Hardened/network profile** | R1 plus applicable Stage 6 gates; 5.4E/5.5 for general network claims | Explicit threat model, trusted distribution, reviewed crypto and supported network behavior |
+| **Physical console reference** | R3 plus selected Stage 8 device/hardware gates | One named physical machine, with its own firmware/device/recovery evidence |
+| **Graphical product** | R3 and the application/security/device contracts needed for that graphical profile | Stage 9; UI remains in userspace and cannot replace the recovery terminal |
 
-## Product goal and comparison policy
+R3 is a **product acceptance milestone**, not a replacement for the engineering
+release levels in [ENGINEERING_QUALITY.md](docs/ENGINEERING_QUALITY.md). It may be
+qualified as a local/offline developer console while broader networking and hardware
+remain unsupported. Credentials, hostile workloads, automatic updates and production
+services require their additional security gates. Optional hardware features do not
+all have to exist before a narrowly scoped console release can be dependable.
 
-GenOS aims to become a small, coherent, inspectable operating system that can outperform larger systems on carefully defined workloads without sacrificing correctness.
+The initial reference is x86_64 QEMU q35, 512 MiB RAM, one admitted kernel CPU,
+UEFI boot and serial I/O. Pin the actual machine version, CPU model/features,
+firmware hash and storage/network devices under F0; the current rolling host setup
+is not yet that frozen release profile. Maintain no-NIC and deterministic-network
+variants. More RAM, additional CPUs and physical devices are separate tested profiles.
 
-“Better than Linux in every way” is not a valid engineering claim. Linux supports hardware, workloads, security policies, and compatibility requirements that GenOS does not yet attempt. GenOS may claim an advantage only for a named metric, workload, configuration, and baseline when the repository contains a reproducible harness and the result includes variance and failure cases.
+## Engineering choices informed by research
 
-Examples of valid future claims:
+These are planning directions for GenOS; candidate mechanisms still require their
+own implementation decision and tests.
 
-- lower boot-to-shell time on the same virtual machine configuration;
-- lower idle memory or CPU use for the same reference service;
-- smaller trusted or unsafe code surface for a defined feature set;
-- lower process-launch latency under a published benchmark;
-- simpler recovery behavior under a documented storage fault model.
-
-See [the engineering quality plan](docs/ENGINEERING_QUALITY.md) for the evidence format and release levels.
+| Direction | Why it fits this project | Research |
+| --- | --- | --- |
+| Keep the Rust monolithic kernel and deepen its modules | Preserve working code while reducing ownership/unsafe coupling; no evidence currently justifies a rewrite | [Kernel foundations](docs/research/2026-09-kernel-foundations.md) |
+| Enforce frame grants and eagerly preserve a bounded CPU state set | Make ownership and process isolation auditable before optimizing context switches | [Kernel foundations](docs/research/2026-09-kernel-foundations.md) |
+| Native capability-explicit spawn, namespaces and bounded streams | General applications and composability can build on existing handles without implementing all of POSIX | [Console platform](docs/research/2026-09-console-platform.md) |
+| Specify failure outcomes before choosing filesystem growth | Durability, uncertain commits and recovery cost matter more than the name of the data structure | [Storage research](docs/research/2026-09-console-platform.md) |
+| Layer host/property tests, selected Miri/model checks, fuzzing and real CPU/device tests | Each catches different failures; no single pass proves the whole OS safe | [Verification research](docs/research/2026-09-kernel-foundations.md) |
+| Prefer a versioned VirtIO reference and a conservative TCP baseline | Finish the real device/protocol lifecycle before multiqueue/offloads or algorithm experiments | [Network/hardware research](docs/research/2026-09-network-hardware.md) |
+| Reuse maintained reviewed crypto/trust components when their platform prerequisites exist | Avoid custom cryptography and separate update verification from durable activation | [Trust research](docs/research/2026-09-console-platform.md) |
 
 ## Current baseline: GenOS 0.56
 
-The current experimental baseline includes:
+| Area | What exists now | What the evidence does not establish |
+| --- | --- | --- |
+| Boot and exceptions | UEFI loader; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; dedicated emergency stacks; protected IDT | Complete firmware-map validation, stack-overflow guards, nested emergency recovery or complete XSTATE preservation |
+| Page protection | NX/WP and supported SMEP/SMAP; user mapping and linked kernel section permissions | Physical-frame-wide W^X across aliases or every CPU feature combination |
+| Memory | Bitmap grants, rollback, zero-before-grant, scrub-before-release, scoped IRQ access, `mem` counters | Caller/owner tokens, shared/pinned-frame retirement or all shared-state synchronization |
+| Processes and authority | Ring 3, preemption, typed handles, exact deferred request identity, lifecycle cleanup | General spawn/heap/streams, tailored namespaces, service platform or stable application compatibility |
+| Modules | Host-tested endpoint and pathname policy modules; lexical unsafe inventory | Complete decomposition, caller-invariant audit or automatic semantic safety proof |
+| Terminal | Quiet normal session; bounded `help`; working serial `clear`; file/job commands and `mem` | Working directories, full line editing, quoting, pipelines, general launch, foreground cancellation or guest shutdown |
+| Storage | Bounded GFS2 dual snapshots, ATA/PCI discovery, host inspection/repair, read-only recovery | General filesystem capacity, every power-loss point, ambiguous final-flush reconciliation or production data safety |
+| Network | Modern VirtIO/MSI-X, IPv4, bounded concurrent TCP, socket waits and fault tests | General Internet TCP behavior, multi-process fairness at scale, arbitrary streams or secure traffic |
+| IPv6 | SLAAC, DAD, neighbor/control parsing and router echo in the reference network | IPv6 application sockets, AAAA, IPv6-only boot or complete host conformance |
+| SDK | A separately built native ELF executes and is reclaimed; ABI mismatch handling exists | General named launch, packages or a maintained ABI/SDK compatibility promise |
+| Verification | 169 Rust tests, 25 Python tests, parser CLI tests, scoped QEMU suites and retained mutation cases reported in the latest implementation record | New remote CI runs, 1000-boot evidence, sustained qualification, whole-kernel verification or real-hardware support |
 
-- a repo-owned `x86_64` UEFI bootloader and versioned boot contract;
-- a Rust `no_std` monolithic kernel;
-- GDT, TSS, IDT, PIT/PIC interrupt setup, and serial diagnostics;
-- separate Ring 3 address spaces, timer preemption, ELF loading, and ABI 18 syscalls;
-- process-local typed capabilities for files, directories, endpoints, console access, process lifecycle, and sockets;
-- an isolated Ring 3 serial shell and fail-closed emergency kernel console;
-- RAM-backed temporary storage plus bounded persistent `/USER/` snapshots, inspection, repair, and read-only recovery;
-- modern VirtIO 1.x networking with Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, bounded TCP clients, listener authority, four global passive slots, bounded concurrent accepted streams, and scheduler-backed socket waits;
-- host tests and QEMU smoke proofs for the implemented vertical slices.
+Evidence and exact commits: [VERIFICATION.md](docs/VERIFICATION.md). The research
+refresh did not rerun these runtime suites. Current source, limitations and evidence
+must agree before an item can move to Integrated.
 
-These are real operating-system mechanisms. They remain constrained by the limitations tracked in [KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
-
-Recent delivered slices also include bounded concurrent TCP with MSI-X, scheduler-backed socket readiness, a host packet fault matrix, initial IPv6 SLAAC/DAD/ICMPv6, and an externally built SDK application executed in Ring 3. See [milestone history](docs/MILESTONE_HISTORY.md), [IPv6](docs/IPV6.md), and [SDK](docs/SDK.md) for exact boundaries. These do not close the foundation gates below.
+Current bounds matter: 4 managed asynchronous process slots including the shell;
+20 unified handles per process including 4 file and 4 socket handles; 32 VFS nodes;
+512-byte files; 64-byte paths; 80-byte console writes; 128-byte socket queues;
+4 global passive slots with a 2-slot per-owner ceiling; up to 8 GiB of managed usable
+frames across 64 ranges. These are current limits, not the final product design.
 
 ## Immediate priority: foundation correctness gate
 
-**Status: in progress**
+**Status: partial. No foundation-wide completion or stable-release claim.**
 
-This gate blocks production or hardened-release language. It also blocks broad new product features that would deepen unsafe assumptions. Networking correctness work already required to close Stage 5.4 may continue only when it also advances this gate.
+| Next work item | Why it comes next | Completion evidence |
+| --- | --- | --- |
+| **F0.1 — Publish and freeze verification** | Latest workflow changes are local; GitHub rejected the push for missing OAuth `workflow` scope | Authorized publication, exact-head remote checks, pinned VM/environment and retained failure manifests |
+| **F1.2 — CPU state and stack containment** | General applications must not share register state or corrupt adjacent stacks | Adversarial XSTATE tests, guard faults and explicit nesting/return-fault policy |
+| **F3.1/F2.1 — Enforce frame and alias ownership** | A live bitmap bit is not proof that the caller may free or remap it | Wrong-owner/stale/pinned/alias cases denied; hardware access tests; retirement before reuse |
+| **S1.1 — Define ambiguous commit outcomes** | RAM rollback cannot establish what reached persistent media after a failed final flush | Deterministic reproduction, documented old/new outcomes, reconciliation and write quarantine |
+| **F4/F5 — Extract and guard remaining state** | Broader applications multiply the current raw-global assumptions | Executable ownership interfaces, context/lock assertions and delayed-interrupt tests |
+| **F6 — Coverage and sustained failures** | Mutation counts and short boots leave important state spaces unexplored | Coverage-guided targets, repeatable fault schedules, retained regressions and sustained-run accounting |
+| **C1 → C2/C3 → C4 → C5** | Build application/stream/storage contracts before shell syntax depends on them | Complete visible console workflows, then stability qualification |
+
+Work can proceed in parallel where interfaces are independent. Fixes to current
+correctness defects and required test seams are allowed before R1; broad features
+must not deepen a known ownership or isolation violation.
 
 ### F0 — Green, reproducible verification
 
-Goal: every proposed change reaches all tests instead of failing early or depending on an undocumented local environment.
+**Owner:** build/test tooling. **Status:** local checks implemented; integration blocked.
 
-- [x] `main` passes formatting, Clippy for every shipped target, workspace tests, image build, and QEMU boot.
-- [x] The supported Rust toolchain and minimum supported Rust version are explicit and tested.
-- [ ] CI runs debug and release image builds where their behavior differs.
-- [ ] Failure artifacts include serial output and enough configuration to reproduce the run.
-- [ ] Required checks cannot be skipped by an earlier non-behavioral warning.
-- [ ] The normal, no-network, deterministic-network, storage-recovery, and read-only-recovery boots have distinct required markers.
+- [x] Pinned Rust 1.97.0 and declared 1.97 minimum; host/target builds and strict lint commands exist.
+- [x] Separate normal debug/release, validation, no-NIC, network, storage and CPU proof commands exist locally.
+- [x] Serial logs, image/source identities, fixture patches and scoped manifests exist; new CI jobs are configured in the local branch.
+- [ ] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
+- [ ] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
+- [ ] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
+- [ ] **F0.4:** test the harness itself: omitted, duplicated, forged, wrong-phase and stale success evidence must fail. Retain incomplete/failing manifests and stderr, not just successful runs.
+- [ ] **F0.5:** reproduce clean builds on the supported host lanes, publish artifact hashes/provenance and make another reviewer reproduce the documented reference run.
 
 ### F1 — Complete exception and interrupt entry
 
-Goal: every architectural entry path constructs a valid frame, preserves required state, and terminates or halts deliberately.
+**Owner:** architecture/context modules. **Status:** base entry delivered; extended context/containment open.
 
-- [x] Replace the catch-all bare `iretq` entry with explicit stubs for exceptions with and without CPU-pushed error codes.
-- [x] Install handlers for all architecturally relevant x86 exceptions, including divide error, invalid opcode, debug, invalid TSS, segment-not-present, stack fault, alignment check, machine check, and control-protection fault when supported.
-- [x] Normalize vector, error code, instruction pointer, privilege level, stack, and fault address before entering Rust.
-- [x] Terminate the exact Ring 3 process for recoverable user exceptions without damaging another process.
-- [x] Print a complete serial fault record and halt on an unhandled Ring 0 exception.
-- [x] Handle spurious and unexpected external interrupts without returning through a malformed frame.
-- [x] Use dedicated interrupt stacks where architectural failure handling requires them.
-- [x] Make the initialized IDT read-only before enabling untrusted execution.
+- [x] Normalized vector/error/frame handling, explicit user termination/kernel halt, dedicated emergency stacks and IDT write protection have scoped reference proofs.
+- [x] Eight original user/kernel exception cases and six page-protection probes are reported as passing; BSP/reentry checks and the owned boot-stack fix are implemented.
+- [ ] **F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.
+- [ ] **F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.
+- [ ] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
+- [ ] **F1.4:** specify and test NMI/machine-check/same-IST nesting, fault-during-return and malformed return state. Recover only where a safe recovery contract is demonstrated; otherwise halt deliberately.
+- [ ] **F1.5:** test missing/mixed CPU features and unsupported ISA use before admitting general applications. Record exactly what the reference CPU contract permits.
 
-Acceptance proof:
-
-- [x] Deterministic Ring 3 tests exercise `#DE`, `#UD`, `#GP`, and `#PF` and leave a healthy peer running.
-- [x] Deterministic Ring 0 fault tests produce the expected serial frame and halt rather than looping or triple-faulting.
-- [x] No installed default entry consists only of `iretq`.
-
-Reference proofs: all eight user/kernel exception cases plus IDT write protection. Emergency-stack guards, same-IST nesting, XSTATE and physical-machine validation remain explicitly open; these checks establish the scoped reference-VM entry contract.
+Research basis: [kernel foundations](docs/research/2026-09-kernel-foundations.md).
+F1's earlier checked entries described the delivered entry slice; they did not close
+these remaining CPU-state and hardware obligations.
 
 ### F2 — Hardware-enforced page protections
 
-Goal: make the page permissions promised by the loader true on the CPU, independent of firmware defaults.
+**Owner:** mapping and architecture modules. **Status:** protection bits and selected mappings proven; alias policy partial.
 
-- [x] Discover NX, SMEP, SMAP, and related features through CPUID.
-- [x] Enable and verify `EFER.NXE` before mapping non-executable pages.
-- [x] Enable and verify `CR0.WP` so supervisor writes respect read-only mappings.
-- [x] Enable SMEP and SMAP when supported, with explicit guarded user-copy primitives.
-- [ ] Reject writable-and-executable ELF mappings and preserve that invariant across every mapping API.
-- [x] Keep user stacks and writable data non-executable.
-- [x] Keep kernel text read-only and executable, kernel read-only data non-writable, and mutable kernel data non-executable once the linker and boot mappings expose those sections.
-
-Acceptance proof:
-
-- [x] Executing from Ring 3 data or stack pages terminates only the offending process.
-- [x] Writing through a kernel read-only mapping faults under `CR0.WP`.
-- [x] A user mapping cannot execute in supervisor mode under SMEP, and ordinary kernel access cannot bypass SMAP unintentionally.
-- [x] Boot logs record the detected and enabled protection set without treating an unsupported optional feature as success.
-
-GenOS 0.56 implements [ADR 0003](docs/adr/0003-explicit-cpu-page-protections.md). User mappings and explicit kernel mappings reject W+X; inherited physical aliases still prevent a system-wide physical-frame W^X claim. Six exact-address CPU protection probes supplement the eight exception probes.
+- [x] Required NX/WP and supported SMEP/SMAP are enabled/read back; linked sections, IDT, user data and stacks receive explicit permissions.
+- [x] Current explicit mapping APIs reject W+X; real faults test the selected protections.
+- [ ] **F2.1:** enforce a physical-frame permission/alias policy across the kernel direct map, temporary loader mappings, user aliases, remapping and protection changes. A writable alias must not silently defeat executable/read-only authority.
+- [ ] **F2.2:** centralize user-copy lifetime/range validation and mapping updates behind reviewed interfaces; retire translations before backing storage can be reused.
+- [ ] **F2.3:** extend actual CPU access tests across every mapping family and feature profile, including stale translations, cross-process aliases and failed protection changes.
 
 ### F3 — Transactional physical and virtual memory
 
-Goal: every failed allocation leaves the exact pre-operation ownership state.
+**Owner:** allocator/address-space modules. **Status:** bitmap, rollback and hygiene delivered; owner identity incomplete.
 
-- [x] Replace the fixed 256-frame recycle stack with a page-state allocator that can represent every managed frame.
-- [ ] Track frame ownership and reject double free, foreign free, reserved-memory allocation, and aliasing.
-- [ ] Support contiguous or ordered allocations only through an explicit contract.
-- [x] Roll back partial page-table cloning, user image loading, stack construction, and mapping failures.
-- [x] Define zeroing policy for newly granted user pages and reclaimed sensitive pages.
-- [ ] Separate early-boot allocation from the normal allocator when their invariants differ.
-- [x] Publish allocator counters and consistency checks that remain usable without graphics.
+- [x] Lossless bitmap reclamation, fragmented-map tests, zero-before-grant, scrub-before-release and scoped IRQ allocator access exist.
+- [x] All ten reference process-construction allocation cutoffs restore the live-frame baseline; `mem` observes an increase for a running job and return after cleanup.
+- [ ] **F3.1:** make grants carry enforceable owner/allocation identity; define explicit sharing and pinned device buffers. A physical address alone must not authorize release.
+- [ ] **F3.2:** retire references, mappings, translations and device use before scrubbing/reuse. Wrong-owner, stale-generation, duplicate, aliased and pinned releases must leave state and bytes unchanged.
+- [ ] **F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.
+- [ ] **F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.
+- [ ] **F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; the current shared `/MEMORY.STATUS` can change across concurrent opens.
 
-Acceptance proof:
-
-- [x] Fault injection fails each allocation point in process construction and returns to the exact baseline frame count.
-- [x] Randomized host tests allocate and free across fragmented memory maps without duplicate ownership.
-- [x] Reclaiming more than 256 frames remains lossless.
-- [x] A failed address-space clone leaks no page-table frame.
-
-GenOS 0.56 implements [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md): all ten allocations in the reference process constructor are injected in QEMU, and every allocation in a branched host clone fixture is injected. The kernel manages up to 8 GiB of usable frames and fails closed on allocator metadata exhaustion. The [managed-frame contract](docs/MEMORY.md) now supplies zero-before-grant, scrub-before-release, scoped IRQ access and terminal counters. Per-owner frame tokens and larger-memory support remain open.
+Contract and current limits: [MEMORY.md](docs/MEMORY.md). Scrubbing is RAM hygiene,
+not proof of cache erasure, physical remanence protection or caller ownership.
 
 ### F4 — Kernel ownership and decomposition
 
-Goal: make subsystem boundaries reviewable before concurrency and feature breadth multiply the state space.
+**Owner:** each subsystem maintainer. **Status:** endpoint/path seams extracted; wider decomposition open.
 
-- [ ] Split the current userspace implementation into process, context, scheduler, loader, user-copy, lifecycle, syscall, and typed-handle modules.
-- [ ] Give each mutable state object one documented owner.
-- [ ] Remove presentation code from scheduling, filesystem, lifecycle, and network completion paths.
-- [ ] Inventory every `unsafe` block with its caller obligations and protected invariant.
-- [ ] Replace cross-subsystem mutation through raw globals with narrow interfaces.
-- [ ] Add architecture decision records for public ABI, scheduler, allocator, interrupt, storage-format, and driver-boundary decisions.
-
-Acceptance proof:
-
-- [ ] A source-boundary test prevents presentation code from mutating runtime-owned state.
-- [ ] Module documentation identifies ownership, synchronization, failure behavior, and cleanup.
-- [x] A contributor can change one typed handle family without editing unrelated process-context or ELF-loader code.
-- [x] The unsafe inventory is generated or checked in CI and cannot silently shrink its review context.
+- [x] Endpoint authority and canonical pathname policy execute in host-tested modules; a lexical unsafe/assembly inventory retains source context.
+- [ ] **F4.1:** split process state, CPU context, scheduler policy, ELF loading, user-copy, lifecycle, syscalls and remaining typed handles into modules with clear failure/cleanup interfaces.
+- [ ] **F4.2:** classify every mutable object as boot-only, coordinator-owned, IRQ-shared or emergency-safe; replace raw global mutation with scoped access that cannot leak mutable borrows.
+- [ ] **F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.
+- [ ] **F4.4:** review caller obligations, aliasing, synchronization, assembly clobbers and failure containment at every unsafe boundary, including unsafe Send/Sync. Inventory presence alone does not close this review.
+- [ ] **F4.5:** document ABI, scheduler, interrupt, storage and driver decisions, compatibility and rollback; remove or migrate dormant tests so they really compile against production modules.
 
 ### F5 — Explicit single-core and concurrency model
 
-Goal: make the current single-core design safe now and prepare a deliberate path to SMP.
+**Owner:** architecture, scheduler and device coordinators. **Status:** BSP admission and allocator critical sections delivered; global audit incomplete.
 
-- [x] Detect and reject accidental application-processor startup until SMP support exists.
-- [x] Document interrupt masking, nesting, preemption, and shared-state rules.
-- [ ] Replace unsynchronized mutable globals with explicit single-core critical sections or IRQ-safe synchronization.
-- [ ] Move current process, active address space, scheduler-local state, and interrupt-local state behind a per-CPU abstraction before starting a second CPU.
-- [ ] Define lock ordering and which locks may be acquired in interrupt context.
-- [ ] Add TLB invalidation and shootdown contracts before sharing address spaces across CPUs.
-
-Acceptance proof:
-
-- [ ] Static or host-side checks find no unguarded mutable global reachable from both normal and interrupt context.
-- [ ] Nested or delayed interrupt tests preserve process and scheduler state.
-- [x] SMP remains disabled with an explicit diagnostic until per-CPU state and shootdowns pass their tests.
+- [x] Non-BSP/repeated entry is rejected; one/four-vCPU reference tests still admit one kernel CPU.
+- [x] IRQ rules and scoped allocator access exist; nested IF preservation has a real CPU probe.
+- [ ] **F5.1:** guard all state shared with interrupts, and assert allowed execution context and lock order in debug/validation builds. No handler may wait on a lock held by the interrupted context.
+- [ ] **F5.2:** bound IRQ work and masked duration; move blocking/expensive device work to coordinators. Record worst observed latency under the declared workload.
+- [ ] **F5.3:** put current process/address space/scheduler-local/interrupt-local state behind a per-CPU-ready interface, while retaining exactly one active CPU in R1.
+- [ ] **F5.4:** test delayed/nested interrupt delivery during allocation, context changes, request cancellation and device completion, with forward progress and ownership checks.
+- [ ] **F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.
 
 ### F6 — Test boot, release boot, fuzzing, and fault injection
 
-Goal: preserve deep validation without making a normal boot run development stress suites.
+**Owner:** subsystem test owners and harness tooling. **Status:** useful local layers; coverage/long-run gates incomplete.
 
-- [x] Separate deterministic validation boot from the normal release boot through an explicit build or boot policy.
-- [ ] Keep only cheap invariant checks in the release path.
-- [x] Move process-generation stress, rollback probes, parser corpora, and protocol fault suites into dedicated test modes.
-- [ ] Add fuzz targets for ELF, boot contracts, filesystem snapshots, partition metadata, network frames, DNS, and TCP classifiers.
-- [ ] Add deterministic allocation, I/O, packet loss, duplication, delay, reordering, reset, and cancellation injection.
-- [ ] Run long boot and lifecycle repetition outside the fast pull-request lane and publish failures as artifacts.
-
-Acceptance proof:
-
-- [x] A release boot reaches the shell without executing stress probes.
-- [x] A test boot proves the same subsystem contracts and fails when a required probe is removed.
-- [ ] Fuzz targets retain regression inputs for every fixed crash or invariant violation.
-- [ ] At least 1,000 repeated reference-VM boots and process lifecycles complete without leaked authority or memory before the hardened-preview label.
-
-The normal/validation continuation adds [explicit boot policies](docs/BOOT_MODES.md),
-[BSP admission and an owned boot stack](docs/SINGLE_CORE.md), a
-[checked lexical unsafe inventory](docs/UNSAFE_INVENTORY.md), and
-[production parser/socket mutation stress](tools/parser-stress/README.md).
-The endpoint capability family now lives in a host-tested module with private
-state. These close selected criteria, not F0-F7 as a whole. New CI jobs and the
-weekly 1000-boot lane require a successful remote run before claiming CI evidence;
-five local repeated boots do not satisfy the 1000-boot acceptance threshold.
+- [x] Explicit normal/validation policies; normal interactive tests use visible results and reject development trace leakage.
+- [x] Retained deterministic ELF/network/socket mutation inputs, exact fault evidence parsers, allocation injection and selected packet/storage failures exist.
+- [ ] **F6.1:** finish the normal startup cost/dependency audit. Optional devices must fail within declared deadlines and cannot make the local terminal depend on a test server or fixture.
+- [ ] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
+- [ ] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
+- [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
+- [ ] **F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.
+- [ ] **F6.6:** qualify the existing kernel fixtures with at least 10000 lifecycle cycles and a proposed 24-hour single-boot memory/IPC/I/O pressure run. Record bounded caches, resource baselines, deadlines and coverage gaps. C5 later repeats and extends this with general applications and the complete console workflow; R1 does not depend on those later features.
 
 ### F7 — Reviewable delivery process
 
-Goal: make regressions discoverable and architecture decisions reversible.
+**Owner:** change author and reviewer. **Status:** process defined; enforcement/evidence must accompany each release.
 
-- [ ] One commit contains one logical behavior or mechanical change.
-- [ ] Every commit in a mergeable series builds and preserves the documented boot contract.
-- [ ] Changes larger than roughly 500 non-generated lines explain why they cannot be split safely.
-- [ ] Public contracts include migration and rollback plans.
-- [ ] Performance changes include the exact command, environment, baseline, result, variance, and raw artifact.
-- [ ] Security-sensitive changes identify the threat, authority boundary, negative tests, and unsafe code touched.
+- [ ] **F7.1:** produce buildable, reviewable commits; separate mechanical moves from behavior where possible and explain inseparable large changes.
+- [ ] **F7.2:** map each public guarantee to success, negative, exhaustion, cancellation and cleanup evidence; review the actual failing cases and unsafe sites.
+- [ ] **F7.3:** retain migration/downgrade/rollback plans for every public format/interface and a release-specific limitations snapshot.
+- [ ] **F7.4:** require reproducible performance experiments and independent clean-build review. Do not optimize by removing required correctness work or relaxing a failing budget after the fact.
 
 ### Foundation gate exit
 
-The foundation gate closes only when F0 through F7 pass on the reference VM and all remaining exceptions are documented as release-specific limitations. Closing it does not make GenOS production-ready. It permits the project to call the reference build **verified** and resume broader feature work on a safer base.
+R1 requires every remaining F0–F7 criterion applicable to the frozen single-core
+reference profile, plus an honest bounded-storage failure contract under S1. A
+review must record excluded CPU/device/security assumptions explicitly. SMP-specific
+execution, general Internet operation and other hardware are not silently claimed
+by passing this one profile. R1 alone is not a complete terminal product.
 
 ## Delivered experimental vertical slices
 
-The following stages have delivered their scoped demonstrations. Their detailed contracts remain in the subsystem documents and commit history.
+The historical Stages 0–5.4D delivered UEFI/kernel entry, framebuffer experiments,
+Ring 3, capabilities, runtime ownership, bounded storage and bounded network slices.
+Later work added concurrent TCP/MSI-X, IPv6 control, SDK execution, CPU protections,
+transactional memory and terminal cleanup. Preserve those achievements in
+[MILESTONE_HISTORY.md](docs/MILESTONE_HISTORY.md); do not repeatedly schedule them
+as if missing or describe their narrow acceptance as production readiness.
 
-| Stage | Delivered scope | Status under this roadmap |
-| --- | --- | --- |
-| 0 | UEFI boot, kernel entry, boot contract, serial diagnostics, initial memory and interrupt setup | delivered experiment; F1-F3 remain release-blocking |
-| 1 | framebuffer desktop, input, windows, terminal, RAM filesystem, task UI | delivered experiment; graphical product path deferred |
-| 2 | Ring 3, address spaces, preemption, ELF loading, ABI, lifecycle, VFS, input, IPC, shell | delivered experiment; F1-F5 remain release-blocking |
-| 3 | runtime ownership, unified typed handles, request identity, cleanup, headless serial path | delivered experiment; F4-F6 remain release-blocking |
-| 4 | PCI-discovered ATA, partitioned bounded snapshots, cache, inspection, repair, read-only recovery | delivered bounded storage experiment |
-| 5-5.3 | VirtIO 1.x, IPv4 stack, diagnostics, socket capabilities, asynchronous UDP | delivered bounded network experiment |
-| 5.4A-D | bounded TCP client, listener authority, one passive handshake, one accepted transaction and close | delivered bounded TCP experiment |
+## Stage 4 continuation — Storage integrity and useful capacity
 
-Subsystem references:
+**Status: partial. S1 fixes current failure semantics; S2 depends on S1 and F3/F4.**
 
-- [userspace boundary](docs/USERSPACE.md)
-- [runtime ownership](docs/RUNTIME.md)
-- [storage format and recovery](docs/STORAGE.md)
-- [networking contracts](docs/NETWORKING.md)
+SQLite's crash-testing discipline and littlefs's bounded recovery design are useful
+references, not an automatic filesystem selection. See [storage/platform research](docs/research/2026-09-console-platform.md).
+
+- [x] Dual snapshot format, synchronous commits, host inspection/repair and read-only recovery have bounded local proofs.
+- [ ] **S1.1:** reproduce and define an unknown final-commit outcome. A write/flush may reach media before failure is reported; restoring RAM does not undo it. Represent uncertain outcome, prevent unsafe further mutation and reconcile or enter read-only recovery.
+- [ ] **S1.2:** specify atomic visibility, acknowledged durability, cancellation and remount results separately. Inject cuts/errors before and after every logical write/flush, including the final commit record.
+- [ ] **S1.3:** test torn/reordered/lost sectors, corruption of either/both generations, full storage, counter overflow and a second failure during repair/recovery. Preserve unreadable media; never silently format it.
+- [ ] **S1.4:** document device flush/FUA/cache assumptions and compare guest recovery with an independent host checker. Killing QEMU alone is not a full physical power-loss model.
+- [ ] **S2.1:** choose format growth in an ADR after comparing workloads, space amplification, RAM cost, recovery time, implementation/reuse/licensing cost and tooling. Do not select journaling, copy-on-write trees or littlefs by fashion.
+- [ ] **S2.2:** support larger files/directories and streams with explicit quotas and partial-I/O semantics. Initial candidate tests: at least 1 MiB files, 1024 namespace entries and 255-byte complete paths; validate budgets before freezing C5.
+- [ ] **S2.3:** implement atomic replacement/rename, metadata and filename policy, backup/export/restore, versioned migration and interrupted-migration recovery. Keep a read-only path for old GFS2 data.
 
 ## Stage 5.4E — Concurrent and production-oriented TCP
 
-**Status: blocked by the foundation gate; protocol design may continue**
+**Status: partial, not unstarted. Extension depends on R1 and C1 stream/authority contracts.**
 
-Planned work:
+- [x] Modern VirtIO/MSI-X, bounded concurrent passive streams, per-owner limits, readiness waits and selected loss/reordering/congestion tests exist on the VM.
+- [ ] **N1.1:** maintain a requirement-to-test matrix for the declared TCP profile using RFC 9293 and companion timing/congestion specifications; identify valid unsupported features separately from malformed input.
+- [ ] **N1.2:** finish general byte streams, multi-segment flight/reassembly, sequence wrap, duplicate handling, simultaneous/half-close, reset, persist/zero-window, RTT/RTO, congestion and cancellation behavior.
+- [ ] **N1.3:** prove fairness across different process owners, not only clients of one listener; stalled/malicious peers must stay inside per-owner memory, work, retry and lifetime budgets.
+- [ ] **N1.4:** use scripted wire/application/timing cases, packet capture and retained failure seeds. Include loss, delay, corruption, duplicate ACK/data, slow readers, peer death and exhaustion.
+- [ ] **N1.5:** establish throughput/latency/CPU/memory/queue baselines before multiqueue, offloads, larger windows or alternative congestion algorithms become defaults.
 
-- multiple simultaneous handshakes and accepted clients;
-- fair listener and cross-process socket service;
-- readiness waits and cancellation-aware scheduler wakeups;
-- segmented long-lived streams, out-of-order reassembly, duplicate handling, half-close, and reset behavior;
-- RTT estimation, retransmission timers, dynamic windows, congestion control, and bounded resource accounting;
-- interrupt-driven VirtIO RX/TX through MSI-X, with polling only as bounded recovery;
-- deterministic loss, delay, duplication, reordering, zero-window, slow-reader, reset, and exhaustion tests;
-- reproducible throughput, latency, CPU-cost, recovery, and queue-occupancy budgets.
-
-Acceptance criteria:
-
-- [ ] Independent clients cannot share authority, bytes, readiness, or completion identity.
-- [ ] One slow or malicious peer cannot starve another process or exhaust unbounded kernel memory.
-- [ ] Transfers remain correct under the deterministic network fault matrix.
-- [ ] Normal RX and TX completion is interrupt-driven.
-- [ ] Published benchmarks identify payload size, concurrency, loss model, CPU cost, and memory use.
+Network methods and specification revisions: [network/hardware research](docs/research/2026-09-network-hardware.md).
 
 ## Stage 5.5 — IPv6 dual stack
 
-**Status: planned; required before production-network language**
+**Status: control-plane foundation delivered; application/host completeness planned.**
 
-Planned work:
+- [x] Advertised-prefix configuration, DAD, selected neighbor/control validation and router echo have reference evidence.
+- [ ] **N2.1:** add IPv6 socket addressing/demultiplexing, UDP/TCP applications, DNS AAAA, address selection and IPv6-only initialization.
+- [ ] **N2.2:** complete supported neighbor/reachability, router/route lifetime, extension/fragment policy, ICMPv6 error and path-MTU behavior against the declared node profile.
+- [ ] **N2.3:** test IPv4-only, IPv6-only and dual-stack networks, malformed input, expiry/conflict/recovery and preservation of existing IPv4 behavior.
+- [ ] **N2.4:** publish privacy/address-identifier policy; extend DHCPv6/RDNSS/multi-router behavior where the selected supported network requires it.
 
-- IPv6 validation, routing, extension-header policy, and path-MTU behavior;
-- ICMPv6, neighbor discovery, duplicate-address detection, router advertisements, and SLAAC;
-- DNS AAAA handling and address-selection policy;
-- IPv4/IPv6 socket semantics without hiding address-family differences;
-- deterministic IPv4-only, IPv6-only, and dual-stack reference networks.
-
-Acceptance criteria:
-
-- [ ] GenOS configures a usable IPv6 address and route without a hard-coded guest address.
-- [ ] DNS, UDP, and TCP complete on IPv6-only and dual-stack networks.
-- [ ] Malformed extension headers, advertisements, fragments, and ICMPv6 messages fail closed.
-- [ ] IPv4 behavior remains covered by the same regression matrix.
+A router echo does not close these gates. `net` is a configuration diagnostic,
+not evidence of Internet or TLS connectivity.
 
 ## Stage 6 — Security, identity, and trusted distribution
 
-**Status: planned; depends on the foundation gate**
+**Status: planned beyond current capability/protection foundations. Required before corresponding hardened, sensitive-data or network claims.**
 
-Planned work:
+- [ ] **SEC1:** define attacker/firmware/device/CPU assumptions; audit cross-process, filesystem, service and network authority. Native spawn should grant only explicit capabilities.
+- [ ] **SEC2:** provide cryptographic entropy/reseed policy, local user/service/session identity where supported, permissions, attenuated delegation, sandbox profiles and resource limits.
+- [ ] **SEC3:** integrate maintained reviewed TLS 1.3/crypto in userspace after streams, entropy, trust and time exist. Test hostname/path/signature/expiry failures; no plaintext downgrade for credentials, updates or personal data.
+- [ ] **SEC4:** define trust-root provisioning, versions/expiry, key rotation/revocation, target compatibility and persistent anti-rollback state. Evaluate a maintained TUF implementation; signatures alone do not establish an update system.
+- [ ] **SEC5:** separate download, verification, installation, activation and boot-health confirmation; test interruption at each step and retain an authorized recovery path. A/B images are a candidate, not a mandated layout.
+- [ ] **SEC6:** publish unsafe/threat review, dependency/provenance inventory, supported versions, response policy and mitigation limits. Secure/measured boot, secrets storage and IOMMU claims require their own implementation and hardware evidence.
 
-- cryptographic entropy and a documented CSPRNG reseed policy;
-- user, service, and session identities;
-- filesystem permissions and capability delegation with attenuation;
-- process sandbox profiles and explicit device/network authority;
-- a versioned trust store and secure time policy;
-- userspace TLS 1.3 using reviewed cryptography and test vectors;
-- certificate path and hostname verification with negative interoperability tests;
-- signed packages, update metadata, rollback protection, and transactional install;
-- secure-boot research, measured-boot hooks, and secrets storage;
-- threat models for every trusted boundary.
-
-Acceptance criteria:
-
-- [ ] Applications receive only explicitly granted resources.
-- [ ] A compromised unprivileged process cannot read or modify another process, kernel memory, storage outside its authority, or unrelated network endpoints.
-- [ ] Credentials, packages, updates, and personal data cannot silently downgrade to plaintext.
-- [ ] Package and update signatures are verified before mutation.
-- [ ] The release publishes threat models and an unsafe-code review report.
+An explicitly offline, developer-built console milestone need not ship TLS, multiuser
+login or automatic update clients. That exclusion must remain visible in its profile;
+it cannot be used to market untrusted-network or sensitive-data readiness.
 
 ## Stage 7 — Stable application and service platform
 
-**Status: planned**
+**Status: SDK demonstration delivered; console platform planned. R2/R3 are the immediate product path.**
 
-Planned work:
+### C1 — Native application, memory and stream contracts
 
-- a versioned application ABI and compatibility policy;
-- file-descriptor or stream abstractions where they improve composability without weakening capabilities;
-- service discovery and capability delegation without raw PID authority;
-- shared-memory and event primitives with explicit ownership;
-- application manifests, packages, transactions, and SDK tooling;
-- resource accounting, quotas, background-execution policy, and service supervision;
-- an external application build that does not depend on private repository internals.
+- [x] An SDK example builds outside the repository, checks ABI compatibility, executes in Ring 3 and is reclaimed.
+- [ ] Define native capability-explicit spawn with executable reference, arguments, optional environment, working-directory authority, stdin/stdout/stderr and resource budget. Validate the whole request before making the child runnable.
+- [ ] Add owned userspace heap/mapping growth and bounded accounting; publish an ABI/image compatibility policy and deterministic unsupported-version errors.
+- [ ] Add bounded streams with partial I/O, readiness, EOF, broken-peer errors, cancellation and close. Keep structured message/handle transfer separate where useful.
+- [ ] Launch at least three independently built useful programs from storage. Test invalid ELF/ABI, every construction failure, stale/wrong-rights handles and cleanup of all intermediate resources.
+- [ ] Define supervised process groups, service discovery, restart budgets and recovery-console availability; a failed service or restart storm must not destroy unrelated authority.
 
-Acceptance criteria:
+Static native ELF programs are the starting point. POSIX conformance, `fork`, a C
+library, shared libraries and dynamic linking are optional later compatibility
+choices, not prerequisites for GenOS's own launch/stream model.
 
-- [ ] An application builds outside this repository with the published SDK.
-- [ ] ABI incompatibility produces a deterministic error or supported migration path.
-- [ ] Installation and removal are transactional and verifiable.
-- [ ] Service failure does not corrupt another service's state or authority.
+### C2 — Terminal input and command execution
+
+- [x] Normal output is quiet; `help` respects the 80-byte ABI limit; `clear`, files/jobs and `mem` have visible transcript tests.
+- [ ] Separate byte/escape decoding, bounded line editing, shell parsing and foreground input ownership. Cover cursor/delete/home/end, history, completion, cancellation, paste, long input and invalid/incomplete sequences.
+- [ ] Add `cd`, `pwd`, relative paths, quoting/escaping, general named launch and exit-status reporting. Enforce directory confinement below the shell; text normalization is not authority.
+- [ ] Define encoding, filename comparison and safe display of control bytes. Data display must not inject terminal controls, alter pending input or execute commands; prompt ownership must remain clear after background output. A limited initial encoding profile must be documented.
+- [ ] Build copy, atomic move/rename, text viewing/editing and diagnostics around real storage/stream interfaces. Add `ping`/DNS tools when a reviewed network interface exists; the ABI's existing test `ping` is not ICMP.
+
+### C3 — Composable jobs and scripts
+
+- [ ] Implement redirection and multi-stage pipelines after C1 streams; define pipeline exit status and partial-failure cleanup.
+- [ ] Prove transfers larger than every pipe buffer with slow/early-exiting consumers, peer death and cancellation while blocked; the prompt must return without deadlock.
+- [ ] Add foreground/background ownership, whole-pipeline interruption and bounded job records; restore the terminal when a process exits or dies after changing its mode.
+- [ ] Add a small documented scripting language, startup/configuration handling and actionable errors. Do not advertise shell syntax without the corresponding execution semantics.
+
+### C4 — Session, shutdown and recovery
+
+- [ ] Implement guest `exit`, shell/session restart, shutdown and reboot with privilege checks, bounded service stopping, storage draining and explicit failure outcomes.
+- [ ] Provide a functional serial recovery parser for inspection, read-only mount/export, backup/restore and authorized repair. Do not depend on graphics or the normal shell surviving.
+- [ ] Test a failed shell, failed optional service, damaged configuration, unavailable device, failed flush and interrupted recovery; return to a usable documented state.
+- [ ] Keep QEMU host controls separate from guest shutdown. Exiting the emulator is not a guest durability guarantee.
+
+### C5 — Stable console reference acceptance
+
+**Status: proposed targets, all unexecuted as a complete qualification.** Freeze the
+profile and numeric budgets before the candidate run; changing a target requires
+rationale and retained earlier failures. These are GenOS engineering targets, not
+thresholds supplied by a standard or proof that no defects remain.
+
+- [ ] R1, S1/S2 and C1–C4 pass; publish the exact supported storage/network/encoding/security profile and all excluded capabilities.
+- [ ] Demonstrate an end-to-end workflow: boot, edit/cancel commands, create a project, edit/save/reopen files, launch native programs, pipe data, cancel a stuck workload, recover the shell, reboot and verify durable bytes.
+- [ ] Exercise at least eight application processes plus the shell within the 512 MiB reference workload; publish actual configurable quotas. This is a workload floor, not an architectural ceiling.
+- [ ] Complete 1000 fresh boots; at least 10000 launch/exit/fault/kill/reap cycles in sustained runs; and a 72-hour mixed terminal/storage/process workload on one boot.
+- [ ] Require zero unexplained reset, hang, mixed committed state, authority leak or post-warmup unbounded resource growth. Use exact resource baselines and bounded-cache explanations, not aggregate “looks stable” logs.
+- [ ] Run the storage failure/recovery matrix independently of normal workloads, plus the applicable network/device matrix. Successful writes survive remount under the stated device fault model.
+- [ ] Measure cold/warm boot-to-input-ready, idle CPU/wakeups/memory, input/command latency, syscall/process/stream/storage cost and worst observed IRQ-masked time. Publish raw samples, spread and correctness results; freeze budgets from evidence rather than inventing performance wins.
+- [ ] Have an independent clean environment reproduce the candidate image/workflow and complete Stage 10's independent console release checklist. Use a dedicated test environment capable of the required uninterrupted soak; the current 180-minute scheduled job cannot establish a 24/72-hour run.
 
 ## Stage 8 — Modern hardware, SMP, and power management
 
-**Status: planned; depends on F5**
+**Status: planned expansion; no physical hardware or SMP claim today.** These are
+separate profiles, not a demand to implement every device before the first VM console.
 
-Required baseline:
+- [ ] **H-VM:** define modern VirtIO block/network/console profiles and device interfaces. Pin a reviewed specification revision and negotiated features; legacy ATA/PIC paths remain explicitly labeled until replaced and proven.
+- [ ] **H-DMA:** enforce DMA buffer lifetime, access direction, visibility and reset quiescence. Unknown reset completion cannot authorize reuse. Test malformed descriptors, used indices, coalesced/lost interrupts and repeated reset.
+- [ ] **H-PC:** choose one physical x86_64 machine after a discovery report; implement its ACPI/APIC/MSI-X, storage and input path, with NVMe/xHCI as target interfaces. Record firmware and device revisions, timeout/flush/reset and recovery outcomes.
+- [ ] **H-SMP:** only after F5, implement AP startup/parking, per-CPU tables/stacks/state, run queues, synchronization and acknowledged TLB shootdowns. Test simultaneous mapping/lifecycle changes and delayed acknowledgements before page reuse.
+- [ ] **H-IOMMU:** implement and verify the selected DMA-isolation policy before claiming containment against untrusted devices; document trusted-device assumptions until then.
+- [ ] **H-POWER:** add supported idle states, shutdown/reset, then suspend/resume, thermal/battery and hotplug/error behavior as separate hardware workloads. Preserve storage and ownership through failures.
 
-- ACPI discovery and power control;
-- local APIC/x2APIC, I/O APIC, MSI, and MSI-X;
-- SMP startup, per-CPU state, scheduler scaling, and TLB shootdowns;
-- modern VirtIO block, network, console, and GPU devices in the reference VM;
-- NVMe for the first physical-storage reference;
-- xHCI and USB HID for the first physical-input reference;
-- IOMMU and DMA-isolation policy before untrusted-device support;
-- PCIe capability, reset, power-state, hotplug, and error policy;
-- suspend, resume, battery, thermal, and idle-state support.
-
-Acceptance criteria:
-
-- [ ] The reference VM uses modern interfaces without silent legacy fallback.
-- [ ] A documented physical `x86_64` machine boots from NVMe, routes interrupts through APIC/MSI-X, and uses xHCI input.
-- [ ] Multi-core stress preserves scheduling, memory ownership, capabilities, and storage consistency.
-- [ ] Device reset, timeout, malformed DMA completion, surprise removal, suspend, and resume have repeatable tests.
+[Research](docs/research/2026-09-network-hardware.md) recommends VirtIO for the VM,
+but does not certify a driver by name. The inspected VirtIO 1.2 document is CS01;
+the existing 1.3 link identifies CSD01, a draft. Feature-specific revision/status
+must be recorded. UEFI 2.11 and ACPI 6.6 are research baselines, not new support claims.
 
 ## Stage 9 — Userspace graphics and product experience
 
-**Status: deferred until Stages 6-8 establish the required contracts**
+**Status: deferred until R3 and the required application/security/device contracts.**
 
-Planned work:
+- [ ] Userspace compositor/window server and isolated surfaces/capability transfers.
+- [ ] Selected virtio-gpu/physical GPU profile with lifecycle and resource limits.
+- [ ] Fonts/shaping/scaling, focus/input methods, keyboard operation, accessibility,
+  clipboard and drag/drop with explicit authority.
+- [ ] Userspace terminal, files, tasks, settings and launcher; serial administration
+  and recovery remain available when graphics fails.
+- [ ] Visual, interaction, isolation, memory and latency acceptance for the supported profile.
 
-- a userspace window server and compositor;
-- isolated shared-memory surfaces;
-- virtio-gpu for the reference VM and a documented physical-GPU path;
-- scalable text shaping, fonts, layout, themes, input methods, and accessibility primitives;
-- clipboard and drag-and-drop capabilities;
-- userspace terminal, Files, Tasks, Settings, recovery, and launcher applications;
-- visual, interaction, accessibility, memory, and frame-latency regression suites.
-
-Acceptance criteria:
-
-- [ ] Product UI no longer executes in Ring 0.
-- [ ] Applications cannot draw into or read another application's surface.
-- [ ] Administrative and recovery workflows remain possible through the serial terminal.
-- [ ] Keyboard-only and screen-reader-oriented reference flows pass.
-- [ ] Supported resolutions, scaling factors, focus states, errors, and recovery states have visual regression coverage.
+No product UI moves back into Ring 0. A graphical VM does not require every future
+laptop or multicore feature, but it must meet the contracts of the devices it uses.
 
 ## Stage 10 — Production candidate and daily-use qualification
 
-**Status: planned**
+**Status: planned. Evaluated per supported product/profile, including console-only.**
 
-This stage converts individual subsystem proofs into a supported reference product.
+The console release checklist below consumes implementation and test evidence; it
+does not require an R3 label as an input. Passing C5's workload gates and this
+checklist permits the R3 designation. Production promotion is a later, separate
+review. This avoids making C5, R3 and Stage 10 prerequisites of one another.
 
-Acceptance criteria:
+### Independent console release checklist
 
-- [ ] The verified and hardened-preview release definitions in `docs/ENGINEERING_QUALITY.md` pass.
-- [ ] Upgrade, rollback, recovery, and data-backup procedures are tested from prior supported versions.
-- [ ] The project publishes supported hardware, known limitations, security support period, and compatibility policy.
-- [ ] Long-duration stress covers memory pressure, process churn, storage faults, network faults, suspend/resume, and device reset.
-- [ ] Independent reviewers can reproduce the release image and benchmark artifacts.
-- [ ] No universal superiority claim appears in release material; every comparison links to reproducible evidence.
+- [ ] Review the R1, S1/S2 and C1–C4 evidence and C5 workload results against the exact advertised profile; verify all included guarantees and excluded capabilities.
+- [ ] Reproduce upgrades, authorized rollback, backup/restore and recovery from prior supported versions, including interrupted activation and failure during recovery. For the first version, retain its tested initial-install/recovery path and freeze the future migration contract.
+- [ ] Publish profile limits, ABI/storage compatibility, image hashes/provenance, dependency/trust assumptions, maintenance/support policy and unresolved risks.
+- [ ] Have an independent environment reproduce the candidate image and console workflow; retain fault/coverage/resource evidence. Scheduled failures must block promotion or become explicitly tracked work, never disappear from the record.
+- [ ] Compare performance only with equivalent named workloads/configurations and reproducible data. No universal-superiority or “perfectly safe” release language.
+
+### Production promotion
+
+- [ ] After R3, satisfy the Hardened preview requirements and the Stage 6/network/hardware gates for every advertised threat model and configuration, then pass the production-candidate review in the quality plan.
+- [ ] For physical daily use, attach the selected Stage 8 machine/device/power and recovery results; for a graphical product, attach Stage 9's interface, isolation and accessibility results.
+
+Stage 9 is required only for a graphical product. It is not a hidden prerequisite
+for a qualified console-only release.
 
 ## Cross-cutting scorecard
 
-Each release records the following. A missing measurement is reported as missing, not silently treated as zero.
-
-| Dimension | Required evidence |
-| --- | --- |
-| Correctness | invariant tests, fault injection, parser corpora, cleanup accounting, repeated boots |
-| Security | threat models, isolation tests, unsafe inventory, protection-bit proof, fuzz results |
-| Reliability | crash and power-loss recovery, timeout/reset behavior, long-duration stress |
-| Performance | boot time, idle CPU, idle memory, binary size, syscall/process latency, storage/network throughput |
-| Maintainability | module ownership, public contracts, reviewable patches, warning-free builds, architecture records |
-| Hardware behavior | exact VM configuration and exact physical reference-machine reports |
-| Product behavior | ABI and compatibility policy, migration and rollback tests, supported applications, keyboard operation, focus behavior, text alternatives, and assistive-technology contracts |
+Each candidate publishes a claim-to-evidence ledger: source/build/profile identity,
+positive and negative tests, failure/recovery outcomes, counters before/after,
+coverage limitations and independent reproduction. Missing evidence is marked
+missing. Track correctness, authority, recovery, bounded work, performance,
+maintainability, hardware behavior and user-visible workflows separately.
 
 ## Benchmarking against Linux or another system
 
-Every comparison must publish:
-
-1. the exact GenOS commit and build profile;
-2. the exact comparison-system version, configuration, services, and kernel command line;
-3. identical hardware or an identical pinned virtual-machine definition;
-4. the workload source and commands;
-5. warm-up policy, sample count, raw results, variance, and failure count;
-6. memory, CPU, storage, and network measurement method;
-7. known advantages or missing features that affect the result;
-8. a reproducible artifact or script in the repository.
-
-A result applies only to that experiment. It does not imply that either operating system is universally better.
+Pin both versions and configurations; declare feature differences, hardware/device
+models, workload source, warmup/cache policy, sample count, raw measurements,
+spread and failures. Compare boot-to-usable-input rather than an earlier internal
+marker. Measure the work a user requested. A faster result applies only to that
+experiment and must not be obtained by omitting required isolation or durability.
 
 ## How roadmap changes are made
 
-A roadmap change must explain:
-
-1. the user or developer problem;
-2. why the work belongs in the proposed stage;
-3. the smallest useful vertical slice;
-4. success and negative-path acceptance criteria;
-5. security, compatibility, performance, and maintenance costs;
-6. dependencies and rollback behavior;
-7. which documentation and measurements must change.
-
-Major architectural changes should use an architecture proposal issue and an architecture decision record. Working code, clear contracts, repeatable evidence, and long-term maintainability decide priority.
+Every update names the code baseline, new evidence, affected task IDs, dependencies,
+compatibility/rollback consequences and source revisions. Reconcile the limitations,
+README, subsystem contracts and quality plan together; preserve historical decisions
+as history. A checkbox cannot advance on a code change without its scoped evidence.
+Research proposals do not count as implementation. No target is lowered merely to
+turn a failing test green, and no release label advances because this document grew.

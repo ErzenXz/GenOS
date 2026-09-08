@@ -95,6 +95,11 @@ all F1 acceptance criteria. Full existing CI remains required independently.
 
 ## Roadmap status and remaining boundary
 
+Historical status at this ADR's original acceptance: the later
+[ADR 0003](0003-explicit-cpu-page-protections.md) added CPU-enforced IDT/page
+protection. Use the current [roadmap](../../ROADMAP.md) and
+[limitations register](../KNOWN_LIMITATIONS.md) for today's remaining work.
+
 This advances F1's normalized entry, deliberate fault handling, stack separation,
 and deterministic #DE/#UD/#GP/#PF evidence. F1 remains open. In particular:
 
