@@ -44,6 +44,14 @@ fn main() {
         "build-test" => build_validation(),
         "build-release" => build_mode(BuildMode::Release, None),
         "test-release" => test_normal_boots(),
+        "test-repeat" => {
+            let count = args.next();
+            if args.next().is_some() {
+                Err("usage: cargo xtask test-repeat [1..1000]".into())
+            } else {
+                normal_boot::repetition_count(count.as_deref()).and_then(test_repeated_boots)
+            }
+        }
         "run" => run(),
         "test" => test(),
         "test-network" => test_network(),
@@ -245,18 +253,40 @@ fn test_normal_boots() -> Result<(), String> {
     for mode in [BuildMode::Normal, BuildMode::Release] {
         build_mode(mode, None)?;
         verify_normal_binary(mode)?;
-        smoke_normal_qemu(mode)?;
+        smoke_normal_qemu(mode, None)?;
     }
     Ok(())
 }
 
-fn smoke_normal_qemu(mode: BuildMode) -> Result<(), String> {
-    let label = if mode == BuildMode::Release {
+fn test_repeated_boots(count: usize) -> Result<(), String> {
+    build_mode(BuildMode::Release, None)?;
+    verify_normal_binary(BuildMode::Release)?;
+    for iteration in 1..=count {
+        smoke_normal_qemu(BuildMode::Release, Some(iteration))?;
+        println!("NORMAL_BOOT_REPETITION_PROGRESS completed={iteration} requested={count}");
+    }
+    println!("NORMAL_BOOT_REPETITION_OK completed={count} requested={count}");
+    Ok(())
+}
+
+fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), String> {
+    let base_label = if mode == BuildMode::Release {
         "release"
     } else {
         "normal-debug"
     };
-    let data_image = PathBuf::from(format!("build/genos-data-{label}-test.img"));
+    let label = iteration.map_or_else(
+        || base_label.to_string(),
+        |index| format!("repeat-{index:04}"),
+    );
+    // Reuse one disposable volume across repetitions and reinitialize it before
+    // each boot. Retain logs/manifests, not a thousand 8-MiB volume copies.
+    let data_label = if iteration.is_some() {
+        "repeat"
+    } else {
+        base_label
+    };
+    let data_image = PathBuf::from(format!("build/genos-data-{data_label}-test.img"));
     write_partitioned_image(&data_image, false)?;
     let firmware = find_ovmf_code()?;
     let mut command = Command::new("qemu-system-x86_64");

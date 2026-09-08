@@ -179,7 +179,7 @@ A successful reference boot writes `SERVER_TERMINAL_READY`, `SERIAL_TERMINAL_REA
 
 ### Requirements
 
-- Rust 1.97.0, pinned by `rust-toolchain.toml`;
+- Rust 1.97.0, pinned by `rust-toolchain.toml` (1.97 is the declared minimum supported version);
 - `x86_64-unknown-uefi` and `x86_64-unknown-none` Rust targets;
 - QEMU with EDK2/OVMF firmware;
 - `mtools`.

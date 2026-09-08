@@ -28,6 +28,19 @@ const STEPS: &[(&str, &str)] = &[
     ("cat /USER/NORMAL.TXT\r", "text=NORMAL_BOOT_OK"),
 ];
 
+pub fn repetition_count(value: Option<&str>) -> Result<usize, String> {
+    let count = match value {
+        None => 10,
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| "repeat count must be an integer from 1 through 1000")?,
+    };
+    if !(1..=1000).contains(&count) {
+        return Err("repeat count must be an integer from 1 through 1000".into());
+    }
+    Ok(count)
+}
+
 #[derive(Default)]
 pub struct Transcript {
     policy: bool,
@@ -101,6 +114,17 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repetition_budget_is_explicit_and_bounded() {
+        assert_eq!(repetition_count(None), Ok(10));
+        for count in [1, 10, 1000] {
+            assert_eq!(repetition_count(Some(&count.to_string())), Ok(count));
+        }
+        for count in ["0", "1001", "-1", "hello", "1.5", "184467440737095516160"] {
+            assert!(repetition_count(Some(count)).is_err());
+        }
+    }
 
     fn ready() -> Transcript {
         let mut proof = Transcript::default();

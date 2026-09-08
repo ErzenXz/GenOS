@@ -2,6 +2,7 @@
 name = "genos-parser-stress"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.97"
 publish = false
 
 # Keep this host-only harness out of the boot-image workspace.

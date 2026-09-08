@@ -87,3 +87,22 @@ TCG and loaded hosts; passing still requires every ordered command response.
 `make bench` explicitly selects validation policy for its scheduler probes and
 restores a normal image even when the benchmark fails. Its timing remains a
 validation-boot measurement and must not be presented as normal startup latency.
+
+## Repeated normal boots
+
+`cargo xtask test-repeat [COUNT]` builds the optimized normal image once and then
+boots it repeatedly, with a freshly initialized disposable volume each time.
+The default is 10; valid counts are 1 through 1000. Every iteration exercises the
+same ordered shell, process launch/status/kill/reap, file write/read and network
+diagnostics as `test-release`. It stops at the first failed iteration. A final
+`NORMAL_BOOT_REPETITION_OK completed=N requested=N` line appears only after all N
+iterations pass. Per-iteration logs and manifests use `repeat-0001` and subsequent
+indices. One disposable data file is reused, so disk usage does not grow by 8 MiB
+per boot. Copy evidence before starting another run, which reuses these names.
+
+The separate `Long validation` workflow schedules 1000 boots weekly and supports
+a manually selected count. It also runs three million-input parser campaigns in
+independent jobs. Successful and failed runs retain artifacts. Adding this lane
+does not claim its 1000-boot gate has already passed; the gate remains open until
+a completed run supplies that evidence. Fresh boots do not replace sustained
+single-boot memory-pressure or lifecycle churn testing.
