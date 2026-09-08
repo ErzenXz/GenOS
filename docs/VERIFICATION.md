@@ -94,3 +94,28 @@ A machine-readable local summary is written to
 `build/final-foundation-evidence/summary.json`, alongside retained serial logs,
 fixture manifests, exception outcomes, repeat-boot evidence and entry disassembly.
 The temporary verification checkout has been removed after copying its evidence.
+
+
+## Next foundation slice — memory and terminal
+
+Source `e5fefc7` adds zero-before-grant, scrub-before-release, IRQ-scoped allocator
+access, stronger consistency checking, and read-only `mem` diagnostics. Source
+`e77edd4` adds canonical pathname checks shared with VFS, executable namespace tests,
+quiet normal terminal tracing, actual serial clearing and bounded `help` output.
+The physical release interface explicitly requires its caller to own and retire
+the grant; bitmap membership is not a replacement for owner tokens.
+
+The complete `cargo xtask test` suite passed on `e77edd4`, including storage/network
+failure cases, the external SDK, memory poisoning/scrubbing/rollback, nested IF
+restoration, all six CPU protections and both normal profiles. Normal tests use
+visible echoes/results and require memory usage to rise while a job is running
+and return to its pre-launch baseline after teardown. Host checks now comprise
+169 Rust tests and 25 Python tests; strict linting and the unsafe inventory pass.
+Evidence is retained in `build/next-complete-qemu.log`, `build/serial-memory.log`,
+`build/serial-normal-debug.log`, `build/serial-release.log` and their manifests.
+
+The default runner now uses QEMU's serial multiplexer so its Control+A then `x`
+exit sequence matches the test-session instructions. `docs/TERMINAL.md` records
+what the terminal actually supports. General program launch, shell navigation and
+job-control breadth, owner tokens, full concurrency and physical hardware remain
+open. This is progress on the foundation, not a production-readiness claim.
