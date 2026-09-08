@@ -45,5 +45,6 @@ Do not silently rewrite an accepted ADR to make history appear cleaner. Small co
 | 0003 | [Explicit CPU page protections](0003-explicit-cpu-page-protections.md) | Accepted in PR #7 |
 | 0004 | [Bitmap ownership and rollback](0004-bitmap-frame-ownership-and-rollback.md) | Accepted in PR #7 |
 | 0005 | [Kernel-owned boot stack](0005-owned-kernel-boot-stack.md) | Proposed |
+| 0006 | [Scrubbed frame release](0006-scrubbed-frame-release.md) | Proposed |
 
 Add accepted ADRs to this index in the same pull request.

@@ -89,6 +89,21 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     userspace::register_shell_elf(shell_program.data);
     #[cfg(feature = "memory-test-faults")]
+    {
+        let enabled = arch::interrupts_enabled();
+        let restored = arch::without_interrupts(|| {
+            let outer = !arch::interrupts_enabled();
+            let inner = arch::without_interrupts(|| !arch::interrupts_enabled());
+            outer && inner && !arch::interrupts_enabled()
+        }) && arch::interrupts_enabled() == enabled;
+        if !restored || !memory::run_hygiene_probe() {
+            serial::println("MEMORY_HYGIENE_FAILED");
+            arch::halt_loop();
+        }
+        serial::println("MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero");
+        serial::println("IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored");
+    }
+    #[cfg(feature = "memory-test-faults")]
     if !userspace::run_memory_rollback_probe(init_program.data) {
         serial::println("MEMORY_ROLLBACK_FAILED");
         arch::halt_loop();
@@ -108,6 +123,11 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     let mut vfs = RamVfs::new();
     vfs.init_root();
+    if !memory::report().is_ok_and(|report| vfs.write("/MEMORY.STATUS", report.as_bytes()).is_ok())
+    {
+        serial::println("MEMORY_STATUS_FAILED");
+        arch::halt_loop();
+    }
     let _ = vfs.mkdir("/USER");
     for file in initrd.iter() {
         if file.name != "INIT.ELF" && file.name != "SHELL.ELF" {

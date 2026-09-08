@@ -449,6 +449,14 @@ impl RuntimeCoordinator {
                         allowed = false;
                     }
                 }
+                if allowed && request.path.as_str().eq_ignore_ascii_case("/MEMORY.STATUS") {
+                    // Snapshot once at open; subsequent reads see this bounded
+                    // diagnostic file. It is outside the persistent /USER volume
+                    // and the ordinary capability policy denies all user writes.
+                    allowed = crate::memory::report().is_ok_and(|report| {
+                        self.vfs.write("/MEMORY.STATUS", report.as_bytes()).is_ok()
+                    });
+                }
                 let info = allowed
                     .then(|| self.vfs.find(request.path.as_str()))
                     .flatten()

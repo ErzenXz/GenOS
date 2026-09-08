@@ -362,6 +362,25 @@ pub fn disable_interrupts() {
     unsafe { asm!("cli", options(nostack)) };
 }
 
+/// Execute a bounded operation with local IRQs masked, restoring the caller's
+/// IF state on every normal return. Nested sections never enable IRQs early.
+/// Callers must not block or access this protected state from NMI/fatal handlers.
+/// This is single-BSP serialization, not an SMP lock.
+pub fn without_interrupts<R>(operation: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if self.0 {
+                enable_interrupts();
+            }
+        }
+    }
+    let enabled = interrupts_enabled();
+    disable_interrupts();
+    let _restore = Restore(enabled);
+    operation()
+}
+
 pub fn interrupts_enabled() -> bool {
     let flags: u64;
     unsafe {

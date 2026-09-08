@@ -25,6 +25,59 @@ impl FrameRegion {
     }
 }
 
+/// A by-value diagnostic snapshot. Operation counters saturate rather than wrap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocatorStats {
+    pub total: u64,
+    pub live: u64,
+    pub free: u64,
+    pub peak_live: u64,
+    pub allocations: u64,
+    pub releases: u64,
+    pub allocation_failures: u64,
+    pub invalid_releases: u64,
+    pub preparation_failures: u64,
+    pub regions: usize,
+}
+
+impl AllocatorStats {
+    pub fn write_report(
+        &self,
+        out: &mut impl core::fmt::Write,
+        consistent: bool,
+    ) -> core::fmt::Result {
+        writeln!(out, "memory allocator")?;
+        writeln!(
+            out,
+            "frames_total={} live={} free={}",
+            self.total, self.live, self.free
+        )?;
+        writeln!(out, "peak_live={} regions={}", self.peak_live, self.regions)?;
+        writeln!(
+            out,
+            "allocations={} releases={}",
+            self.allocations, self.releases
+        )?;
+        writeln!(out, "allocation_failures={}", self.allocation_failures)?;
+        writeln!(out, "invalid_releases={}", self.invalid_releases)?;
+        writeln!(out, "preparation_failures={}", self.preparation_failures)?;
+        writeln!(out, "consistent={}", if consistent { "yes" } else { "NO" })
+    }
+}
+
+/// Erase exactly one owned page with stores the compiler cannot discard.
+/// This does not promise removal from caches, swap, devices, or physical remanence.
+pub fn scrub_page(page: &mut [u8; PAGE_SIZE as usize]) {
+    for byte in page {
+        // SAFETY: each pointer refers to an initialized byte in this exclusively
+        // borrowed array. Byte stores need no stronger alignment and cannot escape it.
+        unsafe {
+            core::ptr::write_volatile(byte, 0);
+        }
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}
+
 pub struct FrameAllocator<const WORDS: usize = 64> {
     regions: [FrameRegion; MAX_USABLE_REGIONS],
     region_count: usize,
@@ -34,6 +87,12 @@ pub struct FrameAllocator<const WORDS: usize = 64> {
     high_water: usize,
     allocated_frames: u64,
     started: bool,
+    peak_live: u64,
+    allocations: u64,
+    releases: u64,
+    allocation_failures: u64,
+    invalid_releases: u64,
+    preparation_failures: u64,
 }
 
 impl<const WORDS: usize> FrameAllocator<WORDS> {
@@ -47,6 +106,12 @@ impl<const WORDS: usize> FrameAllocator<WORDS> {
             high_water: 0,
             allocated_frames: 0,
             started: false,
+            peak_live: 0,
+            allocations: 0,
+            releases: 0,
+            allocation_failures: 0,
+            invalid_releases: 0,
+            preparation_failures: 0,
         }
     }
 
@@ -126,32 +191,65 @@ impl<const WORDS: usize> FrameAllocator<WORDS> {
             self.allocated[self.next_word] |= 1u64 << bit;
             self.high_water = self.high_water.max(index + 1);
             self.allocated_frames += 1;
+            self.peak_live = self.peak_live.max(self.allocated_frames);
+            self.allocations = self.allocations.saturating_add(1);
             self.started = true;
             return Some(frame);
         }
+        self.allocation_failures = self.allocation_failures.saturating_add(1);
         None
     }
 
+    /// Metadata-only release for host models. Physical adapters must prepare
+    /// memory (for example scrub it) through `free_frame_with` before reuse.
     pub fn free_frame(&mut self, frame: u64) -> bool {
-        if frame == 0 || !frame.is_multiple_of(PAGE_SIZE) {
-            return false;
-        }
-        let Some(region) = self.regions[..self.region_count]
-            .iter()
-            .find(|r| frame >= r.start && frame < r.end)
-        else {
+        self.free_frame_with(frame, |_| true)
+    }
+
+    /// Validate first, prepare while still owned, then publish the free bit.
+    /// A denied address never reaches `prepare`; a failed preparation retains
+    /// the grant. This validates a live grant, not a caller's ownership token.
+    pub fn free_frame_with(&mut self, frame: u64, prepare: impl FnOnce(u64) -> bool) -> bool {
+        let Some(index) = self.live_index(frame) else {
+            self.invalid_releases = self.invalid_releases.saturating_add(1);
             return false;
         };
-        let index = region.first + ((frame - region.start) / PAGE_SIZE) as usize;
-        let word = index / 64;
-        let mask = 1u64 << (index % 64);
-        if self.allocated[word] & mask == 0 {
+        if !prepare(frame) {
+            self.preparation_failures = self.preparation_failures.saturating_add(1);
             return false;
         }
-        self.allocated[word] &= !mask;
+        let word = index / 64;
+        self.allocated[word] &= !(1u64 << (index % 64));
         self.allocated_frames -= 1;
+        self.releases = self.releases.saturating_add(1);
         self.next_word = self.next_word.min(word);
         true
+    }
+
+    fn live_index(&self, frame: u64) -> Option<usize> {
+        if frame == 0 || !frame.is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+        let region = self.regions[..self.region_count]
+            .iter()
+            .find(|region| frame >= region.start && frame < region.end)?;
+        let index = region.first + ((frame - region.start) / PAGE_SIZE) as usize;
+        (self.allocated[index / 64] & (1u64 << (index % 64)) != 0).then_some(index)
+    }
+
+    pub fn stats(&self) -> AllocatorStats {
+        AllocatorStats {
+            total: self.frame_count as u64,
+            live: self.allocated_frames,
+            free: (self.frame_count as u64).saturating_sub(self.allocated_frames),
+            peak_live: self.peak_live,
+            allocations: self.allocations,
+            releases: self.releases,
+            allocation_failures: self.allocation_failures,
+            invalid_releases: self.invalid_releases,
+            preparation_failures: self.preparation_failures,
+            regions: self.region_count,
+        }
     }
 
     pub const fn usable_bytes(&self) -> u64 {
@@ -167,13 +265,44 @@ impl<const WORDS: usize> FrameAllocator<WORDS> {
         self.high_water - self.allocated_frames as usize
     }
     pub fn is_consistent(&self) -> bool {
-        self.allocated
-            .iter()
-            .map(|word| u64::from(word.count_ones()))
-            .sum::<u64>()
-            == self.allocated_frames
-            && self.high_water <= self.frame_count
-            && self.allocated_frames <= self.high_water as u64
+        if self.region_count > MAX_USABLE_REGIONS
+            || self.frame_count > WORDS.saturating_mul(64)
+            || self.high_water > self.frame_count
+            || self.allocated_frames > self.high_water as u64
+            || self.peak_live < self.allocated_frames
+            || self.peak_live > self.frame_count as u64
+            || (self.allocated_frames != 0 && !self.started)
+        {
+            return false;
+        }
+        let used = self.frame_count.div_ceil(64);
+        if self.next_word > used || self.allocated[used..].iter().any(|word| *word != 0) {
+            return false;
+        }
+        let tail = self.frame_count % 64;
+        if tail != 0 && self.allocated[used - 1] >> tail != 0 {
+            return false;
+        }
+        let mut first = 0usize;
+        let mut end = PAGE_SIZE;
+        for region in &self.regions[..self.region_count] {
+            if region.start < end
+                || region.start >= region.end
+                || region.first != first
+                || !region.start.is_multiple_of(PAGE_SIZE)
+                || !region.end.is_multiple_of(PAGE_SIZE)
+            {
+                return false;
+            }
+            first += region.frames();
+            end = region.end;
+        }
+        first == self.frame_count
+            && self.allocated[..used]
+                .iter()
+                .map(|word| u64::from(word.count_ones()))
+                .sum::<u64>()
+                == self.allocated_frames
     }
 }
 
@@ -196,6 +325,98 @@ mod tests {
 
     fn region(start: u64, size: u64, kind: MemoryRegionKind) -> MemoryRegion {
         MemoryRegion { start, size, kind }
+    }
+
+    #[test]
+    fn release_preparation_runs_only_for_a_live_grant_and_failure_retains_it() {
+        let mut allocator = FrameAllocator::<1>::new();
+        allocator.add_region(region(0x1000, PAGE_SIZE, MemoryRegionKind::Usable));
+        for frame in [0, 0x1000, 0x1001, 0x2000] {
+            assert!(!allocator.free_frame_with(frame, |_| panic!("invalid address reached memory")));
+        }
+        let frame = allocator.alloc_frame().unwrap();
+        assert!(!allocator.free_frame_with(frame, |actual| {
+            assert_eq!(actual, frame);
+            false
+        }));
+        assert_eq!(allocator.stats().live, 1);
+        assert_eq!(allocator.stats().preparation_failures, 1);
+        assert!(allocator.alloc_frame().is_none());
+        assert!(allocator.free_frame_with(frame, |_| true));
+        assert!(!allocator.free_frame_with(frame, |_| panic!("double free reached memory")));
+        assert_eq!(allocator.alloc_frame(), Some(frame));
+        assert!(allocator.is_consistent());
+    }
+
+    #[test]
+    fn scrubbing_erases_every_byte_and_preserves_adjacent_storage() {
+        struct Storage {
+            before: [u8; 17],
+            page: [u8; 4096],
+            after: [u8; 19],
+        }
+        let mut storage = Storage {
+            before: [0x17; 17],
+            page: [0xa5; 4096],
+            after: [0x19; 19],
+        };
+        scrub_page(&mut storage.page);
+        assert!(storage.page.iter().all(|byte| *byte == 0));
+        assert_eq!(storage.before, [0x17; 17]);
+        assert_eq!(storage.after, [0x19; 19]);
+    }
+
+    #[test]
+    fn statistics_distinguish_live_peak_reuse_exhaustion_and_invalid_release() {
+        let mut allocator = FrameAllocator::<1>::new();
+        allocator.add_region(region(0x1000, PAGE_SIZE * 2, MemoryRegionKind::Usable));
+        let first = allocator.alloc_frame().unwrap();
+        let second = allocator.alloc_frame().unwrap();
+        assert!(allocator.alloc_frame().is_none());
+        assert!(allocator.free_frame(first));
+        assert!(!allocator.free_frame(first));
+        assert_eq!(allocator.alloc_frame(), Some(first));
+        assert!(allocator.free_frame(second));
+        let stats = allocator.stats();
+        assert_eq!(
+            (stats.total, stats.live, stats.free, stats.peak_live),
+            (2, 1, 1, 2)
+        );
+        assert_eq!(
+            (
+                stats.allocations,
+                stats.releases,
+                stats.allocation_failures,
+                stats.invalid_releases
+            ),
+            (3, 2, 1, 1)
+        );
+        let mut report = std::string::String::new();
+        stats
+            .write_report(&mut report, allocator.is_consistent())
+            .unwrap();
+        assert!(report.contains("consistent=yes"));
+        assert!(report.contains("allocations=3 releases=2"));
+        assert!(report.len() < 512);
+    }
+
+    #[test]
+    fn consistency_checks_region_geometry_and_bits_outside_managed_memory() {
+        let mut allocator = FrameAllocator::<2>::new();
+        allocator.add_region(region(0x1000, PAGE_SIZE, MemoryRegionKind::Usable));
+        assert!(allocator.is_consistent());
+        // A matching population count alone must not bless a bit outside the map.
+        allocator.allocated[1] = 1;
+        allocator.allocated_frames = 1;
+        allocator.high_water = 1;
+        allocator.peak_live = 1;
+        allocator.started = true;
+        assert!(!allocator.is_consistent());
+        allocator.allocated[1] = 0;
+        allocator.allocated[0] = 1;
+        assert!(allocator.is_consistent());
+        allocator.regions[0].first = 1;
+        assert!(!allocator.is_consistent());
     }
 
     #[test]

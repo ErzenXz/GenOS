@@ -301,3 +301,9 @@ ELF/network parsers and socket state. It found a zero-slot handle arithmetic bug
 now fixed in socket and endpoint decoders. Coverage-guided fuzzing, the remaining
 parser families, long-run boot evidence, and physical hardware remain open.
 These newer contracts supersede the corresponding original audit descriptions.
+
+
+The [managed-frame contract](MEMORY.md) now implements release-time erasure,
+zero-before-grant, IRQ-scoped allocator access and `mem` diagnostics. This narrows
+F3; it does not provide owner tokens, alias tracking, SMP synchronization or secure
+physical erasure. The read-only diagnostic file is shared across concurrent opens.

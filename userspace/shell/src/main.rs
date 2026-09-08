@@ -9,7 +9,7 @@ use genos_user_runtime as runtime;
 const LINE_CAPACITY: usize = runtime::CONSOLE_TEXT_MAX;
 const READY: &[u8] = b"SHELL.ELF ready - filesystem, network, and process control run in Ring 3";
 const HELP: &[u8] =
-    b"help clear echo uname net ls cat stat touch write append mkdir rm run ps kill wait";
+    b"help clear echo uname net mem ls cat stat touch write append mkdir rm run ps kill wait";
 const UNAME: &[u8] = b"GenOS v0.56 ring3-shell x86_64 ABI 18";
 const UNKNOWN: &[u8] = b"unknown userspace command";
 const DIRECTORY_ERROR: &[u8] = b"directory unavailable";
@@ -996,6 +996,8 @@ fn execute(console: u64, supervisor: u64) {
         let _ = runtime::console_write(console, UNAME, runtime::CONSOLE_LINE_OUTPUT);
     } else if matches(line, b"net") {
         network_status(console);
+    } else if matches(line, b"mem") {
+        print_file(console, b"/MEMORY.STATUS");
     } else if matches(line, b"clear") {
         let _ = runtime::console_clear(console);
     } else if line.len() >= 5 && matches(&line[..5], b"echo ") {

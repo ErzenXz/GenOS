@@ -17,6 +17,11 @@ const STEPS: &[(&str, &str)] = &[
     ("cat /USER/SHELL.TXT\r", "text=file unavailable"),
     ("cat /USER/APP.TXT\r", "text=file unavailable"),
     ("uname\r", "text=GenOS v0.56 ring3-shell x86_64 ABI 18"),
+    ("mem\r", "text=consistent=yes"),
+    (
+        "write /MEMORY.STATUS invalid\r",
+        "text=file change denied; use /USER/FILE",
+    ),
     ("run init hold\r", "USER_PROCESS_LAUNCHED owner=4 "),
     ("ps\r", "USER_PROCESS_STATUS owner=4 "),
     ("kill 1\r", "USER_PROCESS_KILLED owner=4 "),
