@@ -3,6 +3,9 @@
 The active interface is the Ring 3 serial shell. Normal builds keep development
 syscall/keystroke tracing out of the interactive session. Startup and failure
 messages remain available; `validation-boot` retains the detailed proof trace.
+Start with `make run`. This serial-only QEMU session does not capture the mouse.
+To quit the emulator, press Control+A, release both keys, then press `x`. These
+are host emulator controls, not a guest shutdown command.
 Type one command and press Enter. Commands use plain arguments, not shell quoting,
 pipelines or redirection. The current namespace is rooted at `/` with no `cd`.
 

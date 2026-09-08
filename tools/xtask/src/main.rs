@@ -201,10 +201,7 @@ fn run() -> Result<(), String> {
         .arg("user,id=net0")
         .arg("-device")
         .arg(MODERN_NETWORK_DEVICE)
-        .arg("-display")
-        .arg("none")
-        .arg("-serial")
-        .arg("stdio")
+        .arg("-nographic")
         .arg("-no-reboot")
         .status()
         .map_err(|e| format!("failed to launch qemu: {e}"))?;
