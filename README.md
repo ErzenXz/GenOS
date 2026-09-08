@@ -116,7 +116,7 @@ GenOS now enables and verifies NX and CR0.WP, plus CPUID-supported SMEP/SMAP, af
 
 The allocator uses a bitmap for up to 8 GiB of usable memory across 64 ranges, with overlap/capacity refusal and lossless reclamation. Clone rollback is tested at every allocation in a host fixture; real process construction is tested at all ten allocation points. See [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md).
 
-The system remains single-core and experimental. Emergency-stack nesting/XSTATE, inherited physical aliases, larger-memory support, allocator owner tokens, release/validation boot separation, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
+The system remains single-core and experimental. Emergency-stack nesting/XSTATE, inherited physical aliases, larger-memory support, allocator owner tokens, coverage-guided fuzzing and long-run validation, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
 
 ## Immediate engineering priority
 
@@ -127,7 +127,7 @@ Before broad product expansion, GenOS is closing a foundation correctness gate:
 3. make physical and virtual memory construction transactional and scalable;
 4. split runtime responsibilities into reviewable modules;
 5. formalize the single-core concurrency model and per-CPU path;
-6. separate validation boot from release boot;
+6. expand parser fuzzing and repeated validation boots;
 7. add fuzzing, fault injection, long-run tests, and reviewable delivery rules;
 8. keep every required CI stage green.
 
@@ -303,3 +303,12 @@ GenOS can become lighter, easier to inspect, and more coherent than larger syste
 Export an application with `cargo xtask new-app PATH`, verify it with `make test-sdk`, and measure development boots with `make bench`.
 
 Memory failure injection: `cargo xtask test-memory`. CPU-fault matrix: [exception harness](tools/test_exception_entry.py). Latest integration evidence: [verification](docs/VERIFICATION.md).
+
+
+Normal startup now omits the development proof suites. `make build` creates a
+normal development image; `make run` builds and boots the optimized normal image.
+Use `make build-test` for explicit validation startup and `make test-release` for
+interactive checks of both normal images. See [boot modes](docs/BOOT_MODES.md),
+[single-core admission](docs/SINGLE_CORE.md), and the
+[parser stress harness](tools/parser-stress/README.md). These advance the
+foundation gates; GenOS remains experimental.

@@ -34,12 +34,15 @@ jobs:
           cargo -V
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path tools/parser-stress/Cargo.toml -- --check
 
       - name: Lint host-side ABI and build tooling
         run: |
           cargo clippy -p genos_abi -- -D warnings
           cargo clippy -p xtask -- -D warnings
+          cargo clippy --manifest-path tools/parser-stress/Cargo.toml --all-targets --offline -- -D warnings
 
       - name: Lint UEFI bootloader
         run: cargo clippy -p bootloader --target x86_64-unknown-uefi -- -D warnings
@@ -48,12 +51,14 @@ jobs:
         run: |
           cargo clippy -p kernel --lib -- -D warnings
           cargo clippy -p kernel --bin kernel --target x86_64-unknown-none -- -D warnings
+          cargo clippy -p kernel --bin kernel --target x86_64-unknown-none --features validation-boot,memory-test-faults,network-test-faults -- -D warnings
 
       - name: Lint userspace targets
         run: |
           cargo clippy -p genos-user-runtime --target x86_64-unknown-none -- -D warnings
           cargo clippy -p genos-init --profile userspace --target x86_64-unknown-none -- -D warnings
           cargo clippy -p genos-shell --profile userspace --target x86_64-unknown-none -- -D warnings
+          cargo clippy -p genos-shell --profile userspace --target x86_64-unknown-none --features validation-boot -- -D warnings
 
   host-tests:
     name: Host tests
@@ -74,7 +79,10 @@ jobs:
           cargo -V
 
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: |
+          cargo test --workspace
+          cargo test --manifest-path tools/parser-stress/Cargo.toml --offline
+          python3 -m unittest discover -s tools -p 'test_*.py'
 
   release-checks:
     name: Release target checks
@@ -174,4 +182,95 @@ jobs:
             build/ci-manifest.txt
             build/serial*.log
           if-no-files-found: warn
+          retention-days: 14
+
+  unsafe-inventory:
+    name: Unsafe source inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check retained source and review context
+        run: python3 tools/check_unsafe.py --check
+      - name: Retain current inventory for review
+        if: always()
+        run: |
+          mkdir -p build
+          python3 tools/check_unsafe.py --json > build/unsafe-inventory.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: unsafe-inventory
+          path: build/unsafe-inventory.json
+          retention-days: 14
+
+  parser-stress:
+    name: Parser mutation stress (${{ matrix.seed }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ['0', '0x47454e4f53']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Run production parsers and socket invariants
+        shell: bash
+        run: |
+          mkdir -p build
+          cargo run --manifest-path tools/parser-stress/Cargo.toml --release --offline -- --seed ${{ matrix.seed }} --iterations 100000 2>&1 | tee build/parser-stress.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: parser-stress-${{ matrix.seed }}
+          path: |
+            build/parser-stress.log
+            tools/parser-stress/target/failures/
+          retention-days: 14
+
+  normal-boot:
+    name: Normal debug and release boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install reference VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Exercise the real shell without validation startup
+        run: cargo xtask test-release
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: normal-boot-evidence
+          path: |
+            build/serial-normal-debug.log
+            build/serial-release.log
+            build/image-mode.txt
+            build/normal-*-manifest.txt
+            build/normal-*-qemu.log
+          retention-days: 14
+
+  bsp-admission:
+    name: Single-core admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install reference VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Prove BSP boots and rejected reentry
+        run: python3 tools/test_bsp.py
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bsp-admission-evidence
+          path: build/bsp-evidence/
           retention-days: 14

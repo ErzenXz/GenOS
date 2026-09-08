@@ -278,4 +278,26 @@ A pull request must update this file when it:
 Remove a limitation only in the same change that adds the required implementation and evidence, or in a follow-up change that links directly to already merged proof.
 ## Integration update — GenOS 0.56 (2026-09-08)
 
-The audit above preserves its original baseline. The integrated system now has normalized exception entry, dedicated fatal stacks, a CPU-protected IDT, explicit NX/WP and supported SMEP/SMAP, page permissions for the linked kernel sections, bounded UART waits, lossless bitmap reclamation, transactional clone/map rollback, and physical-allocation failure tests. These supersede the corresponding older implementation descriptions without closing the broader security/concurrency release gate. The allocator limit is now 8 GiB of usable memory and 64 managed ranges; the bootloader's own memory-map capacity remains a separate limitation. Inherited physical aliases, owner tokens, sensitive-page scrubbing, nested emergency-stack/XSTATE handling and release/validation boot separation remain unfinished.
+The audit above preserves its original baseline. The integrated system now has normalized exception entry, dedicated fatal stacks, a CPU-protected IDT, explicit NX/WP and supported SMEP/SMAP, page permissions for the linked kernel sections, bounded UART waits, lossless bitmap reclamation, transactional clone/map rollback, and physical-allocation failure tests. These supersede the corresponding older implementation descriptions without closing the broader security/concurrency release gate. The allocator limit is now 8 GiB of usable memory and 64 managed ranges; the bootloader's own memory-map capacity remains a separate limitation. Inherited physical aliases, owner tokens, sensitive-page scrubbing, nested emergency-stack/XSTATE handling and comprehensive concurrency validation remain unfinished.
+
+
+## Foundation continuation — normal boot and source checks
+
+Normal and validation startup now have separate Cargo policies. Both development
+and optimized normal images boot the real Ring 3 shell without lifecycle stress,
+rollback, generation churn or shell proof fixtures. The release link requires LTO
+to remain disabled with the pinned precompiled core library. See
+[boot modes](BOOT_MODES.md) for commands and evidence boundaries.
+
+The BSP admission guard rejects non-BSP identity and duplicate kernel/table entry
+before shared initialization. This narrows accidental startup risk; it does not
+supply per-CPU state, general locking, TLB shootdowns or nested-interrupt safety.
+The [single-core contract](SINGLE_CORE.md) records those remaining obligations.
+
+The [unsafe inventory](UNSAFE_INVENTORY.md) preserves lexical source and context
+in CI; it does not certify the safety of those sites. The retained
+[parser mutation harness](../tools/parser-stress/README.md) exercises production
+ELF/network parsers and socket state. It found a zero-slot handle arithmetic bug,
+now fixed in socket and endpoint decoders. Coverage-guided fuzzing, the remaining
+parser families, long-run boot evidence, and physical hardware remain open.
+These newer contracts supersede the corresponding original audit descriptions.
