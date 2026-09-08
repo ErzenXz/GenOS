@@ -81,9 +81,13 @@ pub fn fail_after(allocations: Option<usize>) {
     });
 }
 
-/// Callers must retire mappings/references before returning a grant. Validation
-/// precedes all stores; the bitmap remains allocated until scrubbing completes.
-pub fn free_frame(frame: u64) -> bool {
+/// Validation precedes all stores; the bitmap stays allocated through scrubbing.
+///
+/// # Safety
+/// If the address names a live grant, the caller must own it exclusively and
+/// retire mappings, references and device access before release. Invalid/unissued
+/// addresses are rejected. A live bit cannot establish caller identity.
+pub unsafe fn free_frame(frame: u64) -> bool {
     with_allocator(|allocator| {
         allocator.free_frame_with(frame, |frame| {
             // SAFETY: the live-grant check established aligned managed RAM before
@@ -166,7 +170,9 @@ pub fn run_hygiene_probe() -> bool {
                     .all(|offset| core::ptr::read_volatile((frame + offset) as *const u8) == 0);
             (initial_zero, poison_intact, erased)
         };
-        let double_denied = !free_frame(frame);
+        // SAFETY: this probe owns the original identity; a retired grant is
+        // deliberately retried to check rejection before any physical access.
+        let double_denied = unsafe { !free_frame(frame) };
         let Some(reused) = alloc_frame() else {
             return false;
         };
@@ -175,7 +181,8 @@ pub fn run_hygiene_probe() -> bool {
             (0..PAGE_SIZE)
                 .all(|offset| core::ptr::read_volatile((reused + offset) as *const u8) == 0)
         };
-        let returned = free_frame(reused);
+        // SAFETY: the new grant is owned only by this probe and is not mapped to a user.
+        let returned = unsafe { free_frame(reused) };
         initial_zero
             && poison_intact
             && erased

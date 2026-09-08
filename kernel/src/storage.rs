@@ -276,11 +276,11 @@ impl PersistentFs {
 
         self.active_slot = Some(target);
         self.generation = generation;
-        serial::print("PERSISTENT_COMMIT_OK generation=");
-        serial::print_u64(generation);
-        serial::print(" slot=");
-        serial::print_u64(target as u64);
-        serial::println("");
+        serial::trace::print("PERSISTENT_COMMIT_OK generation=");
+        serial::trace::print_u64(generation);
+        serial::trace::print(" slot=");
+        serial::trace::print_u64(target as u64);
+        serial::trace::println("");
         Ok(())
     }
 

@@ -7,9 +7,28 @@ use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use genos_user_runtime as runtime;
 
 const LINE_CAPACITY: usize = runtime::CONSOLE_TEXT_MAX;
+#[cfg(feature = "validation-boot")]
 const READY: &[u8] = b"SHELL.ELF ready - filesystem, network, and process control run in Ring 3";
-const HELP: &[u8] =
-    b"help clear echo uname net mem ls cat stat touch write append mkdir rm run ps kill wait";
+#[cfg(not(feature = "validation-boot"))]
+const READY: &[u8] = b"GenOS shell - type help to list commands.";
+const HELP: &[&[u8]] = &[
+    b"Commands: help clear uname net mem",
+    b"Text: echo TEXT",
+    b"Files: ls [PATH] | cat PATH | stat PATH | touch PATH",
+    b"Write: write PATH TEXT | append PATH TEXT",
+    b"Paths: mkdir PATH | rm PATH",
+    b"Programs: run init | run init hold | ps | kill JOB | wait JOB",
+    b"Use /USER/... for files; JOB is the number shown by run or ps.",
+];
+// Console writes have a fixed ABI budget. A growing one-line help string used
+// to exceed that budget and silently produce no help at all.
+const _: () = {
+    let mut index = 0;
+    while index < HELP.len() {
+        assert!(HELP[index].len() <= runtime::CONSOLE_TEXT_MAX);
+        index += 1;
+    }
+};
 const UNAME: &[u8] = b"GenOS v0.56 ring3-shell x86_64 ABI 18";
 const UNKNOWN: &[u8] = b"unknown userspace command";
 const DIRECTORY_ERROR: &[u8] = b"directory unavailable";
@@ -991,7 +1010,13 @@ fn execute(console: u64, supervisor: u64) {
         let _ = runtime::console_write(console, &prompt[..3 + copy], runtime::CONSOLE_LINE_PROMPT);
     }
     if matches(line, b"help") {
-        let _ = runtime::console_write(console, HELP, runtime::CONSOLE_LINE_OUTPUT);
+        for line in HELP {
+            if runtime::console_write(console, line, runtime::CONSOLE_LINE_OUTPUT)
+                != line.len() as u64
+            {
+                break;
+            }
+        }
     } else if matches(line, b"uname") {
         let _ = runtime::console_write(console, UNAME, runtime::CONSOLE_LINE_OUTPUT);
     } else if matches(line, b"net") {

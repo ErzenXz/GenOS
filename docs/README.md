@@ -15,6 +15,7 @@ GenOS documentation separates current contracts, future sequence, material limit
 
 These documents describe the exact bounded behavior demonstrated by the current experimental baseline. They do not imply production readiness and do not override the limitations register.
 
+- [Terminal commands and current scope](TERMINAL.md)
 - [Userspace boundary and ABI](USERSPACE.md)
 - [Runtime ownership and coordination](RUNTIME.md)
 - [Storage format and recovery](STORAGE.md)

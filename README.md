@@ -312,3 +312,9 @@ interactive checks of both normal images. See [boot modes](docs/BOOT_MODES.md),
 [single-core admission](docs/SINGLE_CORE.md), and the
 [parser stress harness](tools/parser-stress/README.md). These advance the
 foundation gates; GenOS remains experimental.
+
+
+The normal terminal now keeps development event traces out of interactive output.
+Use `mem` for allocator counters and consistency; `/MEMORY.STATUS` is read-only.
+The `clear` command clears the serial terminal, and ordinary application output is
+shown without syscall trace prefixes. Validation images retain their detailed logs.

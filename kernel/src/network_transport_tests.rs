@@ -3,6 +3,11 @@
 #![allow(dead_code)]
 
 pub(crate) mod serial {
+    pub mod trace {
+        pub fn print(_: &str) {}
+        pub fn println(_: &str) {}
+        pub fn print_u64(_: u64) {}
+    }
     pub fn print(_: &str) {}
     pub fn println(_: &str) {}
     pub fn print_u64(_: u64) {}

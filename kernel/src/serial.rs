@@ -100,3 +100,32 @@ fn write_byte(byte: u8) -> bool {
     }
     true
 }
+
+/// Development event tracing. Normal images retain the real terminal and fatal
+/// diagnostics while validation images preserve the exact existing proof trace.
+pub mod trace {
+    #[inline(always)]
+    pub fn print(text: &str) {
+        if cfg!(feature = "validation-boot") {
+            super::print(text);
+        }
+    }
+    #[inline(always)]
+    pub fn println(text: &str) {
+        if cfg!(feature = "validation-boot") {
+            super::println(text);
+        }
+    }
+    #[inline(always)]
+    pub fn print_u64(value: u64) {
+        if cfg!(feature = "validation-boot") {
+            super::print_u64(value);
+        }
+    }
+    #[inline(always)]
+    pub fn print_hex(value: u64) {
+        if cfg!(feature = "validation-boot") {
+            super::print_hex(value);
+        }
+    }
+}

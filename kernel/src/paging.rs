@@ -157,7 +157,9 @@ pub fn map_user_page(
                 parent.write(0);
             }
             assert!(
-                memory::free_frame(child),
+                // SAFETY: rollback removed this new parent edge; the unpublished
+                // child is exclusively owned by this mapping transaction.
+                unsafe { memory::free_frame(child) },
                 "user-table rollback lost ownership"
             );
         }
@@ -398,7 +400,9 @@ pub fn destroy_user_address_space(space: AddressSpace) -> Result<u64, PagingErro
             pml4[USER_PML4_INDEX] = 0;
         }
     }
-    if !memory::free_frame(space.root) {
+    // SAFETY: the root was checked inactive and its private descendants have
+    // been retired. The process lifecycle owner releases this root exactly once.
+    if !unsafe { memory::free_frame(space.root) } {
         return Err(PagingError::InvalidAddress);
     }
     Ok(released + 1)
@@ -422,7 +426,8 @@ unsafe impl kernel::page_table::TableMemory for PhysicalTables {
     }
     fn release(&mut self, frame: u64) {
         assert!(
-            memory::free_frame(frame),
+            // SAFETY: clone rollback passes only new, unpublished table grants.
+            unsafe { memory::free_frame(frame) },
             "page-table rollback lost ownership"
         );
     }

@@ -372,7 +372,7 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
             }
         }
     });
-    let mut transcript = normal_boot::Transcript::default();
+    let mut transcript = normal_boot::Transcript::new(mode == BuildMode::Release);
     // Cross-architecture TCG and loaded CI hosts need the same 120-second
     // wall-clock budget as the other boot gates; evidence requirements are unchanged.
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -399,9 +399,7 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
                 }
                 Ok(None) => {}
             }
-            if transcript.complete()
-                && (mode != BuildMode::Release || output.contains("IPV6_ICMP_ECHO_OK"))
-            {
+            if transcript.complete() {
                 passed = true;
                 break;
             }

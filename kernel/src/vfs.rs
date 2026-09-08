@@ -242,7 +242,7 @@ impl RamVfs {
     }
 
     fn insert(&mut self, path: &str, kind: NodeKind, data: &[u8]) -> Result<(), VfsError> {
-        if path.is_empty() || path.len() > MAX_PATH_BYTES || !path.starts_with('/') {
+        if !crate::path_policy::valid_absolute_path(path) {
             return Err(VfsError::InvalidPath);
         }
         if self.find(path).is_some() {

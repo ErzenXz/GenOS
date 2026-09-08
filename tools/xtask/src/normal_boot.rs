@@ -13,24 +13,63 @@ pub const FORBIDDEN: &[&str] = &[
     "SUPERVISOR_CLEANUP_READY",
 ];
 
-const STEPS: &[(&str, &str)] = &[
-    ("cat /USER/SHELL.TXT\r", "text=file unavailable"),
-    ("cat /USER/APP.TXT\r", "text=file unavailable"),
-    ("uname\r", "text=GenOS v0.56 ring3-shell x86_64 ABI 18"),
-    ("mem\r", "text=consistent=yes"),
+#[derive(Clone, Copy)]
+enum Reply {
+    Exact(&'static str),
+    Prefix(&'static str),
+    Network,
+}
+impl Reply {
+    fn text(self, network: bool) -> &'static str {
+        match self {
+            Self::Exact(text) | Self::Prefix(text) => text,
+            Self::Network if network => "network online - DHCP configuration available",
+            Self::Network => "network unavailable",
+        }
+    }
+    fn matches(self, line: &str, network: bool) -> bool {
+        let text = self.text(network);
+        match self {
+            Self::Prefix(_) => line.starts_with(text),
+            _ => line == text,
+        }
+    }
+}
+
+const STEPS: &[(&str, Reply)] = &[
+    (
+        "help\r",
+        Reply::Exact("Use /USER/... for files; JOB is the number shown by run or ps."),
+    ),
+    ("cat /USER/SHELL.TXT\r", Reply::Exact("file unavailable")),
+    ("cat /USER/APP.TXT\r", Reply::Exact("file unavailable")),
+    (
+        "uname\r",
+        Reply::Exact("GenOS v0.56 ring3-shell x86_64 ABI 18"),
+    ),
+    ("net\r", Reply::Network),
+    ("mem\r", Reply::Exact("consistent=yes")),
     (
         "write /MEMORY.STATUS invalid\r",
-        "text=file change denied; use /USER/FILE",
+        Reply::Exact("file change denied; use /USER/FILE"),
     ),
-    ("run init hold\r", "USER_PROCESS_LAUNCHED owner=4 "),
-    ("ps\r", "USER_PROCESS_STATUS owner=4 "),
-    ("kill 1\r", "USER_PROCESS_KILLED owner=4 "),
-    ("wait 1\r", "USER_PROCESS_REAPED owner=4 "),
+    (
+        "touch /USER/..\r",
+        Reply::Exact("file change denied; use /USER/FILE"),
+    ),
+    ("run init hold\r", Reply::Prefix("job 1 started task=")),
+    ("mem\r", Reply::Exact("consistent=yes")),
+    ("ps\r", Reply::Prefix("job 1 task=")),
+    ("kill 1\r", Reply::Exact("killed job 1")),
+    ("wait 1\r", Reply::Exact("reaped job 1")),
+    ("mem\r", Reply::Exact("consistent=yes")),
     (
         "write /USER/NORMAL.TXT NORMAL_BOOT_OK\r",
-        "text=file written",
+        Reply::Exact("file written"),
     ),
-    ("cat /USER/NORMAL.TXT\r", "text=NORMAL_BOOT_OK"),
+    ("cat /USER/NORMAL.TXT\r", Reply::Exact("NORMAL_BOOT_OK")),
+    ("clear\r", Reply::Exact("\x1b[2J\x1b[H")),
+    ("echo terminal ready\r", Reply::Exact("terminal ready")),
 ];
 
 pub fn repetition_count(value: Option<&str>) -> Result<usize, String> {
@@ -53,10 +92,20 @@ pub struct Transcript {
     shell_ready: bool,
     step: usize,
     command_seen: bool,
+    network: bool,
+    memory_baseline: Option<(u64, u64)>,
+    memory_samples: usize,
+    memory_seen: bool,
 }
 
 impl Transcript {
-    /// Return the next command only after the preceding response was observed.
+    pub fn new(network: bool) -> Self {
+        Self {
+            network,
+            ..Self::default()
+        }
+    }
+
     pub fn observe(&mut self, line: &str) -> Result<Option<&'static str>, String> {
         if FORBIDDEN.iter().any(|marker| line.contains(marker)) {
             return Err(format!("normal boot executed a validation proof: {line}"));
@@ -71,6 +120,19 @@ impl Transcript {
         .any(|marker| line.contains(marker))
         {
             return Err(format!("normal boot reported a failure: {line}"));
+        }
+        if [
+            "USER_INPUT_",
+            "USER_CONSOLE_WRITE",
+            "USER_FILE_OPEN_",
+            "USER_HANDLE_",
+        ]
+        .iter()
+        .any(|marker| line.contains(marker))
+        {
+            return Err(format!(
+                "normal terminal leaked development tracing: {line}"
+            ));
         }
         match line {
             "BOOT_MODE normal" => {
@@ -95,24 +157,52 @@ impl Transcript {
             _ => {}
         }
         if self.shell_ready && self.step < STEPS.len() {
-            let echo = line.strip_prefix("USER_CONSOLE_WRITE pid=4 text=/> ");
-            if echo == Some(STEPS[self.step].0.trim_end_matches('\r')) {
+            if line.strip_prefix("genos> ") == Some(STEPS[self.step].0.trim_end_matches('\r')) {
                 self.command_seen = true;
                 return Ok(None);
             }
-            // Launch itself emits process status before the shell can execute
-            // the following `ps`. Require that command's echo so a delayed
-            // response from the preceding operation cannot satisfy this step.
-            if !self.command_seen {
-                return Ok(None);
+            if self.command_seen && STEPS[self.step].0 == "mem\r" {
+                if line.starts_with("frames_total=") {
+                    if self.memory_seen {
+                        return Err("duplicate memory counters".into());
+                    }
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    let count = |index: usize, prefix: &str| -> Option<u64> {
+                        fields.get(index)?.strip_prefix(prefix)?.parse().ok()
+                    };
+                    let (Some(total), Some(live), Some(free)) = (
+                        count(0, "frames_total="),
+                        count(1, "live="),
+                        count(2, "free="),
+                    ) else {
+                        return Err("malformed memory counters".into());
+                    };
+                    if fields.len() != 3 || live.checked_add(free) != Some(total) {
+                        return Err("incoherent memory counters".into());
+                    }
+                    match (self.memory_samples, self.memory_baseline) {
+                        (0, None) => self.memory_baseline = Some((total, live)),
+                        (1, Some((expected_total, baseline)))
+                            if total == expected_total && live > baseline => {}
+                        (2, Some((expected_total, baseline)))
+                            if total == expected_total && live == baseline => {}
+                        _ => {
+                            return Err(
+                                "process lifecycle did not preserve allocator baseline".into()
+                            )
+                        }
+                    }
+                    self.memory_seen = true;
+                }
+                if STEPS[self.step].1.matches(line, self.network) && !self.memory_seen {
+                    return Err("missing memory counters before consistency result".into());
+                }
             }
-            let response = STEPS[self.step].1;
-            let matches = if response.starts_with("text=") {
-                line.strip_prefix("USER_CONSOLE_WRITE pid=4 ") == Some(response)
-            } else {
-                line.starts_with(response)
-            };
-            if matches {
+            if self.command_seen && STEPS[self.step].1.matches(line, self.network) {
+                if STEPS[self.step].0 == "mem\r" {
+                    self.memory_samples += 1;
+                    self.memory_seen = false;
+                }
                 self.command_seen = false;
                 self.step += 1;
                 return Ok(STEPS.get(self.step).map(|step| step.0));
@@ -120,7 +210,6 @@ impl Transcript {
         }
         Ok(None)
     }
-
     pub fn complete(&self) -> bool {
         self.shell_ready && self.step == STEPS.len()
     }
@@ -132,6 +221,45 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn ready(network: bool) -> Transcript {
+        let mut proof = Transcript::new(network);
+        proof.observe("BOOT_MODE normal").unwrap();
+        proof.observe("GENOS_READY").unwrap();
+        assert_eq!(
+            proof.observe("NORMAL_SHELL_READY").unwrap(),
+            Some(STEPS[0].0)
+        );
+        proof
+    }
+
+    fn feed_memory(proof: &mut Transcript, command: &str) {
+        if command == "mem\r" {
+            let live = if proof.memory_samples == 1 { 110 } else { 100 };
+            proof
+                .observe(&format!(
+                    "frames_total=1000 live={live} free={}",
+                    1000 - live
+                ))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn stale_missing_or_leaked_memory_samples_are_rejected() {
+        for (samples, record) in [
+            (0, "frames_total=1000 live=100 free=901"),
+            (1, "frames_total=1000 live=100 free=900"),
+            (2, "frames_total=1000 live=101 free=899"),
+            (2, "consistent=yes"),
+        ] {
+            let mut proof = ready(false);
+            proof.step = STEPS.iter().position(|step| step.0 == "mem\r").unwrap();
+            proof.command_seen = true;
+            proof.memory_samples = samples;
+            proof.memory_baseline = (samples > 0).then_some((1000, 100));
+            assert!(proof.observe(record).is_err(), "{record}");
+        }
+    }
 
     #[test]
     fn repetition_budget_is_explicit_and_bounded() {
@@ -144,99 +272,65 @@ mod tests {
         }
     }
 
-    fn ready() -> Transcript {
-        let mut proof = Transcript::default();
-        proof.observe("BOOT_MODE normal").unwrap();
-        proof.observe("GENOS_READY").unwrap();
-        assert_eq!(
-            proof.observe("NORMAL_SHELL_READY").unwrap(),
-            Some(STEPS[0].0)
-        );
-        proof
-    }
-
     #[test]
-    fn real_console_responses_drive_commands_in_order() {
-        let mut proof = ready();
-        for (index, (command, response)) in STEPS.iter().enumerate() {
-            let echo = format!(
-                "USER_CONSOLE_WRITE pid=4 text=/> {}",
-                command.trim_end_matches('\r')
-            );
-            assert_eq!(proof.observe(&echo).unwrap(), None);
-            let line = if response.starts_with("text=") {
-                format!("USER_CONSOLE_WRITE pid=4 {response}")
-            } else {
-                format!("{response}pid=5")
-            };
-            assert_eq!(
-                proof.observe(&line).unwrap(),
-                STEPS.get(index + 1).map(|s| s.0)
-            );
+    fn visible_command_responses_drive_both_network_configurations() {
+        for network in [false, true] {
+            let mut proof = ready(network);
+            for (index, (command, response)) in STEPS.iter().enumerate() {
+                let echo = format!("genos> {}", command.trim_end_matches('\r'));
+                assert_eq!(proof.observe(&echo).unwrap(), None);
+                feed_memory(&mut proof, command);
+                assert_eq!(
+                    proof.observe(response.text(network)).unwrap(),
+                    STEPS.get(index + 1).map(|s| s.0)
+                );
+            }
+            assert!(proof.complete());
         }
-        assert!(proof.complete());
     }
 
     #[test]
-    fn a_response_before_its_command_echo_does_not_count() {
-        let mut proof = ready();
+    fn responses_require_their_own_echo_and_the_correct_result() {
+        let mut proof = ready(false);
         for (index, (command, response)) in STEPS.iter().enumerate() {
-            let line = if response.starts_with("text=") {
-                format!("USER_CONSOLE_WRITE pid=4 {response}")
-            } else {
-                format!("{response}pid=5")
-            };
-            assert_eq!(proof.observe(&line).unwrap(), None);
+            assert_eq!(proof.observe(response.text(false)).unwrap(), None);
             assert_eq!(proof.step(), index);
-            let echo = format!(
-                "USER_CONSOLE_WRITE pid=4 text=/> {}",
-                command.trim_end_matches('\r')
-            );
+            let echo = format!("genos> {}", command.trim_end_matches('\r'));
             proof.observe(&echo).unwrap();
-            proof.observe(&line).unwrap();
+            feed_memory(&mut proof, command);
+            assert_eq!(proof.observe("unrelated or stale response").unwrap(), None);
+            if matches!(response, Reply::Network) {
+                assert_eq!(proof.observe(response.text(true)).unwrap(), None);
+            }
+            proof.observe(response.text(false)).unwrap();
             assert_eq!(proof.step(), index + 1);
         }
         assert!(proof.complete());
     }
 
     #[test]
-    fn missing_duplicate_and_embedded_readiness_cannot_pass() {
+    fn missing_duplicate_or_embedded_readiness_never_passes() {
         let mut proof = Transcript::default();
         assert!(proof.observe("NORMAL_SHELL_READY").is_err());
         assert!(proof.observe("GENOS_READY").is_err());
-        proof
-            .observe("USER_CONSOLE_WRITE pid=4 text=NORMAL_SHELL_READY")
-            .unwrap();
+        proof.observe("echo NORMAL_SHELL_READY").unwrap();
         assert!(!proof.complete());
-        let mut proof = ready();
-        assert!(proof.observe("BOOT_MODE normal").is_err());
+        let mut proof = ready(false);
         assert!(proof.observe("NORMAL_SHELL_READY").is_err());
+        assert!(proof.observe("BOOT_MODE normal").is_err());
     }
 
     #[test]
-    fn echoed_stale_wrong_owner_and_partial_responses_do_not_advance() {
-        let mut proof = ready();
-        for line in [
-            "file unavailable",
-            "USER_CONSOLE_WRITE pid=5 text=file unavailable",
-            "USER_CONSOLE_WRITE pid=4 text=file unavailable extra",
-            "USER_PROCESS_REAPED owner=4 pid=5",
-            "USER_CONSOLE_WRITE pid=4 text=NORMAL_BOOT_OK",
-        ] {
-            assert_eq!(proof.observe(line).unwrap(), None);
-            assert_eq!(proof.step(), 0);
-        }
-    }
-
-    #[test]
-    fn validation_and_fault_markers_fail_even_after_readiness() {
+    fn failure_proof_and_debug_trace_output_are_rejected() {
         for marker in FORBIDDEN.iter().copied().chain([
             "KERNEL PANIC",
-            "USER_PROCESS_FAILED",
             "EXCEPTION_FATAL_HALT",
             "RECOVERY_CONSOLE_READY",
+            "USER_INPUT_BLOCK pid=4",
+            "USER_CONSOLE_WRITE pid=4 text=hello",
+            "USER_HANDLE_READ_OK",
         ]) {
-            assert!(ready().observe(marker).is_err(), "{marker}");
+            assert!(ready(false).observe(marker).is_err(), "{marker}");
         }
     }
 }

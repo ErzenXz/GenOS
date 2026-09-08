@@ -304,3 +304,21 @@ had drifted from the registry interface; they have been replaced by these compil
 tests. `cargo test -p kernel --lib endpoint` runs them. ABI 18, wire formats and
 persistent data need no migration; the extraction can be reverted as one source
 change without changing those formats.
+
+
+## Canonical path policy
+
+`kernel/src/path_policy.rs` owns the pure pathname checks shared by syscall input,
+write authority, child joining and VFS insertion. The existing namespace test now
+runs in the kernel library. Root is `/`; other paths contain nonempty ASCII
+components made from letters, digits, `.`, `_` and `-`, within the ABI path budget.
+Exact `.`/`..` components, duplicate separators and trailing separators are rejected.
+Paths remain case-insensitive. The shell currently uses absolute paths and has no
+working-directory navigation; rejected dot components are not interpreted as `cd`.
+
+Canonical validation runs before write-prefix authority and before VFS insertion.
+Malformed creation leaves the VFS node count unchanged. This tightens the previous
+raw VFS interface, which could create literal dot-component names even though it
+never implemented parent traversal. Such noncanonical legacy names are no longer
+accepted on restoration; there is no automatic rewrite of stored paths. Normal
+canonical files and ABI 18 remain compatible.

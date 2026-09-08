@@ -307,3 +307,10 @@ The [managed-frame contract](MEMORY.md) now implements release-time erasure,
 zero-before-grant, IRQ-scoped allocator access and `mem` diagnostics. This narrows
 F3; it does not provide owner tokens, alias tracking, SMP synchronization or secure
 physical erasure. The read-only diagnostic file is shared across concurrent opens.
+
+
+Normal terminal event tracing is now quiet, `help` uses bounded usage lines, and
+`clear` operates on the serial display. Canonical pathname validation is shared
+by syscall input and VFS insertion, with the former dormant namespace tests now
+compiled in the kernel library. These improve the current terminal; the missing
+everyday-shell features remain explicit in [terminal scope](TERMINAL.md).

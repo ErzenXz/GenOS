@@ -76,8 +76,9 @@ rejects validation markers in the normal kernel binary and serial output, and
 uses fresh disposable test volumes. It verifies the absence of the two startup
 fixture files, then executes `uname`, process launch/status/kill/reap, persistent
 write, and read through the real Ring 3 shell. The development case has no NIC;
-the release case uses modern VirtIO and also requires the existing IPv6 echo
-diagnostic. Logs, QEMU errors, image hashes, source status, tool versions and
+the release case uses modern VirtIO and requires `net` to report configured
+networking, while the no-NIC case requires `network unavailable`. The dedicated
+validation network suite retains the IPv6 echo proof. Logs, QEMU errors, image hashes, source status, tool versions and
 commands are retained in `build/serial-normal-debug.log`, `build/serial-release.log`
 and `build/normal-*-manifest.txt`. An incomplete manifest never proves a pass.
 Host parser tests reject missing, duplicate, embedded and out-of-order evidence.
@@ -108,3 +109,25 @@ independent jobs. Successful and failed runs retain artifacts. Adding this lane
 does not claim its 1000-boot gate has already passed; the gate remains open until
 a completed run supplies that evidence. Fresh boots do not replace sustained
 single-boot memory-pressure or lifecycle churn testing.
+
+
+## Interactive output policy
+
+Normal kernels omit per-keystroke, syscall, lifecycle and successful commit trace
+output. Fatal faults, startup configuration, storage failures and actual application
+output remain visible. Validation builds retain the exact development event trace
+through `serial::trace`, along with their probe suites. The large source diff for
+this change routes existing diagnostic calls through that one policy; it does not
+replace syscall handlers or change their authority checks.
+
+The serial renderer echoes typed commands once, displays application output, and
+handles `clear` with ANSI screen-clear/home sequences. Normal acceptance matches
+the same plain command echoes and results a person sees, rejects leaked development
+trace lines, checks `mem` and read-only diagnostic authority, rejects a dot-component
+path, and proves clearing followed by another working command. It no longer depends
+on hidden `USER_CONSOLE_WRITE` or process-event logging to declare success.
+
+Help is split into ABI-bounded lines with a compile-time size check. The normal
+acceptance sequence also samples `mem` before launch, while the example job is
+live, and after kill/reap; usage must rise and return to the same baseline.
+See [terminal commands](TERMINAL.md) for the current interactive scope.
