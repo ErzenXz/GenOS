@@ -37,6 +37,41 @@ fn boot_cpu_identity() -> (BootFeatures, Option<u64>) {
     (features, Some((u64::from(high) << 32) | u64::from(low)))
 }
 
+// Reserved by the kernel ELF's BSS segment; the frame allocator never grants
+// these pages to applications. Admission happens before this shared stack is used.
+const BOOT_STACK_SIZE: usize = 2 * 1024 * 1024;
+#[repr(align(4096))]
+struct BootStack {
+    _bytes: [u8; BOOT_STACK_SIZE],
+}
+static mut BOOT_STACK: BootStack = BootStack {
+    _bytes: [0; BOOT_STACK_SIZE],
+};
+
+/// Transfer the admitted BSP from its small firmware entry frame to kernel storage.
+///
+/// # Safety
+/// The caller must own the irreversible boot claim, have IF clear, and pass an
+/// immutable boot-lifetime BootInfo. Firmware mappings must cover the loaded ELF.
+/// No second entrant may use this stack. The SysV64 arguments arrive in RDI/RSI;
+/// RDI survives unchanged and CALL establishes the required 16-byte alignment.
+/// This transfer never returns and creates no references to the mutable stack.
+#[unsafe(naked)]
+pub unsafe extern "sysv64" fn enter_boot_stack(
+    _boot_info: &'static genos_abi::BootInfo,
+    _entry: extern "sysv64" fn(&'static genos_abi::BootInfo) -> !,
+) -> ! {
+    core::arch::naked_asm!(
+        "lea rsp, [rip + {stack}]",
+        "add rsp, {size}",
+        "xor ebp, ebp",
+        "call rsi",
+        "ud2",
+        stack = sym BOOT_STACK,
+        size = const BOOT_STACK_SIZE,
+    );
+}
+
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
 const TSS_SELECTOR: u16 = 0x18;

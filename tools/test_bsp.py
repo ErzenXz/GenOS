@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -159,6 +160,8 @@ def main() -> None:
     parser.add_argument("--case", choices=CASES)
     parser.add_argument("--timeout", type=int, default=120)
     options = parser.parse_args()
+    if sys.version_info < (3, 12):
+        parser.error("Python 3.12 or newer is required for filtered source-archive extraction")
     if options.timeout <= 0:
         parser.error("timeout must be positive")
     source = Path(__file__).resolve().parents[1]

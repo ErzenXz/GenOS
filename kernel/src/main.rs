@@ -26,6 +26,14 @@ pub extern "sysv64" fn _start(boot_info: &'static BootInfo) -> ! {
     if !arch::claim_boot_cpu() {
         arch::halt_loop();
     }
+    // SAFETY: the boot claim grants this CPU exclusive ownership of the kernel
+    // stack. The immutable BootInfo outlives the non-returning transfer.
+    unsafe { arch::enter_boot_stack(boot_info, kernel_main) }
+}
+
+// Keep the large runtime/VFS frame out of the firmware-stack admission shim.
+#[inline(never)]
+extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     serial::init();
     serial::println("GenOS kernel entered");
     serial::println(if cfg!(feature = "validation-boot") {

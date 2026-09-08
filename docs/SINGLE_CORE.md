@@ -12,7 +12,8 @@ There is no application-processor (AP) reset-mode trampoline. The guard is a
 defense at this existing kernel entry boundary, not a replacement for those
 firmware/ABI prerequisites.
 
-`arch::claim_boot_cpu()` is the first operation in `_start`, before serial
+`_start` is a small admission shim, with the large initialization frame kept in
+a separate non-inlined function. `arch::claim_boot_cpu()` runs before serial
 initialization, reading boot information, constructing descriptor tables or
 initializing the frame allocator. It clears IF and checks the maximum CPUID
 basic leaf before querying leaf 1. Both the MSR and APIC feature bits must be
@@ -28,6 +29,16 @@ role and advances the claimed phase exactly once before touching GDT, TSS,
 IDT or their static stacks. Calling it before admission or a second time
 halts before those writes. Rejection leaves IF clear and enters the halt
 loop silently: a rejected CPU must not initialize or race the BSP's UART.
+
+After admission, a naked SysV64 transfer switches to a 2 MiB page-aligned kernel
+BSS stack before calling `kernel_main`. RDI carries BootInfo unchanged, RSP is
+16-byte aligned before CALL, and the transfer cannot return. The firmware stack
+is used only for the small admission path. This matters on the four-CPU reference
+VM: the former large `_start` prologue crossed a firmware stack guard before its
+first Rust statement. Rejected entrants never switch to the shared kernel stack.
+The stack stays reserved with the kernel ELF and receives the kernel data page
+permissions; its own overflow guard and high-water measurements remain future
+work. See [ADR 0005](adr/0005-owned-kernel-boot-stack.md).
 
 Successful initialization emits exactly one diagnostic:
 
@@ -87,7 +98,7 @@ python3 -m unittest discover -s tools -p test_bsp_harness.py
 python3 tools/test_bsp.py
 ```
 
-The QEMU harness requires clean, committed source and builds disposable
+The QEMU harness requires Python 3.12 or newer and clean, committed source and builds disposable
 copies with the normal `cargo xtask build` path. It never changes the working
 checkout or the user's persistent data disk. Each case stores the source
 commit, tool versions, fixture patch, image hash, command and serial log in
