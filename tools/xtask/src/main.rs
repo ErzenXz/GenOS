@@ -67,6 +67,10 @@ fn main() {
         "test-serial" => test_serial(),
         "bench" => benchmark(),
         "inspect-data" => inspect_data_command(),
+        "check-storage-corpus" => match args.next() {
+            Some(path) if args.next().is_none() => check_storage_corpus(Path::new(&path)),
+            _ => Err("usage: cargo xtask check-storage-corpus DIRECTORY".into()),
+        },
         "repair-data" => repair_data_command(),
         "clean" => clean(),
         other => Err(format!("unknown xtask command: {other}")),
@@ -1722,7 +1726,7 @@ fn inspect_persistent_image_at(path: &Path, expect_torn_slot: bool) -> Result<()
     let slot = report
         .valid_slots
         .iter()
-        .max_by_key(|slot| slot.generation)
+        .max_by_key(|slot| (slot.generation, std::cmp::Reverse(slot.slot)))
         .ok_or("GenOS image has no valid snapshot")?;
     let persistent = slot
         .entries
@@ -1756,7 +1760,11 @@ fn inspect_persistent_image_at(path: &Path, expect_torn_slot: bool) -> Result<()
 
 fn inspect_filesystem_image(path: &Path) -> Result<ImageReport, String> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
-    let (partition_start, _) = valid_genos_partition(&bytes)?;
+    inspect_filesystem_bytes(&bytes)
+}
+
+fn inspect_filesystem_bytes(bytes: &[u8]) -> Result<ImageReport, String> {
+    let (partition_start, _) = valid_genos_partition(bytes)?;
     let mut report = ImageReport {
         valid_slots: Vec::new(),
         invalid_slots: Vec::new(),
@@ -1780,6 +1788,7 @@ fn decode_filesystem_slot(slot: usize, snapshot: &[u8]) -> Result<InspectedSlot,
         || &snapshot[..4] != b"GFS2"
         || u16::from_le_bytes([snapshot[4], snapshot[5]]) != 3
         || snapshot[6] == 0
+        || snapshot[6] > 30
         || snapshot[7] != 0xa5
     {
         return Err("invalid GenOS filesystem slot header".to_string());
@@ -1824,11 +1833,31 @@ fn decode_filesystem_slot(slot: usize, snapshot: &[u8]) -> Result<InspectedSlot,
         let path = String::from_utf8(snapshot[path_start..data_start].to_vec())
             .map_err(|_| "filesystem path is not UTF-8")?;
         if !path.starts_with("/USER/")
+            || path.len() > 64
+            || path[1..].split('/').any(|component| {
+                component.is_empty()
+                    || matches!(component, "." | "..")
+                    || !component.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+            || data_len > 512
             || entries
                 .iter()
                 .any(|entry: &InspectedEntry| entry.path.eq_ignore_ascii_case(&path))
         {
             return Err("filesystem path is invalid or duplicated".to_string());
+        }
+        let parent = path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
+        if parent != "/USER"
+            && !entries
+                .iter()
+                .any(|entry| entry.directory && entry.path.eq_ignore_ascii_case(parent))
+        {
+            return Err("filesystem parent directory is absent or out of order".to_string());
         }
         entries.push(InspectedEntry {
             path,
@@ -1847,6 +1876,55 @@ fn decode_filesystem_slot(slot: usize, snapshot: &[u8]) -> Result<InspectedSlot,
     })
 }
 
+fn check_storage_corpus(directory: &Path) -> Result<(), String> {
+    let mut compared = 0;
+    for item in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let path = item.map_err(|error| error.to_string())?.path();
+        if path.extension() != Some(OsStr::new("img")) {
+            continue;
+        }
+        let report = inspect_filesystem_image(&path)?;
+        let selected = report
+            .valid_slots
+            .iter()
+            .max_by_key(|slot| (slot.generation, std::cmp::Reverse(slot.slot)));
+        let mut observed = match selected {
+            Some(slot) => format!("slot={} generation={}\n", slot.slot, slot.generation),
+            None => "unavailable\n".into(),
+        };
+        if let Some(slot) = selected {
+            use std::fmt::Write;
+            for entry in &slot.entries {
+                write!(
+                    &mut observed,
+                    "{} {} ",
+                    if entry.directory { "dir" } else { "file" },
+                    entry.path
+                )
+                .unwrap();
+                for byte in &entry.data {
+                    write!(&mut observed, "{byte:02x}").unwrap();
+                }
+                observed.push('\n');
+            }
+        }
+        let expected = fs::read_to_string(path.with_extension("expected"))
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if observed != expected {
+            return Err(format!(
+                "independent host/guest recovery disagreement: {}",
+                path.display()
+            ));
+        }
+        compared += 1;
+    }
+    if compared == 0 {
+        return Err("storage corpus is empty".into());
+    }
+    println!("STORAGE_HOST_GUEST_AGREEMENT_OK cases={compared}");
+    Ok(())
+}
+
 fn simulate_torn_write(path: &Path) -> Result<(), String> {
     let mut bytes = fs::read(path).map_err(|error| error.to_string())?;
     let (partition_start, _) = valid_genos_partition(&bytes)?;
@@ -1854,7 +1932,7 @@ fn simulate_torn_write(path: &Path) -> Result<(), String> {
     let newest = report
         .valid_slots
         .iter()
-        .max_by_key(|slot| slot.generation)
+        .max_by_key(|slot| (slot.generation, std::cmp::Reverse(slot.slot)))
         .ok_or("cannot inject a torn write without a valid generation")?;
     let target = newest.slot ^ 1;
     let source_start = (partition_start + SLOT_OFFSETS[newest.slot]) * 512;
@@ -1882,9 +1960,26 @@ enum RepairOutcome {
 }
 
 fn repair_filesystem_image(path: &Path) -> Result<RepairOutcome, String> {
+    repair_filesystem_image_with(path, |_| Ok(()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RepairPoint {
+    TempCreated,
+    HalfWritten,
+    Written,
+    Synced,
+    Replaced,
+    DirectorySynced,
+}
+
+fn repair_filesystem_image_with(
+    path: &Path,
+    checkpoint: impl FnMut(RepairPoint) -> Result<(), String>,
+) -> Result<RepairOutcome, String> {
     let mut bytes = fs::read(path).map_err(|error| error.to_string())?;
     let (partition_start, _) = valid_genos_partition(&bytes)?;
-    let report = inspect_filesystem_image(path)?;
+    let report = inspect_filesystem_bytes(&bytes)?;
     match report.valid_slots.len() {
         2 => return Ok(RepairOutcome::Healthy),
         1 => {}
@@ -1913,16 +2008,75 @@ fn repair_filesystem_image(path: &Path) -> Result<RepairOutcome, String> {
     repaired[SNAPSHOT_CHECKSUM_OFFSET..SNAPSHOT_CHECKSUM_OFFSET + 4]
         .copy_from_slice(&checksum.to_le_bytes());
 
-    fs::write(path, bytes).map_err(|error| error.to_string())?;
-    let verified = inspect_filesystem_image(path)?;
+    let verified = inspect_filesystem_bytes(&bytes)?;
     if verified.valid_slots.len() != 2 || !verified.invalid_slots.is_empty() {
         return Err("repair verification failed; image was not reported healthy".to_string());
     }
+    publish_repaired_image(path, &bytes, checkpoint)?;
     Ok(RepairOutcome::Repaired {
         source_slot: source.slot,
         target_slot,
         generation,
     })
+}
+
+fn publish_repaired_image(
+    path: &Path,
+    bytes: &[u8],
+    mut checkpoint: impl FnMut(RepairPoint) -> Result<(), String>,
+) -> Result<(), String> {
+    // Repair operates on an offline, exclusively owned image. Truncating the
+    // original would expose both trusted slots to a short write or host crash.
+    // Publish a separately synced complete image by same-directory rename.
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let temporary = parent.join(format!(".genos-repair-{}-{nonce}", std::process::id()));
+    let result = (|| -> Result<(), String> {
+        let permissions = fs::metadata(path)
+            .map_err(|error| error.to_string())?
+            .permissions();
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        checkpoint(RepairPoint::TempCreated)?;
+        output
+            .set_permissions(permissions)
+            .map_err(|error| error.to_string())?;
+        let half = bytes.len() / 2;
+        output
+            .write_all(&bytes[..half])
+            .map_err(|error| error.to_string())?;
+        checkpoint(RepairPoint::HalfWritten)?;
+        output
+            .write_all(&bytes[half..])
+            .map_err(|error| error.to_string())?;
+        checkpoint(RepairPoint::Written)?;
+        output.sync_all().map_err(|error| error.to_string())?;
+        checkpoint(RepairPoint::Synced)?;
+        drop(output);
+        let verified = inspect_filesystem_image(&temporary)?;
+        if verified.valid_slots.len() != 2 || !verified.invalid_slots.is_empty() {
+            return Err("repair temporary image failed readback".into());
+        }
+        fs::rename(&temporary, path).map_err(|error| error.to_string())?;
+        checkpoint(RepairPoint::Replaced)?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| error.to_string())?;
+        checkpoint(RepairPoint::DirectorySynced)
+    })();
+    // After rename this name is absent; otherwise a failed preparation is
+    // disposable. Never unlink or truncate the original path on failure.
+    let _ = fs::remove_file(temporary);
+    result
 }
 
 fn ensure_failure_image() -> Result<(), String> {
@@ -2351,7 +2505,9 @@ mod tests {
 
     #[test]
     fn repair_writer_restores_redundancy_without_inventing_data() {
-        let path = env::temp_dir().join(format!("genos-repair-test-{}.img", std::process::id()));
+        let directory = env::temp_dir().join(format!("genos-repair-test-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("fixture.img");
         let mut image = vec![0u8; DATA_IMAGE_BYTES];
         let sectors = DATA_IMAGE_BYTES / 512 - PARTITION_START_LBA;
         image[446 + 4] = PARTITION_TYPE_GENOS;
@@ -2382,6 +2538,65 @@ mod tests {
         let slot_start = (PARTITION_START_LBA + SLOT_OFFSETS[0]) * 512;
         image[slot_start..slot_start + SLOT_BYTES].copy_from_slice(&snapshot);
         fs::write(&path, &image).unwrap();
+        let expected_path = path.with_extension("expected");
+        assert!(
+            check_storage_corpus(&directory).is_err(),
+            "missing guest result must fail"
+        );
+        let expected = format!(
+            "slot=0 generation=41\nfile /USER/REPAIR.TXT {}\n",
+            payload
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        fs::write(&expected_path, &expected).unwrap();
+        check_storage_corpus(&directory).unwrap();
+        for wrong in [
+            expected.replace("41", "40"),
+            expected.replace("747275", "ffffff"),
+            expected.replace("slot=0", "slot=1"),
+        ] {
+            fs::write(&expected_path, wrong).unwrap();
+            assert!(
+                check_storage_corpus(&directory).is_err(),
+                "forged guest evidence must fail"
+            );
+            assert_eq!(fs::read(&path).unwrap(), image, "checker is read-only");
+        }
+
+        for fault in [
+            RepairPoint::TempCreated,
+            RepairPoint::HalfWritten,
+            RepairPoint::Written,
+            RepairPoint::Synced,
+            RepairPoint::Replaced,
+            RepairPoint::DirectorySynced,
+        ] {
+            fs::write(&path, &image).unwrap();
+            for _ in 0..2 {
+                let before = fs::read(&path).unwrap();
+                let outcome = repair_filesystem_image_with(&path, |point| {
+                    if point == fault {
+                        Err("injected host repair failure".into())
+                    } else {
+                        Ok(())
+                    }
+                });
+                let after = fs::read(&path).unwrap();
+                let report = inspect_filesystem_image(&path).unwrap();
+                assert!(!report.valid_slots.is_empty());
+                assert_eq!(report.valid_slots[0].entries[0].data, payload);
+                if matches!(fault, RepairPoint::Replaced | RepairPoint::DirectorySynced) {
+                    assert_eq!(report.valid_slots.len(), 2);
+                    assert!(outcome.is_err() || outcome == Ok(RepairOutcome::Healthy));
+                } else {
+                    assert!(outcome.is_err());
+                    assert_eq!(after, before, "{fault:?} must preserve the original image");
+                }
+            }
+        }
+        fs::write(&path, &image).unwrap();
 
         assert_eq!(
             repair_filesystem_image(&path).unwrap(),
@@ -2396,6 +2611,14 @@ mod tests {
         assert_eq!(report.valid_slots[1].entries[0].data, payload);
         assert_eq!(repair_filesystem_image(&path), Ok(RepairOutcome::Healthy));
 
+        let mut exhausted = image.clone();
+        exhausted[slot_start + 8..slot_start + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+        let sum = snapshot_checksum(&exhausted[slot_start..slot_start + SLOT_BYTES]);
+        exhausted[slot_start + 20..slot_start + 24].copy_from_slice(&sum.to_le_bytes());
+        fs::write(&path, &exhausted).unwrap();
+        assert!(repair_filesystem_image(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), exhausted);
+
         image[slot_start..slot_start + SLOT_BYTES].fill(0x5a);
         let other_start = (PARTITION_START_LBA + SLOT_OFFSETS[1]) * 512;
         image[other_start..other_start + SLOT_BYTES].fill(0x5a);
@@ -2403,7 +2626,7 @@ mod tests {
         let before = fs::read(&path).unwrap();
         assert!(repair_filesystem_image(&path).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
-        let _ = fs::remove_file(path);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
