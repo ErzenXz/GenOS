@@ -38,16 +38,16 @@ genos_xstate_probe_code:
     mov eax, {ping}
     int 0x80
     fxsave64 [rbx + 1536]
-    // Exercise all eight MMX aliases too, with distinct values. MMX changes
-    // the x87 tags/exponents; the verifier has a separate expected image.
-    movq mm0, [rbx + 544]
-    movq mm1, [rbx + 560]
-    movq mm2, [rbx + 576]
-    movq mm3, [rbx + 592]
-    movq mm4, [rbx + 608]
-    movq mm5, [rbx + 624]
-    movq mm6, [rbx + 640]
-    movq mm7, [rbx + 656]
+    // Exercise all eight MMX aliases with values different from x87. Their
+    // reserved upper sixteen saved bits are not part of this phase's oracle.
+    movq mm0, [rbx + 128]
+    movq mm1, [rbx + 136]
+    movq mm2, [rbx + 144]
+    movq mm3, [rbx + 152]
+    movq mm4, [rbx + 160]
+    movq mm5, [rbx + 168]
+    movq mm6, [rbx + 176]
+    movq mm7, [rbx + 184]
     mov eax, {yield_call}
     int 0x80
     fxsave64 [rbx + 2048]

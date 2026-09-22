@@ -14,6 +14,8 @@ Missing support halts boot. It clears CR0.EM and CR0.TS, sets CR0.MP and CR0.NE,
 and sets CR4.OSFXSR and CR4.OSXMMEXCPT. It clears CR4.OSXSAVE, so applications
 cannot use AVX/AVX-512/AMX or other XSAVE-only state. It also clears EFER.FFXSR:
 AMD's optional fast-FXSAVE mode must not omit XMM state from CPL0 saves.
+CR4.PKE is cleared separately, because user PKRU instructions can otherwise
+expose unsaved state independently of OSXSAVE.
 Control-register/MSR readback must match before `CPU_XSTATE_READY` is emitted.
 
 The fixed policy is deliberate: current programs do not need variable-sized
@@ -93,6 +95,11 @@ snapshots and the final saved image, checks completion and yield/preemption
 counts, reclaims all three address spaces, and requires the original frame
 baseline. It repeats with the same identities and new patterns. All six initial
 snapshots must contain the prescribed clean state, including x87 payloads.
+The x87 phase checks all 80 bits of each register; the MMX phase checks its
+64-bit payload and treats the high sixteen slot bits as reserved, as specified
+by the [Intel FXSAVE instruction table](https://cdrdv2-public.intel.com/868140/253666-089-sdm-vol-2a.pdf).
+The two phases use different payloads. A regression test ensures the MMX rule
+does not weaken the x87 comparison or ignore any MMX payload bit.
 The exact marker is emitted only after both rounds and cleanup succeed:
 
 ```text

@@ -232,7 +232,8 @@ fn init_xstate() -> bool {
     let (mut low, high): (u32, u32);
     // SAFETY: the admitted BSP owns initialization with IF clear and no user
     // state yet. CPUID above establishes FXSAVE/SSE availability. CR0 disables
-    // lazy #NM switching; CR4 enables SSE but forbids XSAVE-only components.
+    // lazy #NM switching; CR4 enables SSE but forbids XSAVE-only components
+    // and user PKRU changes (PKE can enable those independently of OSXSAVE).
     // Clear AMD's optional fast-FXSAVE bit, which can omit XMM at CPL0. EFER
     // exists in long mode, and all other bits remain unchanged. These writes
     // alter no memory mappings or stack state; readback gates publication.
@@ -240,7 +241,7 @@ fn init_xstate() -> bool {
         asm!("mov {}, cr0", out(reg) cr0, options(nostack));
         asm!("mov {}, cr4", out(reg) cr4, options(nostack));
         cr0 = (cr0 | xstate::CR0_REQUIRED) & !xstate::CR0_FORBIDDEN;
-        cr4 = (cr4 | xstate::CR4_REQUIRED) & !xstate::CR4_OSXSAVE;
+        cr4 = (cr4 | xstate::CR4_REQUIRED) & !(xstate::CR4_OSXSAVE | xstate::CR4_PKE);
         asm!("mov cr0, {}", in(reg) cr0, options(nostack));
         asm!("mov cr4, {}", in(reg) cr4, options(nostack));
         asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") low, out("edx") high, options(nostack));

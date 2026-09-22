@@ -41,8 +41,9 @@ pub(super) fn run() -> bool {
             match build_process(120 + slot as u8, *seed, image) {
                 Ok(process) => {
                     let pattern = State::probe_pattern(*seed);
+                    let mmx_pattern = State::probe_mmx_pattern(*seed);
                     // SAFETY: this inactive process owns the mapped data page;
-                    // offset 512 and the complete image fit the 4096-byte page.
+                    // offsets 128..192 and 512..1024 fit the 4096-byte page.
                     // No Ring 3 execution or references to these bytes exist.
                     unsafe {
                         core::ptr::copy_nonoverlapping(
@@ -50,6 +51,13 @@ pub(super) fn run() -> bool {
                             (process.data_frame + 512) as *mut u8,
                             512,
                         );
+                        for slot in 0..8 {
+                            core::ptr::copy_nonoverlapping(
+                                mmx_pattern.bytes().as_ptr().add(32 + slot * 16),
+                                (process.data_frame + 128 + slot as u64 * 8) as *mut u8,
+                                8,
+                            );
+                        }
                     }
                     processes[slot] = Some(process);
                 }
@@ -115,13 +123,37 @@ fn observed(process: &UserProcess, seed: u64) -> bool {
     } else {
         process.event == ProcessEvent::Exit && process.exit_code == 0
     };
-    process.completed
+    let initial = State::initial().matches_saved(&data[1024..1536]);
+    let x87 = pattern.matches_saved(&data[1536..2048]);
+    let mmx = mmx_pattern.matches_saved_mmx(&data[2048..2560]);
+    let captured = mmx_pattern.matches_saved_mmx(process.xstate.bytes());
+    let passed = process.completed
         && completion
         && process.preemptions >= 2
         && process.yields == 1
         && data[2560..2568] == 1u64.to_le_bytes()
-        && State::initial().matches_saved(&data[1024..1536])
-        && pattern.matches_saved(&data[1536..2048])
-        && mmx_pattern.matches_saved(&data[2048..2560])
-        && mmx_pattern.matches_saved(process.xstate.bytes())
+        && initial
+        && x87
+        && mmx
+        && captured;
+    if !passed {
+        // One bounded diagnostic per failed process, before unconditional
+        // cleanup. Do not dump register payloads or turn a mismatch into success.
+        crate::serial::print("USER_XSTATE_MISMATCH pid=");
+        crate::serial::print_u64(u64::from(process.pid));
+        for (label, value) in [
+            (" completed=", u64::from(process.completed && completion)),
+            (" preemptions=", process.preemptions),
+            (" yields=", u64::from(process.yields)),
+            (" initial=", u64::from(initial)),
+            (" x87=", u64::from(x87)),
+            (" mmx=", u64::from(mmx)),
+            (" captured=", u64::from(captured)),
+        ] {
+            crate::serial::print(label);
+            crate::serial::print_u64(value);
+        }
+        crate::serial::println("");
+    }
+    passed
 }
