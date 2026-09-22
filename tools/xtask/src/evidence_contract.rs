@@ -223,6 +223,7 @@ fn template(marker: &str) -> String {
         "PARTITION_DISCOVERED" if marker.contains("type=0x7e") => "scheme=mbr type=0x7e start=64 sectors=16320",
         "PARTITION_DISCOVERED" => "scheme=mbr type=0x7f start=64 sectors=16320",
         "BLOCK_CACHE_READY" => "entries=8 policy=write-back",
+        "PERSISTENT_STORAGE_CREATED" => "files=2 generation=1",
         "PERSISTENT_STORAGE_RESTORED" => "generation={positive}",
         "USER_DURABLE_RESTORE_OK" | "USER_DURABLE_WRITE_OK" => "path=/USER/SHELL.TXT",
         "USER_HANDLE_TRUNCATE_OK" | "USER_SOCKET_WAIT_BLOCK" | "USER_SOCKET_WAIT_WAKE"
@@ -768,6 +769,32 @@ mod tests {
                 .assess(&log.replace(&markers.join("\n"), &swapped.join("\n")))
                 .is_err());
         }
+    }
+
+    #[test]
+    fn fresh_storage_creation_requires_the_actual_complete_record() {
+        let marker = "PERSISTENT_STORAGE_CREATED files=2 generation=1";
+        let log = VALIDATION.replace("PERSISTENT_STORAGE_RESTORED generation=7", marker);
+        let required = ["PERSISTENT_STORAGE_CREATED"];
+        let contract = Contract::phase(&required, false);
+        assert_eq!(contract.assess(&log), Ok(true));
+        for invalid in [
+            "PERSISTENT_STORAGE_CREATED",
+            "PERSISTENT_STORAGE_CREATED files=1 generation=1",
+            "PERSISTENT_STORAGE_CREATED files=2 generation=0",
+            "PERSISTENT_STORAGE_CREATED files=2 generation=2",
+            "PERSISTENT_STORAGE_CREATED files=2 generation=1 suffix",
+            "prefix PERSISTENT_STORAGE_CREATED files=2 generation=1",
+        ] {
+            assert_ne!(
+                contract.assess(&log.replace(marker, invalid)),
+                Ok(true),
+                "{invalid}"
+            );
+        }
+        assert!(contract
+            .assess(&log.replace(marker, &format!("{marker}\n{marker}")))
+            .is_err());
     }
 
     #[test]
