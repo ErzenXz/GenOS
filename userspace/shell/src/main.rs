@@ -774,6 +774,9 @@ fn prove_storage_status(console: u64) -> Option<StorageMode> {
 }
 
 #[cfg(feature = "validation-boot")]
+// Both storage admission and the post-denial proof use this syscall/read
+// sequence. Keep one copy inside the fixed eight-page executable budget.
+#[inline(never)]
 fn prove_session_file_readable() -> bool {
     let temp = runtime::open_file(b"/TMP/SESSION.TXT");
     if handle_error(temp) {
