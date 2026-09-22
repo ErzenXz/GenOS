@@ -185,8 +185,13 @@ fn run_startup_validation(console: u64, supervisor: u64) {
                 runtime::exit(248);
             }
         }
-        StorageMode::Writable | StorageMode::Unavailable => {
-            if !prove_file_mutation(console, storage_mode == StorageMode::Writable) {
+        StorageMode::Unavailable => {
+            if !prove_unavailable_storage(console) {
+                runtime::exit(248);
+            }
+        }
+        StorageMode::Writable => {
+            if !prove_file_mutation(console) {
                 runtime::exit(248);
             }
             if !prove_namespace_mutation() {
@@ -760,20 +765,27 @@ fn prove_storage_status(console: u64) -> Option<StorageMode> {
         return None;
     }
 
-    let temp = runtime::open_file(b"/TMP/SESSION.TXT");
-    if handle_error(temp) {
-        return None;
-    }
-    let read = runtime::read_handle(temp, buffer) as usize;
-    if read > buffer.len()
-        || &buffer[..read] != b"session-only RAM data"
-        || runtime::close_handle(temp) != 0
-    {
+    if !prove_session_file_readable() {
         return None;
     }
     let message = b"RAMFS temp visible";
     (runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS) == message.len() as u64)
         .then_some(storage_mode)
+}
+
+#[cfg(feature = "validation-boot")]
+fn prove_session_file_readable() -> bool {
+    let temp = runtime::open_file(b"/TMP/SESSION.TXT");
+    if handle_error(temp) {
+        return false;
+    }
+    // SAFETY: this single-threaded startup probe exclusively borrows its
+    // process-local scratch buffer until the synchronous read completes.
+    let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
+    let read = runtime::read_handle(temp, buffer) as usize;
+    let preserved = read <= buffer.len() && &buffer[..read] == b"session-only RAM data";
+    let closed = runtime::close_handle(temp) == 0;
+    preserved && closed
 }
 
 #[cfg(feature = "validation-boot")]
@@ -1276,7 +1288,7 @@ fn parse_u64(bytes: &[u8]) -> Option<u64> {
 }
 
 #[cfg(feature = "validation-boot")]
-fn prove_file_mutation(console: u64, persistent_available: bool) -> bool {
+fn prove_file_mutation(console: u64) -> bool {
     let existing = runtime::open_file(MUTATION_PROOF_PATH);
     let restored = if !handle_error(existing) {
         let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };
@@ -1333,15 +1345,51 @@ fn prove_file_mutation(console: u64, persistent_available: bool) -> bool {
     let verified = count == MUTATION_PROOF_EXPECTED.len() as u64
         && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED;
     let closed = runtime::close_handle(handle) == 0;
-    let message: &[u8] = if restored && persistent_available {
+    let message: &[u8] = if restored {
         b"durable file restored" as &[u8]
-    } else if persistent_available {
-        b"durable file committed"
     } else {
-        b"session file written"
+        b"durable file committed"
     };
     verified
         && closed
+        && runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
+            == message.len() as u64
+}
+
+#[cfg(feature = "validation-boot")]
+fn prove_unavailable_storage(console: u64) -> bool {
+    // A corrupt/unavailable persistent volume must never acknowledge a
+    // /USER mutation as a volatile fallback. Probe both kinds of authority.
+    if runtime::open_file(MUTATION_PROOF_PATH) != runtime::ERROR_UNAVAILABLE
+        || runtime::open_file_with_rights(
+            MUTATION_PROOF_PATH,
+            runtime::FILE_RIGHT_READ | runtime::FILE_RIGHT_WRITE,
+        ) != runtime::ERROR_UNAVAILABLE
+        || runtime::open_file_with_rights(
+            b"/USER",
+            runtime::FILE_RIGHT_READ | runtime::FILE_RIGHT_MANAGE,
+        ) != runtime::ERROR_UNAVAILABLE
+    {
+        return false;
+    }
+    let parent = runtime::open_file(b"/USER");
+    if handle_error(parent) {
+        return false;
+    }
+    let denied = runtime::create_directory(parent, NAMESPACE_PROOF_DIRECTORY)
+        == runtime::ERROR_INVALID_ARGUMENT
+        && runtime::remove_path(parent, b"SHELL.TXT") == runtime::ERROR_INVALID_ARGUMENT;
+    // SAFETY: no other startup operation holds this process-local output
+    // buffer, and read_directory copies only its bounded ABI structure.
+    let entry = unsafe { &mut *addr_of_mut!(DATA.directory_entry) };
+    let unchanged = runtime::read_directory(parent, 0, entry) == 0;
+    let closed = runtime::close_handle(parent) == 0;
+    let message = b"storage unavailable mutations denied";
+    denied
+        && unchanged
+        && closed
+        && runtime::open_file(MUTATION_PROOF_PATH) == runtime::ERROR_UNAVAILABLE
+        && prove_session_file_readable()
         && runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
             == message.len() as u64
 }
