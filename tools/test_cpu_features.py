@@ -24,6 +24,7 @@ from test_exception_entry import (firmware_path, patch_fixture as exception_fixt
                                   replace_once, require_clean_source, validate_log as exception_log)
 
 MISSING = {'fpu': 'fpu', 'mmx': 'mmx', 'fxsr': 'fxsr', 'sse': 'sse', 'sse2': 'sse2', 'nx': 'nx'}
+SAMPLES = {'fxsr': 1 << 24, 'sse': 1 << 25}
 MIXED = {'base': (0, 0), 'smep': (1, 0), 'smap': (0, 1), 'both': (1, 1)}
 # Source statements are confined to the preexisting deliberately faulting init
 # instance. None changes production CPUID admission, trapping or cleanup policy.
@@ -37,11 +38,18 @@ ISA = {
     'debug-register': ('gp', 'core::arch::asm!("mov rax, dr0", out("rax") _, options(nostack));', 'true'),
     'rdmsr': ('gp', 'core::arch::asm!("mov ecx, 0xc0000100", "rdmsr", out("eax") _, out("edx") _, out("ecx") _, options(nostack));', '__cpuid(1).edx & (1 << 5) != 0'),
 }
-CASES = [*[f'missing-{name}' for name in MISSING], *[f'mixed-{name}' for name in MIXED], *[f'isa-{name}' for name in ISA]]
+CASES = [*[f'missing-{name}' for name in MISSING], *[f'mixed-{name}' for name in MIXED],
+         *[f'isa-{name}' for name in ISA], *[f'sample-{name}' for name in SAMPLES]]
+FIRMWARE_CASES = [f'missing-{name}' for name in SAMPLES]
+LANES = {'all': CASES,
+         'kernel': [case for case in CASES if case not in FIRMWARE_CASES],
+         'firmware-limit': FIRMWARE_CASES}
 POLICY = 'CPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float'
 
 
 def cpu_variant(case: str, profile: dict[str, str]) -> str:
+    if case.startswith('sample-'):
+        return profile['cpu']
     if case.startswith('missing-'):
         return profile['cpu'] + ',' + MISSING[case[8:]] + '=off'
     if case.startswith('mixed-'):
@@ -53,6 +61,23 @@ def cpu_variant(case: str, profile: dict[str, str]) -> str:
 
 
 def patch_fixture(root: Path, case: str) -> str:
+    if case.startswith('sample-'):
+        name = case[7:]
+        mask = SAMPLES[name]
+        path = root / 'kernel/src/arch.rs'
+        before = path.read_text()
+        anchor = '    if __cpuid(0).eax < 1 || !xstate::supported(__cpuid(1).edx) {'
+        injected = (f'    let sample_actual = if __cpuid(0).eax >= 1 {{ __cpuid(1).edx }} else {{ 0 }};\n'
+                    f'    if sample_actual & {mask} == 0 {{\n'
+                    '        crate::serial::println("CPU_CPUID_SAMPLE_HARDWARE_MISSING");\n'
+                    '        crate::arch::halt_loop();\n'
+                    '    }\n'
+                    f'    crate::serial::println("CPU_CPUID_SAMPLE_READY feature={name} actual=1 admitted_sample=0");\n'
+                    f'    if __cpuid(0).eax < 1 || !xstate::supported(sample_actual & !{mask}) {{')
+        after = replace_once(before, anchor, injected)
+        path.write_text(after)
+        return ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                       fromfile='a/kernel/src/arch.rs', tofile='b/kernel/src/arch.rs'))
     if not case.startswith('isa-'):
         return ''
     name = case[4:]
@@ -88,14 +113,21 @@ def validate_log(log: str, case: str) -> None:
         if lines.index(fixture) >= next(index for index, line in enumerate(lines) if line.startswith('EXCEPTION_FRAME')):
             raise ValueError('ISA hardware proof came after fault')
         return
-    if case.startswith('missing-'):
-        name = case[8:]
+    if case.startswith(('missing-', 'sample-')):
+        sample = case.startswith('sample-')
+        name = case[7:] if sample else case[8:]
         marker = ('CPU_PROTECTIONS_UNSUPPORTED required=nx' if name == 'nx'
                   else 'CPU_XSTATE_UNSUPPORTED required=x87,mmx,fxsr,sse,sse2')
         if lines.count(marker) != 1 or lines.count('BOOT_MEMORY_MAP_VALIDATED') != 1:
             raise ValueError('missing exact kernel CPU admission rejection')
         if lines.index('BOOT_MEMORY_MAP_VALIDATED') >= lines.index(marker):
             raise ValueError('CPU admission rejection was in the wrong phase')
+        if sample:
+            proof = f'CPU_CPUID_SAMPLE_READY feature={name} actual=1 admitted_sample=0'
+            if (lines.count(proof) != 1
+                    or not lines.index('BOOT_MEMORY_MAP_VALIDATED') < lines.index(proof) < lines.index(marker)
+                    or any('CPU_CPUID_SAMPLE_HARDWARE_MISSING' in line for line in lines)):
+                raise ValueError('missing real hardware and explicitly injected sample identity')
         forbidden = ['USERMODE_READY', 'GENOS_READY', 'NORMAL_SHELL_READY', 'EXCEPTION_FRAME', 'KERNEL PANIC']
         forbidden += (['KERNEL_IMAGE_PROTECTED'] if name == 'nx' else ['GDT/TSS initialized', POLICY])
         if any(any(token in line for token in forbidden) for line in lines):
@@ -125,7 +157,7 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
              '-display', 'none', '-monitor', 'none', '-serial', f'file:{serial}', '-no-reboot']
     (evidence / 'qemu-command.json').write_text(json.dumps(args, indent=2) + '\n')
     marker = ('CPU_PROTECTIONS_UNSUPPORTED required=nx' if case == 'missing-nx' else
-              'CPU_XSTATE_UNSUPPORTED' if case.startswith('missing-') else
+              'CPU_XSTATE_UNSUPPORTED' if case.startswith(('missing-', 'sample-')) else
               'USERMODE_READY' if case.startswith('isa-') else 'NORMAL_SHELL_READY')
     with (evidence / 'qemu.log').open('w') as output:
         process = subprocess.Popen(args, cwd=root, stdout=output, stderr=subprocess.STDOUT)
@@ -154,7 +186,10 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--case', choices=CASES)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--case', choices=CASES)
+    selection.add_argument('--lane', choices=LANES, default='all',
+                           help='kernel: 18 admission/ISA checks; firmware-limit: 2 real unsupported CPUs; all: collect all 20')
     parser.add_argument('--timeout', type=int, default=120)
     options = parser.parse_args()
     if sys.version_info < (3, 12) or options.timeout <= 0:
@@ -164,11 +199,14 @@ def main() -> None:
     archive = subprocess.run(['git', 'archive', '--format=tar', commit], cwd=source,
                              stdout=subprocess.PIPE, check=True, timeout=30).stdout
     run = source / 'build/cpu-feature-evidence' / str(time.time_ns())
-    for case in ([options.case] if options.case else CASES):
+    failed = []
+    for case in ([options.case] if options.case else LANES[options.lane]):
         evidence = run / case
         evidence.mkdir(parents=True, exist_ok=False)
         manifest = {'case': case, 'status': 'incomplete', 'commit': commit, 'source_clean': True,
-                    'cpu_variant': cpu_variant(case, load_profile(source)), 'scope': 'explicit CPU feature variant'}
+                    'cpu_variant': cpu_variant(case, load_profile(source)),
+                    'scope': ('injected CPUID sample after actual hardware query' if case.startswith('sample-')
+                              else 'explicit CPU feature variant')}
         try:
             manifest.update(environment(Path(firmware_path()), source))
             with tempfile.TemporaryDirectory(prefix='genos-cpu-feature-') as temporary:
@@ -187,13 +225,20 @@ def main() -> None:
                 manifest['status'] = 'passed'
         except Exception as error:
             manifest.update(status='failed', failure=f'{type(error).__name__}: {error}')
-            raise
+            failed.append(case)
         finally:
             serial = evidence / 'serial.log'
             if serial.exists():
                 manifest['serial_sha256'] = hashlib.sha256(serial.read_bytes()).hexdigest()
             (evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-        print(f'CPU_FEATURE_PROBE_OK case={case} evidence={evidence}', flush=True)
+        if manifest['status'] == 'passed':
+            print(f'CPU_FEATURE_PROBE_OK case={case} evidence={evidence}', flush=True)
+        else:
+            print(f'CPU_FEATURE_PROBE_FAILED case={case} evidence={evidence} failure={manifest["failure"]}',
+                  file=sys.stderr, flush=True)
+    if failed:
+        print('CPU_FEATURE_CAMPAIGN_FAILED cases=' + ','.join(failed), file=sys.stderr, flush=True)
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
