@@ -274,3 +274,36 @@ jobs:
           name: bsp-admission-evidence
           path: build/bsp-evidence/
           retention-days: 14
+
+  boot-memory-admission:
+    name: Boot memory admission (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [loader-version, count, overlap, initrd-usable, kernel-usable, cmdline]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Distribution QEMU/OVMF supplies portability evidence. Each manifest
+      # records its actual identity; this is not reference qualification.
+      - name: Install developer VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Check boot-memory evidence and fixture regressions
+        run: python3 -m unittest discover -s tools -p 'test_boot_memory_harness.py'
+      - name: Reject the malformed handoff before kernel initialization
+        shell: bash
+        run: |
+          mkdir -p build
+          python3 tools/test_boot_memory.py --case "${{ matrix.case }}" 2>&1 | tee build/boot-memory-run.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: boot-memory-${{ matrix.case }}-evidence
+          path: |
+            build/boot-memory-run.log
+            build/boot-memory-evidence/
+          if-no-files-found: warn
+          retention-days: 14

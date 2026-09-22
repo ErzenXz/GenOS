@@ -268,7 +268,13 @@ Review unsafe source changes with `python3 tools/check_unsafe.py --diff`, then
 explicitly regenerate the baseline with `--write-baseline` and check it with
 `--check`. A baseline is retained context, not a safety approval. The full QEMU
 suite and the exception, BSP and boot-memory harnesses require committed source
-for exact evidence.
+for exact evidence. `python3 tools/test_boot_memory.py` runs all six malformed
+handoff cases; `--case loader-version` selects one. Its host parser/fixture tests
+are included by `python3 -m unittest discover -s tools -p 'test_*.py'`. The local CI
+configuration assigns each boot-memory case an independent matrix job and retains
+its build log, fixture patch, command, serial output and manifest even on failure.
+Distribution QEMU/OVMF jobs supply portability evidence, not reference qualification;
+configured jobs do not establish that remote CI has run or passed.
 
 Rust 1.97 is the declared minimum supported version for all workspace packages
 and the standalone parser harness. CI uses the pinned 1.97.0 toolchain; older
