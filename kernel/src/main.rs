@@ -78,6 +78,10 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         serial::println("CPU_PROTECTIONS_FAILED");
         arch::halt_loop();
     }
+    if arch::install_stack_guards().is_err() {
+        serial::println("KERNEL_STACK_GUARDS_FAILED");
+        arch::halt_loop();
+    }
     interrupts::init();
     if paging::protect_kernel_page(arch::idt_address(), false, false).is_err() {
         serial::println("IDT_PROTECTION_FAILED");

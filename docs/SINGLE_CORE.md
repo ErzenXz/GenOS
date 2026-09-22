@@ -36,9 +36,11 @@ BSS stack before calling `kernel_main`. RDI carries BootInfo unchanged, RSP is
 is used only for the small admission path. This matters on the four-CPU reference
 VM: the former large `_start` prologue crossed a firmware stack guard before its
 first Rust statement. Rejected entrants never switch to the shared kernel stack.
-The stack stays reserved with the kernel ELF and receives the kernel data page
-permissions; its own overflow guard and high-water measurements remain future
-work. See [ADR 0005](adr/0005-owned-kernel-boot-stack.md).
+The stack stays reserved with the kernel ELF. After image protection, it receives
+dedicated inaccessible pages on both sides, as do the privilege, IRQ and emergency
+stacks. High-water measurements and the pre-installation boot window remain open.
+See [kernel stack guards](KERNEL_STACKS.md) and the original
+[ADR 0005](adr/0005-owned-kernel-boot-stack.md).
 
 Successful initialization emits exactly one diagnostic:
 
@@ -77,9 +79,11 @@ within it. They are not a claim that every shared global has been audited.
   interrupt. Descriptor validation, buffer transfer and protocol state
   mutation remain coordinator work. An IRQ handler must not wait on a lock
   held by interrupted normal code, allocate unbounded work, or block.
-- Emergency entries have dedicated stacks, but repeated entry on the same
-  IST, NMI/fatal nesting, XSTATE ownership and full nested-interrupt behavior
-  are not established. Such paths must not rely on ordinary IRQ masking.
+- Emergency entries have dedicated guarded stacks. Repeated entry on the same
+  IST, NMI/fatal nesting and full nested-interrupt behavior remain unestablished;
+  such paths must not rely on ordinary IRQ masking. The current single-CPU
+  floating-point/SIMD ownership is explicitly bounded by the
+  [CPU state policy](CPU_STATE.md).
 
 There is no general lock hierarchy yet. Current-process and active-address-
 space globals, physical allocator ownership, scheduler-local state and some

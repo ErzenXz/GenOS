@@ -1,5 +1,6 @@
 use core::arch::asm;
 use kernel::boot_cpu::{BootClaim, Features as BootFeatures};
+use kernel::stack::{GuardedStack, Layout as StackLayout, GUARD_BYTES};
 
 // Entry can leave a user's floating-point state live while Rust handles the
 // trap. The pinned bare-metal soft-float target must never consume that state.
@@ -50,13 +51,7 @@ fn boot_cpu_identity() -> (BootFeatures, Option<u64>) {
 // Reserved by the kernel ELF's BSS segment; the frame allocator never grants
 // these pages to applications. Admission happens before this shared stack is used.
 const BOOT_STACK_SIZE: usize = 2 * 1024 * 1024;
-#[repr(align(4096))]
-struct BootStack {
-    _bytes: [u8; BOOT_STACK_SIZE],
-}
-static mut BOOT_STACK: BootStack = BootStack {
-    _bytes: [0; BOOT_STACK_SIZE],
-};
+static mut BOOT_STACK: GuardedStack<BOOT_STACK_SIZE> = GuardedStack::new();
 
 /// Transfer the admitted BSP from its small firmware entry frame to kernel storage.
 ///
@@ -78,7 +73,7 @@ pub unsafe extern "sysv64" fn enter_boot_stack(
         "call rsi",
         "ud2",
         stack = sym BOOT_STACK,
-        size = const BOOT_STACK_SIZE,
+        size = const GUARD_BYTES + BOOT_STACK_SIZE,
     );
 }
 
@@ -172,18 +167,96 @@ impl IdtEntry {
 static mut IDT: Idt = Idt([IdtEntry::missing(); 256]);
 static mut GDT: [u64; 7] = [0; 7];
 static mut TSS: TaskStateSegment = TaskStateSegment::new();
-#[repr(align(16))]
-struct InterruptStack([u8; INTERRUPT_STACK_SIZE]);
-static mut INTERRUPT_STACK: InterruptStack = InterruptStack([0; INTERRUPT_STACK_SIZE]);
-#[repr(align(16))]
-struct PrivilegeStack([u8; PRIVILEGE_STACK_SIZE]);
-static mut PRIVILEGE_STACK: PrivilegeStack = PrivilegeStack([0; PRIVILEGE_STACK_SIZE]);
-#[repr(align(16))]
-struct EmergencyStack([u8; EMERGENCY_STACK_SIZE]);
-static mut DOUBLE_FAULT_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
-static mut NMI_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
-static mut MACHINE_CHECK_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
-static mut DEBUG_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
+static mut INTERRUPT_STACK: GuardedStack<INTERRUPT_STACK_SIZE> = GuardedStack::new();
+static mut PRIVILEGE_STACK: GuardedStack<PRIVILEGE_STACK_SIZE> = GuardedStack::new();
+static mut DOUBLE_FAULT_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
+static mut NMI_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
+static mut MACHINE_CHECK_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
+static mut DEBUG_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
+
+/// These addresses describe reserved storage, without referencing its unmapped
+/// guards. The ordering is also the bounded guard-proof fixture's stack index.
+pub fn stack_regions() -> [(&'static str, StackLayout); 7] {
+    [
+        (
+            "boot",
+            core::ptr::addr_of!(BOOT_STACK) as u64,
+            BOOT_STACK_SIZE,
+        ),
+        (
+            "irq",
+            core::ptr::addr_of!(INTERRUPT_STACK) as u64,
+            INTERRUPT_STACK_SIZE,
+        ),
+        (
+            "privilege",
+            core::ptr::addr_of!(PRIVILEGE_STACK) as u64,
+            PRIVILEGE_STACK_SIZE,
+        ),
+        (
+            "double-fault",
+            core::ptr::addr_of!(DOUBLE_FAULT_STACK) as u64,
+            EMERGENCY_STACK_SIZE,
+        ),
+        (
+            "nmi",
+            core::ptr::addr_of!(NMI_STACK) as u64,
+            EMERGENCY_STACK_SIZE,
+        ),
+        (
+            "machine-check",
+            core::ptr::addr_of!(MACHINE_CHECK_STACK) as u64,
+            EMERGENCY_STACK_SIZE,
+        ),
+        (
+            "debug",
+            core::ptr::addr_of!(DEBUG_STACK) as u64,
+            EMERGENCY_STACK_SIZE,
+        ),
+    ]
+    .map(|(name, base, size)| {
+        (
+            name,
+            StackLayout::new(base, size).expect("static stack geometry"),
+        )
+    })
+}
+
+/// Install all guards after the image's BSS was split into protected 4 KiB
+/// mappings, before IRQ enable or construction of a process root.
+pub fn install_stack_guards() -> Result<(), crate::paging::PagingError> {
+    if interrupts_enabled() {
+        return Err(crate::paging::PagingError::InvalidAddress);
+    }
+    let regions = stack_regions();
+    let pointer: u64;
+    // SAFETY: reading the current CPL0 RSP changes no flags, memory or stack.
+    unsafe {
+        asm!("mov {}, rsp", out(reg) pointer, options(nomem, nostack, preserves_flags));
+    }
+    if !regions[0].1.contains_stack_pointer(pointer)
+        || regions.iter().enumerate().any(|(index, (_, region))| {
+            regions[index + 1..]
+                .iter()
+                .any(|(_, other)| region.overlaps(*other))
+        })
+    {
+        return Err(crate::paging::PagingError::InvalidAddress);
+    }
+    for (_, region) in regions {
+        for guard in region.guards() {
+            // SAFETY: the page-aligned static GuardedStack geometry dedicates
+            // these pages to inaccessible guards, disjoint from every usable
+            // stack and live object. BSP startup owns their mappings with IF
+            // clear. No physical frame is released or offered for allocation.
+            unsafe {
+                crate::paging::guard_kernel_page(guard)?;
+            }
+        }
+    }
+    crate::serial::println("KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096");
+    Ok(())
+}
 
 pub fn init() {
     disable_interrupts();
@@ -327,17 +400,16 @@ pub fn idt_address() -> u64 {
 }
 
 unsafe fn init_gdt() {
-    let stack_base = core::ptr::addr_of!(INTERRUPT_STACK.0) as u64;
-    TSS.ist[(INTERRUPT_IST_INDEX - 1) as usize] = stack_base + INTERRUPT_STACK_SIZE as u64;
+    let regions = stack_regions();
+    TSS.ist[(INTERRUPT_IST_INDEX - 1) as usize] = regions[1].1.top;
     // SAFETY: static storage lives for the kernel lifetime, is disjoint, and
     // has 16-byte aligned tops. The processor owns each emergency stack on
     // entry; no normal Rust code creates references into these buffers.
-    TSS.ist[1] = core::ptr::addr_of!(DOUBLE_FAULT_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
-    TSS.ist[2] = core::ptr::addr_of!(NMI_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
-    TSS.ist[3] = core::ptr::addr_of!(MACHINE_CHECK_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
-    TSS.ist[4] = core::ptr::addr_of!(DEBUG_STACK.0) as u64 + EMERGENCY_STACK_SIZE as u64;
-    let privilege_stack_base = core::ptr::addr_of!(PRIVILEGE_STACK.0) as u64;
-    TSS.rsp[0] = privilege_stack_base + PRIVILEGE_STACK_SIZE as u64;
+    TSS.ist[1] = regions[3].1.top;
+    TSS.ist[2] = regions[4].1.top;
+    TSS.ist[3] = regions[5].1.top;
+    TSS.ist[4] = regions[6].1.top;
+    TSS.rsp[0] = regions[2].1.top;
 
     GDT[0] = 0;
     GDT[1] = 0x00af_9a00_0000_ffff;

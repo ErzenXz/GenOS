@@ -67,9 +67,9 @@ No floating-point instructions run in kernel Rust while user state is live.
 There is no lazy `#NM` ownership or shared process save buffer.
 
 Existing fatal behavior is unchanged: a kernel-origin fault halts, and supported
-process-local faults terminate only the current process. Same-IST nesting,
-return-instruction faults, emergency-stack guards and NMI recovery remain
-separate unfinished work. This policy also does not establish TLS/FS/GS/debug
+process-local faults terminate only the current process. Kernel stacks now have
+[dedicated guard pages](KERNEL_STACKS.md); same-IST nesting, return-instruction
+faults and NMI recovery remain separate unfinished work. This policy also does not establish TLS/FS/GS/debug
 register virtualization, SMP state ownership, or physical-CPU qualification.
 
 ## Validation

@@ -301,6 +301,58 @@ pub fn protect_kernel_page(
     Ok(())
 }
 
+/// Remove an already split, supervisor-only identity leaf without releasing
+/// its reserved backing storage. All process roots inherit these guard holes.
+///
+/// # Safety
+/// BSP bootstrap, with IF clear and the protected kernel root active, must own
+/// this dedicated guard page in the reserved kernel data image. It must contain
+/// no live object, current stack bytes, page table or device storage. No process
+/// root may have been published. Failure is boot-fatal; no guard is remapped.
+pub unsafe fn guard_kernel_page(address: u64) -> Result<(), PagingError> {
+    unsafe extern "C" {
+        static __kernel_data_start: u8;
+        static __kernel_data_end: u8;
+    }
+    let root = *core::ptr::addr_of!(KERNEL_ROOT);
+    let data_start = core::ptr::addr_of!(__kernel_data_start) as u64;
+    let data_end = core::ptr::addr_of!(__kernel_data_end) as u64;
+    if root == 0
+        || active_root() != root
+        || crate::arch::interrupts_enabled()
+        || !address.is_multiple_of(PAGE_SIZE)
+        || !(data_start..data_end).contains(&address)
+    {
+        return Err(PagingError::InvalidAddress);
+    }
+    let mut current = root;
+    for shift in [39, 30, 21] {
+        let entry = table(current)[index(address, shift)];
+        // protect_kernel_image has already split every data page. This helper
+        // neither allocates tables nor changes neighboring mappings.
+        if entry & PRESENT == 0 || entry & (USER | HUGE_OR_PAT) != 0 {
+            return Err(PagingError::MissingMapping);
+        }
+        current = entry & TABLE_ADDRESS_MASK;
+    }
+    let entry = &mut table_mut(current)[index(address, 12)];
+    if *entry & PRESENT == 0
+        || *entry & USER != 0
+        || *entry & TABLE_ADDRESS_MASK != address
+        || *entry & NO_EXECUTE == 0
+    {
+        return Err(PagingError::InvalidAddress);
+    }
+    *entry = 0;
+    // SAFETY: the caller's bootstrap ownership has retired this dedicated
+    // guard mapping; invalidate the BSP's old translation before verification.
+    asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
+    if translate_root(root, address).is_some() {
+        return Err(PagingError::InvalidAddress);
+    }
+    Ok(())
+}
+
 pub fn protect_kernel_image() -> Result<(), PagingError> {
     unsafe extern "C" {
         static __kernel_text_start: u8;
