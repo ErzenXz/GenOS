@@ -185,7 +185,11 @@ impl BlockCache {
         self.misses = self.misses.saturating_add(1);
         let index = self.replacement_index();
         self.writeback(index, io)?;
-        io.read(lba, &mut self.entries[index].data)?;
+        // A failing device read may modify its output. Publish bytes and LBA
+        // together only after success, preserving the previous cached sector.
+        let mut loaded = [0; SECTOR_BYTES];
+        io.read(lba, &mut loaded)?;
+        self.entries[index].data = loaded;
         self.entries[index].lba = lba;
         self.entries[index].age = self.clock;
         self.entries[index].valid = true;
@@ -317,13 +321,6 @@ impl PersistentFs {
         }
     }
 
-    fn commit(&mut self, vfs: &RamVfs) -> CommitOutcome {
-        // SAFETY: mount is single-BSP, synchronous, and precedes runtime
-        // publication; interrupt handlers cannot access this scratch buffer.
-        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
-        self.commit_with(vfs, &mut AtaIo, buffer)
-    }
-
     fn commit_with(
         &mut self,
         vfs: &RamVfs,
@@ -402,14 +399,6 @@ impl PersistentFs {
         CommitOutcome::Committed
     }
 
-    fn read_slot(
-        &mut self,
-        slot: usize,
-        output: &mut [u8; SLOT_BYTES],
-    ) -> Result<(), StorageError> {
-        self.read_slot_with(slot, output, &mut AtaIo)
-    }
-
     fn read_slot_with(
         &mut self,
         slot: usize,
@@ -441,11 +430,6 @@ pub fn init_session_ramfs(vfs: &mut RamVfs) -> bool {
 }
 
 pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) {
-    // Reserve the diagnostic node before importing a possibly full volume.
-    // Later quarantine status updates must not require another VFS slot.
-    if !seed_status(vfs, b"state=error") {
-        return unavailable(vfs);
-    }
     let controller = match discover_pci_ide_controller() {
         Ok(controller) => controller,
         Err(_) => {
@@ -469,8 +453,24 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
     serial::print_hex(controller.control_base as u64);
     serial::println("");
     serial::println("BLOCK_DEVICE_READY driver=ata-pio sector_bytes=512");
+    // SAFETY: mount is single-BSP, synchronous, and precedes runtime
+    // publication; interrupt handlers cannot access this scratch buffer.
+    let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
+    mount_device_with(vfs, &mut AtaIo, buffer)
+}
+
+fn mount_device_with(
+    vfs: &mut RamVfs,
+    io: &mut impl BlockIo,
+    buffer: &mut [u8; SLOT_BYTES],
+) -> (PersistentBootState, PersistentFs) {
+    // Reserve the diagnostic node before importing a possibly full volume.
+    // Later quarantine status updates must not require another VFS slot.
+    if !seed_status(vfs, b"state=error") {
+        return unavailable(vfs);
+    }
     let mut cache = BlockCache::new();
-    let partition = match discover_partition(&mut cache) {
+    let partition = match discover_partition(&mut cache, io) {
         Ok(partition) => partition,
         Err(_) => return unavailable(vfs),
     };
@@ -501,8 +501,7 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
         readable: false,
     }; 2];
     for (slot, summary) in summaries.iter_mut().enumerate() {
-        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
-        let readable = fs.read_slot(slot, buffer).is_ok();
+        let readable = fs.read_slot_with(slot, buffer, io).is_ok();
         *summary = SlotSummary {
             generation: readable.then(|| validate_snapshot(buffer).ok()).flatten(),
             blank: readable && buffer.iter().all(|byte| *byte == 0),
@@ -511,8 +510,8 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
     }
 
     if let Some(selected) = newest_valid_slot(&summaries) {
-        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
-        if fs.read_slot(selected, buffer).is_err() || apply_snapshot(vfs, buffer).is_err() {
+        if fs.read_slot_with(selected, buffer, io).is_err() || apply_snapshot(vfs, buffer).is_err()
+        {
             return unavailable(vfs);
         }
         fs.active_slot = Some(selected);
@@ -554,7 +553,7 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
         if clean {
             let created = vfs.write(PERSISTENT_PATH, PERSISTENT_PAYLOAD).is_ok()
                 && vfs.write(KEEP_PATH, KEEP_PAYLOAD).is_ok();
-            if created && fs.commit(vfs) == CommitOutcome::Committed {
+            if created && fs.commit_with(vfs, io, buffer) == CommitOutcome::Committed {
                 seed_status(vfs, b"state=healthy");
                 serial::println("PERSISTENT_STORAGE_CREATED files=2 generation=1");
                 serial::println("PERSISTENT_STORAGE_READY");
@@ -676,11 +675,14 @@ fn ata_port(offset: u16) -> u16 {
     unsafe { ATA_IO_BASE + offset }
 }
 
-fn discover_partition(cache: &mut BlockCache) -> Result<Partition, StorageError> {
+fn discover_partition(
+    cache: &mut BlockCache,
+    io: &mut impl BlockIo,
+) -> Result<Partition, StorageError> {
     let mut mbr = [0u8; SECTOR_BYTES];
-    cache.read(0, &mut mbr, &mut AtaIo)?;
+    cache.read(0, &mut mbr, io)?;
     let mut cached_mbr = [0u8; SECTOR_BYTES];
-    cache.read(0, &mut cached_mbr, &mut AtaIo)?;
+    cache.read(0, &mut cached_mbr, io)?;
     if cached_mbr != mbr {
         return Err(StorageError::Device);
     }
@@ -740,7 +742,7 @@ fn encode_snapshot(
     let mut cursor = RECORD_HEADER_BYTES;
     let mut entries = 0u8;
     for node in vfs.list_root() {
-        if !node.path().starts_with("/USER/") {
+        if !kernel::path_policy::is_user_writable_path(node.path()) {
             continue;
         }
         let path = node.path().as_bytes();
@@ -763,6 +765,10 @@ fn encode_snapshot(
         output[cursor + 2..cursor + 4].copy_from_slice(&(data.len() as u16).to_le_bytes());
         cursor += ENTRY_HEADER_BYTES;
         output[cursor..cursor + path.len()].copy_from_slice(path);
+        // Runtime path authority and VFS lookup are case-insensitive. Preserve
+        // the filename spelling while canonicalizing the format's /USER/ root,
+        // so an acknowledged /user/name write cannot disappear on remount.
+        output[cursor..cursor + 6].copy_from_slice(b"/USER/");
         cursor += path.len();
         output[cursor..cursor + data.len()].copy_from_slice(data);
         cursor += data.len();
@@ -781,6 +787,7 @@ fn validate_snapshot(snapshot: &[u8; SLOT_BYTES]) -> Result<u64, StorageError> {
     if snapshot[..4] != RECORD_MAGIC
         || u16::from_le_bytes([snapshot[4], snapshot[5]]) != RECORD_VERSION
         || snapshot[6] == 0
+        || snapshot[6] as usize > kernel::vfs::MAX_NODES - 2
         || snapshot[7] != RECORD_COMMITTED
     {
         return Err(StorageError::InvalidRecord);
@@ -802,8 +809,30 @@ fn validate_snapshot(snapshot: &[u8; SLOT_BYTES]) -> Result<u64, StorageError> {
         return Err(StorageError::InvalidRecord);
     }
     let mut cursor = RECORD_HEADER_BYTES;
-    for _ in 0..snapshot[6] {
-        let (_, _, _, next) = decode_entry(snapshot, cursor, used)?;
+    let mut prior: [Option<(&str, NodeKind)>; kernel::vfs::MAX_NODES] =
+        [None; kernel::vfs::MAX_NODES];
+    for index in 0..snapshot[6] as usize {
+        let (path, kind, data, next) = decode_entry(snapshot, cursor, used)?;
+        let path = core::str::from_utf8(path).map_err(|_| StorageError::InvalidRecord)?;
+        if !path.starts_with("/USER/")
+            || !kernel::path_policy::valid_absolute_path(path)
+            || data.len() > kernel::vfs::MAX_FILE_BYTES
+            || prior[..index]
+                .iter()
+                .flatten()
+                .any(|(other, _)| other.eq_ignore_ascii_case(path))
+        {
+            return Err(StorageError::InvalidRecord);
+        }
+        let parent = &path[..path.rfind('/').ok_or(StorageError::InvalidRecord)?];
+        if parent != "/USER"
+            && !prior[..index].iter().flatten().any(|(other, kind)| {
+                *kind == NodeKind::Directory && other.eq_ignore_ascii_case(parent)
+            })
+        {
+            return Err(StorageError::InvalidRecord);
+        }
+        prior[index] = Some((path, kind));
         cursor = next;
     }
     if cursor != used {
@@ -911,7 +940,8 @@ fn ata_read_sector(lba: u32, sector: &mut [u8; SECTOR_BYTES]) -> Result<(), Stor
         sector[index * 2] = word[0];
         sector[index * 2 + 1] = word[1];
     }
-    Ok(())
+    ata_settle();
+    wait_not_busy()
 }
 
 fn ata_write_sector(lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
@@ -919,13 +949,59 @@ fn ata_write_sector(lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), Storage
     for chunk in sector.chunks_exact(2) {
         unsafe { arch::outw(ata_port(0), u16::from_le_bytes([chunk[0], chunk[1]])) };
     }
+    ata_settle();
     wait_not_busy()
 }
 
 fn ata_flush() -> Result<(), StorageError> {
-    wait_not_busy()?;
-    unsafe { arch::outb(ata_port(7), ATA_COMMAND_FLUSH) };
-    wait_not_busy()
+    ata_flush_with(&mut AtaControlPorts, ATA_POLL_LIMIT)
+}
+
+trait AtaControl {
+    fn status(&mut self) -> u8;
+    fn error(&mut self) -> u8;
+    fn command(&mut self, command: u8);
+    fn settle(&mut self);
+}
+
+struct AtaControlPorts;
+
+impl AtaControl for AtaControlPorts {
+    fn status(&mut self) -> u8 {
+        // SAFETY: the single-BSP storage owner reads the discovered IDE status
+        // port; no other command or interrupt handler accesses this channel.
+        unsafe { arch::inb(ata_port(7)) }
+    }
+    fn error(&mut self) -> u8 {
+        // SAFETY: the same exclusively owned controller supplies this error
+        // register after status indicated a failed command; no RAM is aliased.
+        unsafe { arch::inb(ata_port(1)) }
+    }
+    fn command(&mut self, command: u8) {
+        // SAFETY: the storage owner has observed an idle data phase on this
+        // discovered controller. Only a bounded supported command is submitted.
+        unsafe { arch::outb(ata_port(7), command) };
+    }
+    fn settle(&mut self) {
+        ata_settle();
+    }
+}
+
+fn ata_settle() {
+    // SAFETY: the discovered control port is the channel's alternate status.
+    // Four PIO register cycles (at least 120 ns each under the supported ATA
+    // timing contract) exceed ATA's 400 ns command/selection settling interval.
+    // Ignored reads do not acknowledge IRQs or access memory; one BSP owns I/O.
+    for _ in 0..4 {
+        unsafe { arch::inb(ATA_CONTROL_BASE) };
+    }
+}
+
+fn ata_flush_with(io: &mut impl AtaControl, polls: usize) -> Result<(), StorageError> {
+    wait_status_with(false, io, polls)?;
+    io.command(ATA_COMMAND_FLUSH);
+    io.settle();
+    wait_status_with(false, io, polls)
 }
 
 fn select_sector(lba: u32, command: u8) -> Result<(), StorageError> {
@@ -933,14 +1009,23 @@ fn select_sector(lba: u32, command: u8) -> Result<(), StorageError> {
         return Err(StorageError::Device);
     }
     wait_not_busy()?;
+    // SAFETY: one BSP owns the discovered IDE channel. Polling mode suppresses
+    // device interrupts; selecting the master changes no memory ownership.
     unsafe {
+        arch::outb(ATA_CONTROL_BASE, 2);
         arch::outb(ata_port(6), 0xe0 | ((lba >> 24) as u8 & 0x0f));
+    }
+    ata_settle();
+    // SAFETY: the selected device has settled; these bounded LBA28/count/command
+    // values address one sector on the exclusively owned controller.
+    unsafe {
         arch::outb(ata_port(2), 1);
         arch::outb(ata_port(3), lba as u8);
         arch::outb(ata_port(4), (lba >> 8) as u8);
         arch::outb(ata_port(5), (lba >> 16) as u8);
         arch::outb(ata_port(7), command);
     }
+    ata_settle();
     wait_drq()
 }
 
@@ -967,9 +1052,16 @@ fn wait_drq() -> Result<(), StorageError> {
 }
 
 fn wait_status(data_phase: bool) -> Result<(), StorageError> {
-    for _ in 0..ATA_POLL_LIMIT {
-        // SAFETY: bounded status polling on the discovered controller.
-        let status = unsafe { arch::inb(ata_port(7)) };
+    wait_status_with(data_phase, &mut AtaControlPorts, ATA_POLL_LIMIT)
+}
+
+fn wait_status_with(
+    data_phase: bool,
+    io: &mut impl AtaControl,
+    polls: usize,
+) -> Result<(), StorageError> {
+    for _ in 0..polls {
+        let status = io.status();
         match ata_status_ready(status, data_phase) {
             Ok(true) => return Ok(()),
             Ok(false) => core::hint::spin_loop(),
@@ -979,7 +1071,7 @@ fn wait_status(data_phase: bool) -> Result<(), StorageError> {
                 serial::print(" status=0x");
                 serial::print_hex(status as u64);
                 serial::print(" error=0x");
-                serial::print_hex(unsafe { arch::inb(ata_port(1)) } as u64);
+                serial::print_hex(io.error() as u64);
                 serial::println("");
                 return Err(error);
             }

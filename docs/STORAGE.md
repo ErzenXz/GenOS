@@ -89,30 +89,105 @@ cannot be interpreted as proof that the mutation was absent from disk.
 
 ## Commit fault evidence and device assumptions
 
-`cargo test -p kernel --lib storage_under_test` compiles the production storage
-module and runs its cache, encoder, commit state machine, rollback callback, and
-remount decoder against an injected block device. The regression demonstrates a
-failed final flush with both old and new durable media outcomes. A second test
-injects failure before and after **each of the 41 sector writes and three flushes**,
-under both volatile write-back and immediate write-through models (176 cases).
-Every case checks RAM rollback, sticky read-only state, unchanged acknowledged
-generation, cache discard, no device I/O on a second mutation, and exact recovered
-file contents. Another 25 cases tear selected writes at five byte offsets while
-replacing an already damaged inactive generation, exercising failure during
-recovery. Mount decoding is transactional: a malformed late entry or insufficient
-VFS capacity leaves the original namespace intact, with regression tests for both. Successful-flush durability, generation overflow, invalid empty
-snapshots, explicit read-only mode, and unavailable volumes are also covered.
+`cargo test -p kernel --lib storage_under_test` compiles the production storage,
+cache, admission, mount and ATA completion code against injected I/O. Eighteen
+host tests include the original final-flush ambiguity and 25 torn-sector cases,
+176 failed fresh-volume creation points, failed-read cache replacement, eight
+unreadable-device configurations, ATA error
+and timeout phases, and the following retained recovery corpus:
 
-These are deterministic host state-machine tests, not physical power-loss or
-ATA-controller fault qualification. The device contract assumes a successful
-flush makes all preceding accepted writes durable and that a failed write does
-not damage unrelated sectors. No write reordering across a successful flush is
-allowed by that contract. Before the commit-header phase, ordering keeps the
-previous active slot intact. Checksums detect modeled torn snapshots; the current
-32-bit FNV checksum is neither collision-free nor an adversarial integrity check.
-Unreported lost writes, devices that lie about flushes, arbitrary cross-sector
-corruption, controller reset behavior, and hardware qualification remain outside
-this proof. The reference path uses ATA `FLUSH CACHE` (`0xe7`), not FUA.
+| Fault family | Retained images |
+| --- | ---: |
+| Error before/after every one of 41 writes and three flushes, writeback/writethrough | 176 |
+| Every partial flush cut in forward, reverse and two rotated sector orders | 176 |
+| One silently lost write or dishonest successful flush at each operation | 44 |
+| Header/payload/padding corruption in either or both generations | 21 |
+| Error at every first repair operation, then another failure at each repair barrier/publication | 176 |
+| Full namespace/counters, case-insensitive paths, malformed semantic entries, equal generations | 13 |
+| **Total independently compared images** | **606** |
+
+Run `python3 tools/test_storage_faults.py` to retain these raw disposable images
+and each actual production mount result under `build/storage-fault-evidence/`.
+The script runs `cargo xtask check-storage-corpus DIRECTORY`, whose host parser
+shares no decoder/checksum implementation with the kernel. It compares selected
+slot/generation and every path, kind and exact payload. An empty corpus, missing
+expected result, disagreement, source change or test failure fails the campaign.
+The manifest records source identity (including dirty status), commands, logs,
+and hashes for every image/result; dirty development evidence is not a committed
+reference qualification. Neither command opens the normal user volume.
+
+The mount path preserves unreadable or nonblank-invalid media without issuing
+writes. A partial failed device read cannot overwrite a still-valid cached
+sector. Snapshot admission includes bounded canonical paths, payload sizes,
+unique case-insensitive names and parent-before-child ordering, so malformed
+newer metadata cannot hide a usable older generation. Tied valid generations
+select slot zero deterministically in guest and host. The encoder canonicalizes
+the case-insensitive persistent prefix to `/USER/`, preserving filename spelling.
+Completely readable, all-zero slots in a valid writable provisioned partition
+remain the existing fresh-volume creation signal; the format cannot distinguish
+that state from an external tool deliberately zeroing both slots.
+
+A successful flush must persist all preceding accepted writes; distinct sectors
+may reorder within that interval. The failed operation may have reached any
+modeled prefix/subset of media. Power loss discards the volatile queue. Writes
+cannot damage unrelated sectors. The previous active slot therefore survives a
+failed replacement, including a second failed repair. Detected I/O failure
+quarantines writes, rolls RAM back and discards dirty cache entries.
+
+The silent-loss cases deliberately violate that contract: a caller can receive
+success yet remount the old state when a device lies about completion. The
+modeled corrupt/torn slot is rejected, never combined with the other slot.
+This demonstrates a limitation, not durability on dishonest media. FNV-1a is
+not collision-free or adversarial integrity. Arbitrary cross-sector damage,
+controller reset, physical power-loss behavior, device firmware and checksum
+collisions remain outside the qualified reference model.
+
+### ATA and host-cache contract
+
+The reference path uses one selected master, 512-byte LBA28 PIO transfers and
+ATA `FLUSH CACHE` (`0xe7`), with an eight-sector guest cache and QEMU
+`cache=writeback`. It does not issue FUA, NCQ or DMA. Polling mode suppresses ATA
+interrupts; four alternate-status PIO reads settle device selection, command
+submission and transfer completion. Under the supported ATA timing contract,
+four register cycles exceed the required 400 ns before command-status sampling.
+The flush proof specifically rejects stale pre-command idle status, BSY with
+stale error bits, unexpected DRQ, ERR, DF, absent-device status and exhausted
+poll budgets. Successful read transfers also check final completion before
+publishing bytes to cache.
+
+The driver allows 1,000,000 status samples per phase, not a promised wall-clock
+ATA timeout. ATA permits flushes longer than 30 seconds, so this reference-only
+poll budget may reject a functioning slow physical device. An error or timeout
+never becomes durable success. IDENTIFY-based device/capacity negotiation and
+physical-controller timing qualification remain unsupported. The relevant
+non-data protocol and flush semantics are in [ATA-6 draft, sections 8.12 and
+9.4](https://www.read.seas.harvard.edu/~kohler/class/04f-aos/ref/hardware/ATA-d1410r3a.pdf).
+
+QEMU writeback caching requires the guest to issue flushes; QEMU process exit
+alone does not establish that host/device caches survived real power loss.
+The host filesystem, drive firmware and flush implementation remain trusted.
+See [QEMU drive cache semantics](https://www.qemu.org/docs/master/system/invocation.html).
+
+### Cancellation and visibility audit
+
+`RuntimeCoordinator::complete_vfs_request` validates the exact pending request
+identity with `ManagedProcessManager::vfs_request_active` before any VFS mutation.
+Kill/reap clears pending requests and invalidates that identity; the existing
+`USER_ROLLBACK_CANCELLATION_OK` Ring 3 validation probe kills a queued writable
+open and checks that it cannot remain active. Every mutation variant follows
+the same pre-mutation gate. Denied/stale requests perform no snapshot I/O.
+
+Once that gate admits a mutation, one BSP owns the coordinator and storage.
+The function neither schedules another application nor accepts cancellation
+between RAM mutation, synchronous commit, rollback and completion publication.
+Interrupt handlers do not inspect/mutate VFS or storage. Thus applications see
+one complete RAM state, even though the coordinator temporarily holds a mutated
+candidate. Successful completion follows final flush; failure restores the
+prior RAM state before exposing its read-only status. Close/exit/kill may run
+afterward but cannot undo a committed mutation. Losing its acknowledgement
+permits old or new state on remount and is not an idempotency guarantee.
+There is no asynchronous storage cancellation API; future yielding I/O must
+replace this ownership contract before adding cancellation points.
 
 ## Ring 3 durability proof
 
@@ -126,7 +201,7 @@ The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=re
 
 ## Host inspection and QEMU contract
 
-`cargo xtask inspect-data` independently parses the MBR and both `GFS2` slots. It prints each valid generation and every file or directory. `cargo xtask repair-data` repairs only an image with exactly one valid snapshot: it copies that trusted snapshot to the alternate slot, increments the generation, recalculates the checksum, writes the image, and decodes it again to verify two valid copies. Healthy images are unchanged. If no valid snapshot exists, repair refuses to write rather than discarding or inventing metadata.
+`cargo xtask inspect-data` independently parses the MBR and both `GFS2` slots. It prints each valid generation and every file or directory. `cargo xtask repair-data` repairs only an image with exactly one valid snapshot: it copies that trusted snapshot to the alternate slot, increments the generation, recalculates the checksum, writes a separate temporary image in the same directory, syncs and independently reads it back, then atomically renames it over the offline original and syncs the parent directory. Six injected publication failures, each followed by another repair attempt, prove that preparation failures preserve the original bytes and post-rename failures expose a complete repaired image. A post-rename error is an uncertain host acknowledgement; inspect before retrying. This contract requires exclusive offline access and a host filesystem with atomic same-directory rename and meaningful sync. Host repair never truncates the original image. Healthy images are unchanged. If no valid snapshot exists, repair refuses to write rather than discarding or inventing metadata.
 
 The storage sub-suite within `cargo xtask test` performs six boots:
 
@@ -140,8 +215,7 @@ The storage sub-suite within `cargo xtask test` performs six boots:
 The current format remains deliberately bounded. It has no allocation bitmap, extents, large files, or incremental metadata journal; each mutation commits one full snapshot. Useful capacity and recovery guarantees are required by S2/C5; allocation bitmaps,
 extents, journaling and other commit mechanisms remain alternatives under the S2.1
 design decision. The original milestone and current fault model do not establish general filesystem
-reliability; broader corruption, lost/reordered-sector, host-checker agreement,
-and device-failure qualification remain S1 work.
+reliability; physical-device qualification and fault behaviors outside the declared block contract remain open. The retained production-seam corpus supplies bounded corruption, lost/reordered-sector and independent host-checker evidence.
 
 ## Host-tool volume preservation (GenOS 0.55)
 
