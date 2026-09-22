@@ -88,6 +88,10 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         arch::halt_loop();
     }
     serial::println("IDT_READONLY_READY");
+    if paging::seal_kernel_mappings(boot_info).is_err() {
+        serial::println("PHYSICAL_ALIAS_POLICY_FAILED");
+        arch::halt_loop();
+    }
     // The modern VirtIO network path uses MSI-X for normal RX/TX completion.
     // Enable interrupts before DHCP so the boot networking proof exercises the
     // same completion path as the runtime instead of silently polling.
@@ -125,6 +129,16 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             arch::halt_loop();
         }
         serial::println("FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true");
+        if !paging::run_pressure_probe()
+            || !paging::run_user_copy_probe()
+            || !paging::run_translation_probe()
+        {
+            serial::println("MEMORY_AUTHORITY_FAILED");
+            arch::halt_loop();
+        }
+        serial::println("MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true");
+        serial::println("USER_COPY_READY bounded=true permissions=true atomic=true stale=denied");
+        serial::println("TLB_RETIREMENT_READY switched=true reused=true reclaimed=true");
         serial::println("IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored");
     }
     #[cfg(feature = "memory-test-faults")]

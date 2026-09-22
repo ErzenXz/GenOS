@@ -3,6 +3,10 @@
 use crate::physmem::PAGE_SIZE;
 
 pub const GRANT_CAPACITY: usize = 8192;
+/// Tables and leaves both consume the owner's budget. General heap growth must
+/// explicitly revise this versioned resource contract, not bypass admission.
+pub const USER_FRAME_LIMIT: usize = 64;
+pub const KERNEL_FRAME_RESERVE: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Owner(u64);
@@ -66,6 +70,7 @@ pub struct Ledger<const N: usize> {
     live: usize,
     pub denied: u64,
     pub exhausted: u64,
+    pub quota_denials: u64,
 }
 impl<const N: usize> Default for Ledger<N> {
     fn default() -> Self {
@@ -81,6 +86,7 @@ impl<const N: usize> Ledger<N> {
             live: 0,
             denied: 0,
             exhausted: 0,
+            quota_denials: 0,
         }
     }
 
@@ -99,6 +105,13 @@ impl<const N: usize> Ledger<N> {
         kind: Kind,
         allocate: impl FnOnce() -> Option<u64>,
     ) -> Option<Grant> {
+        if owner != Owner::KERNEL
+            && (self.owner_frames(owner) >= USER_FRAME_LIMIT
+                || self.live >= N - KERNEL_FRAME_RESERVE.min(N / 4))
+        {
+            self.quota_denials = self.quota_denials.saturating_add(1);
+            return None;
+        }
         let slot = self.records.iter().position(|record| record.address == 0);
         let next = self.next_generation.checked_add(1);
         let (Some(slot), Some(next)) = (slot, next) else {
@@ -352,5 +365,72 @@ mod tests {
     #[test]
     fn kernel_metadata_budget_is_explicit() {
         assert!(core::mem::size_of::<Ledger<GRANT_CAPACITY>>() <= 328_000);
+    }
+
+    #[test]
+    fn owner_quota_counts_tables_and_leaves_and_denial_never_allocates() {
+        let mut ledger = Ledger::<128>::new();
+        let owner = ledger.new_owner().unwrap();
+        let other = ledger.new_owner().unwrap();
+        let mut grants = std::vec::Vec::new();
+        for index in 0..USER_FRAME_LIMIT {
+            grants.push(
+                ledger
+                    .allocate(
+                        owner,
+                        if index % 2 == 0 {
+                            Kind::Table
+                        } else {
+                            Kind::User
+                        },
+                        || Some((index as u64 + 1) * PAGE_SIZE),
+                    )
+                    .unwrap(),
+            );
+        }
+        assert!(ledger
+            .allocate(owner, Kind::User, || panic!("quota allocated"))
+            .is_none());
+        assert_eq!(ledger.quota_denials, 1);
+        assert_eq!(ledger.owner_frames(owner), USER_FRAME_LIMIT);
+        let witness = ledger
+            .allocate(other, Kind::User, || Some(0x100000))
+            .unwrap();
+        let returned = grants.pop().unwrap();
+        assert!(ledger.release(returned, |_| true));
+        let replacement = ledger
+            .allocate(owner, Kind::User, || Some(returned.address()))
+            .unwrap();
+        assert_ne!(returned, replacement);
+        assert!(!ledger.release(returned, denied));
+        assert!(ledger.release(replacement, |_| true));
+        assert!(ledger.release(witness, |_| true));
+        for grant in grants {
+            assert!(ledger.release(grant, |_| true));
+        }
+        assert_eq!(ledger.live(), 0);
+    }
+
+    #[test]
+    fn kernel_reserve_remains_available_when_user_admission_is_full() {
+        let mut ledger = Ledger::<16>::new();
+        let owner = ledger.new_owner().unwrap();
+        for index in 0..12 {
+            assert!(ledger
+                .allocate(owner, Kind::User, || Some((index + 1) * PAGE_SIZE))
+                .is_some());
+        }
+        assert!(ledger
+            .allocate(owner, Kind::Table, || panic!("reserve consumed"))
+            .is_none());
+        for index in 12..16 {
+            assert!(ledger
+                .allocate(Owner::KERNEL, Kind::Table, || Some((index + 1) * PAGE_SIZE))
+                .is_some());
+        }
+        assert!(ledger
+            .allocate(Owner::KERNEL, Kind::Table, || panic!("ledger overflow"))
+            .is_none());
+        assert_eq!((ledger.quota_denials, ledger.exhausted), (1, 1));
     }
 }

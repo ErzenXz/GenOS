@@ -168,6 +168,10 @@ impl<const WORDS: usize> FrameAllocator<WORDS> {
         true
     }
 
+    /// Allocate one order-0 page (4096 bytes, 4096-byte aligned), choosing the
+    /// lowest available managed address. Consecutive calls are independent:
+    /// no adjacency, larger alignment or compound-run ownership is promised.
+    /// Layout freezes on the first success and never reopens after release.
     pub fn alloc_frame(&mut self) -> Option<u64> {
         while self.next_word < self.frame_count.div_ceil(64) {
             let base = self.next_word * 64;
@@ -563,5 +567,54 @@ mod tests {
             assert!(allocator.free_frame(frame));
         }
         assert_eq!(allocator.allocated_frames(), 0);
+    }
+
+    #[test]
+    fn region_ceiling_rejects_without_losing_any_previous_page() {
+        let mut allocator = FrameAllocator::<2>::new();
+        for index in 0..MAX_USABLE_REGIONS {
+            assert!(allocator.add_region(region(
+                0x1000 + index as u64 * 0x2000,
+                PAGE_SIZE,
+                MemoryRegionKind::Usable
+            )));
+        }
+        assert!(!allocator.add_region(region(0x100000, PAGE_SIZE, MemoryRegionKind::Usable)));
+        assert_eq!(allocator.region_count(), MAX_USABLE_REGIONS);
+        assert_eq!(
+            allocator.usable_bytes(),
+            MAX_USABLE_REGIONS as u64 * PAGE_SIZE
+        );
+        for index in 0..MAX_USABLE_REGIONS {
+            assert_eq!(
+                allocator.alloc_frame(),
+                Some(0x1000 + index as u64 * 0x2000)
+            );
+        }
+        assert_eq!(allocator.alloc_frame(), None);
+        assert!(allocator.is_consistent());
+    }
+
+    #[test]
+    fn production_metadata_and_managed_ram_bounds_are_explicit() {
+        let allocator = core::mem::size_of::<FrameAllocator<KERNEL_BITMAP_WORDS>>();
+        let ledger = core::mem::size_of::<
+            crate::frame_grant::Ledger<{ crate::frame_grant::GRANT_CAPACITY }>,
+        >();
+        std::println!(
+            "MEMORY_METADATA bitmap_and_regions={allocator} grant_ledger={ledger} total={}",
+            allocator + ledger
+        );
+        assert!(allocator <= 264_000);
+        assert!(ledger <= 328_000);
+        assert!(allocator + ledger <= 592_000);
+        assert_eq!(
+            KERNEL_BITMAP_WORDS as u64 * 64 * PAGE_SIZE,
+            8 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            crate::frame_grant::GRANT_CAPACITY as u64 * PAGE_SIZE,
+            32 * 1024 * 1024
+        );
     }
 }

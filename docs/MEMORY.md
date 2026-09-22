@@ -60,8 +60,9 @@ stale-generation denial and one pinned user mapping per grant. Teardown validate
 its owner tree before mutation, unlinks mappings before release, and refuses active
 or stale roots. PCID/global retention is disabled and read back during bootstrap.
 The physical release function remains unsafe because raw references and devices
-must still be retired by the caller. Kernel physical aliases, explicit sharing,
-device/DMA pins and SMP need further work. Zeroing RAM does not promise cache
+must still be retired by the caller. Kernel physical aliases are now permission-sealed and retired under the
+[local TLB contract](TLB_RETIREMENT.md). Explicit sharing, device/DMA pins and SMP
+need further work. Zeroing RAM does not promise cache
 erasure, physical remanence protection or destruction of unrelated kernel copies.
 
 ## Terminal diagnostics
@@ -92,9 +93,9 @@ handle. Close, exit, fault, kill and resource revocation release snapshot owners
 The ordinary typed handle registry and pending-request identity checks still
 govern access; stale handles cannot read a reopened report. Operation counters
 saturate; deliberate pre-allocation injection is not counted as bitmap exhaustion.
-The grant ledger now counts frames per owner, and the public report groups
-kernel/user grants. Per-process quotas and general memory-pressure policy remain
-separate F3.5 work.
+The grant ledger counts every table/leaf against its owner. The public report
+groups kernel/user grants and adds `owner_limit=64` and `quota_denials`. Formatting
+is host-tested at all supported maxima and saturated counters within 512 bytes.
 
 Consistency checks cover region ordering/alignment, bitmap capacity, unused bits,
 live population and high-water bounds. The managed-address limit is 8 GiB/64 regions. A separate 8192-live-grant
@@ -140,3 +141,80 @@ page. The second uses actual IF state across nested sections. The existing proce
 construction failure matrix still restores the live-frame baseline at every cutoff.
 `cargo xtask test-release` also invokes `mem` and denies writing its status file in
 both normal profiles.
+
+## Allocation order, boot ownership and memory pressure
+
+The runtime allocation interface supports **order-0 only**: one4096-byte page,
+4096-byte alignment and one allocation identity. The bitmap chooses the lowest
+available managed address, but separate grants have no compound/contiguous-run
+promise. Reserved gaps and reclaimed holes remain visible; callers must never
+form a larger buffer by adding to the first returned address. There is no higher
+order, larger-alignment, contiguous-DMA, compaction or split/merge interface to
+misinterpret as successful. Existing device arrays are static retained kernel
+storage; a future dynamic DMA allocator needs its own pinned-run contract.
+
+Before runtime allocation, the UEFI loader owns its firmware allocations and
+retains kernel, initrd and handoff regions. The kernel admits only complete,
+nonoverlapping usable regions, reserves page zero and partial pages, and freezes its
+sorted bitmap layout at the first successful allocation—even if every page is
+later released. Only those usable pages enter the runtime grant ledger. Boot
+map/capacity or mandatory kernel-table exhaustion halts explicitly; firmware
+allocation failure never becomes a truncated usable map.
+
+Production metadata is **591504 bytes** on the pinned64-bit layout:263776 bytes
+for bitmap, region records and statistics, plus 327728 bytes for the grant ledger.
+The host size regression requires <=592000 bytes combined. The bitmap represents
+at most 8 GiB of usable page capacity across 64 regions, independent of reserved gaps;
+8192 simultaneous live grants impose a separate 32 MiB dynamic-page bound including
+tables. Region 65 and a page beyond bitmap capacity are rejected without modifying
+previously admitted memory. These are kernel resource contracts, not all physical
+memory or a promise that any arbitrary firmware map will boot.
+
+Each non-kernel owner is limited to 64 frames (256 KiB), including its root, private
+tables, executable, data and stack. Admission also leaves256 ledger entries for
+kernel allocations. The latter is a metadata reserve; actual usable RAM can still
+be exhausted. There is no unbounded retry, reclaim of a live process, swapping or
+OOM victim selection: allocation returns failure, and transactional construction
+returns every intermediate grant. Existing processes retain their mappings and
+bytes. No allocator/device I/O occurs while waiting for memory because there is
+no waiting path. The scan bounds remain32768 bitmap words,64 regions and8192 ledger
+records; worst-case latency is still an F5/F7 measurement obligation.
+
+`MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true` requires two
+actual quota-fill/deny/cleanup cycles, no additional allocation on denial, an
+independent owner that can still allocate, and exact return to the frame baseline.
+Host tests additionally fill the global user budget and prove the kernel reserve
+still allocates, test table+leaf accounting, stale reuse and saturation.
+
+## User copy and physical permission checks
+
+User-copy calls now route through one paging interface. Each copy is bounded to
+4096 bytes and at most two pages. The whole range, live root, owning table grants,
+user permissions, effective write permission and exact leaf pins are checked
+before a byte is transferred. A single IRQ-masked BSP section spans validation
+and copying. There is no escaping user borrow; cancellation/process destruction
+cannot interleave. Syscall-specific data/text/file limits remain additional bounds.
+Zero-length copies validate a live root and a canonical user address too.
+
+The pure planner tests every page offset, maximal/overflowing/noncanonical ranges
+and failed later-page resolution. The production probe checks a missing/readonly
+second page without a partial write, denied supervisor/foreign/stale addresses,
+and immutable failed read output. Actual CPU reads also compare roots and reused
+allocations. Exact markers are required by `cargo xtask test-memory`:
+
+- `USER_COPY_READY bounded=true permissions=true atomic=true stale=denied`
+- `TLB_RETIREMENT_READY switched=true reused=true reclaimed=true`
+
+Three additional deliberate CPU faults are available:
+
+```sh
+python3 tools/test_exception_entry.py --mode kernel --fault alias-rx
+python3 tools/test_exception_entry.py --mode kernel --fault alias-ro
+python3 tools/test_exception_entry.py --mode kernel --fault direct-nx
+```
+
+They attempt an actual store through a read-only/RX page's supervisor alias or
+execution through its NX identity alias. Exact CR2/error bits, prior sealing,
+deliberate containment, clean source and retained failed/successful artifacts are
+required. The ordinary six CPU protection cases and full lifecycle suite remain
+required; these new probes do not replace them.

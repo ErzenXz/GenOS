@@ -46,5 +46,6 @@ Do not silently rewrite an accepted ADR to make history appear cleaner. Small co
 | 0004 | [Bitmap ownership and rollback](0004-bitmap-frame-ownership-and-rollback.md) | Accepted in PR #7 |
 | 0005 | [Kernel-owned boot stack](0005-owned-kernel-boot-stack.md) | Proposed |
 | 0006 | [Scrubbed frame release](0006-scrubbed-frame-release.md) | Proposed |
+| 0007 | [Physical alias and copy authority](0007-physical-alias-and-copy-authority.md) | Proposed |
 
 Add accepted ADRs to this index in the same pull request.

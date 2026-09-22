@@ -23,6 +23,39 @@ pub unsafe trait TableMemory {
     fn release(&mut self, table: u64);
 }
 
+/// Admit only the bounded identity map retained by the reference loader. Any
+/// extra virtual alias would escape the kernel's physical permission policy.
+/// This walks before cloning/allocation; rejection leaves the firmware tree
+/// untouched. A maximum depth of four also bounds malformed table cycles.
+///
+/// # Safety
+/// As for `clone_supervisor`, every present child points to readable table RAM.
+pub unsafe fn identity_mappings(memory: &impl TableMemory, root: u64) -> bool {
+    unsafe fn walk(memory: &impl TableMemory, table: u64, level: u8, base: u64) -> bool {
+        let shift = 12 + 9 * (level - 1);
+        for slot in 0..512 {
+            let entry = memory.read(table, slot);
+            if entry & PRESENT == 0 {
+                continue;
+            }
+            let virtual_address = base + ((slot as u64) << shift);
+            if virtual_address >= crate::user_copy::USER_BASE || (level == 4 && entry & HUGE != 0) {
+                return false;
+            }
+            if level == 1 || entry & HUGE != 0 {
+                let mask = ADDRESS_MASK & !((1u64 << shift) - 1);
+                if entry & mask != virtual_address {
+                    return false;
+                }
+            } else if !walk(memory, entry & ADDRESS_MASK, level - 1, virtual_address) {
+                return false;
+            }
+        }
+        true
+    }
+    walk(memory, root, 4, 0)
+}
+
 /// # Safety
 /// Source is a valid live page-table tree of the given depth (1..=4). No
 /// software writer mutates its topology during this bounded traversal. A
@@ -122,6 +155,30 @@ mod tests {
             next: 0x100000,
             budget: 0,
         }
+    }
+    #[test]
+    fn firmware_aliases_and_user_window_are_rejected_before_cloning() {
+        let mut memory = source();
+        memory.tables.get_mut(&0x1000).unwrap().fill(0);
+        memory.tables.get_mut(&0x2000).unwrap().fill(0);
+        memory.tables.get_mut(&0x1000).unwrap()[0] = 0x2003;
+        memory.tables.get_mut(&0x2000).unwrap()[0] = 0x83;
+        memory.tables.get_mut(&0x2000).unwrap()[1] = 0x4000_0083;
+        let original = memory.tables.clone();
+        // SAFETY: all fixture child tables are present initialized storage.
+        unsafe {
+            assert!(identity_mappings(&memory, 0x1000));
+            assert_eq!(memory.tables, original);
+            memory.tables.get_mut(&0x2000).unwrap()[1] = 0x83;
+            assert!(!identity_mappings(&memory, 0x1000));
+            memory.tables.get_mut(&0x2000).unwrap()[1] = 0x4000_0083;
+            memory.tables.get_mut(&0x1000).unwrap()[128] = 0x2003;
+            assert!(!identity_mappings(&memory, 0x1000));
+            memory.tables.get_mut(&0x1000).unwrap()[128] = 0;
+            memory.tables.get_mut(&0x1000).unwrap()[0] |= HUGE;
+            assert!(!identity_mappings(&memory, 0x1000));
+        }
+        assert!(memory.owned.is_empty());
     }
     #[test]
     fn every_allocation_failure_restores_the_exact_source_and_frame_set() {
