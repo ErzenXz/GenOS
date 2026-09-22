@@ -59,7 +59,7 @@ These foundations do not form a complete production security model.
 
 The material limitations are tracked in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md). Release-blocking areas include:
 
-- incomplete XSTATE, stack-guard and nested emergency/return-fault qualification;
+- CPU-state qualification beyond the bounded eager x87/MMX/SSE policy, plus incomplete stack-guard and nested emergency/return-fault qualification;
 - incomplete physical-alias permission enforcement despite existing NX/WP/SMEP/SMAP proofs;
 - missing per-owner frame identity and complete retirement contracts despite existing bitmap rollback and scrubbing;
 - single-core assumptions and unsynchronized mutable global state;

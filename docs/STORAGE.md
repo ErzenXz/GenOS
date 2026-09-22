@@ -1,6 +1,6 @@
 # Persistent storage
 
-GenOS 0.41 completes Stage 4 with a mounted `/USER/` namespace, PCI controller discovery, conservative host repair, and explicit read-only recovery. QEMU attaches the dedicated 8 MiB `build/genos-data.img` disk to a PCI IDE controller. The kernel discovers the controller and GenOS partition, mounts the newest committed `GFS2` snapshot into the VFS, and synchronously commits successful Ring 3 mutations.
+GenOS 0.56 has a bounded persistent `/USER/` namespace, PCI controller discovery, conservative host repair, and explicit read-only recovery. Storage qualification and capacity growth remain open under roadmap S1/S2. QEMU attaches the dedicated 8 MiB `build/genos-data.img` disk to a PCI IDE controller. The kernel discovers the controller and GenOS partition, mounts the newest committed `GFS2` snapshot into the VFS, and synchronously commits successful Ring 3 mutations.
 
 `/TMP/SESSION.TXT` remains session RAM and is never serialized. Initrd files at the VFS root also remain outside the persistent volume.
 
