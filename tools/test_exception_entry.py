@@ -24,6 +24,8 @@ from reference_vm import environment, load_profile, qemu_args
 
 VECTORS = {"de": 0, "ud": 6, "gp": 13, "pf": 14}
 PROTECTIONS = {"nx-data", "nx-stack", "wp", "kernel-text", "smep", "smap"}
+ALIAS_PROTECTIONS = {"alias-rx", "alias-ro", "direct-nx"}
+PROTECTIONS |= ALIAS_PROTECTIONS
 VECTORS.update({fault: 14 for fault in PROTECTIONS})
 FRAME = re.compile(
     r"^EXCEPTION_FRAME vector=(\d+) cpl=(\d+)"
@@ -44,6 +46,14 @@ def replace_once(text: str, old: str, new: str) -> str:
 
 
 def instruction(fault: str, mode: str) -> str:
+    if fault in ALIAS_PROTECTIONS:
+        access = ('core::arch::asm!("call {target}", target = in(reg) frame.address(), clobber_abi("C"));'
+                  if fault == "direct-nx" else 'core::ptr::write_volatile(frame.address() as *mut u8, 0);')
+        return ('let space = paging::create_user_address_space().expect("probe root"); '
+                'let frame = paging::allocate_zeroed_frame(space).expect("probe frame"); '
+                'core::ptr::write_bytes(frame.address() as *mut u8, 0xc3, 4096); '
+                f'paging::map_user_page(space, paging::USER_CODE, frame, {str(fault == "direct-nx").lower()}, {str(fault == "alias-rx").lower()}).expect("probe map"); '
+                + target_marker('frame.address()') + access)
     if fault == "nx-data":
         return 'core::arch::asm!("call {target}", target = in(reg) core::ptr::addr_of!(PROCESS_DATA), clobber_abi("C"));'
     if fault == "nx-stack":
@@ -101,13 +111,13 @@ def patch_fixture(root: Path, mode: str, fault: str) -> str:
              "faulting.fault_address == " + ({"nx-data": "paging::USER_DATA", "nx-stack": "paging::USER_STACK_BOTTOM"}.get(fault, "0"))),
         ]
     if mode == "kernel":
-        anchor = '    serial::println("IDT_READONLY_READY");' if fault in PROTECTIONS else "    interrupts::init();"
-        probe = (anchor + '\n'
+        anchor = '    // The modern VirtIO network path uses MSI-X for normal RX/TX completion.' if fault in PROTECTIONS else "    interrupts::init();"
+        probe = ((anchor + '\n' if fault not in PROTECTIONS else '') +
                  '    serial::println("KERNEL_EXCEPTION_PROBE_ARMED");\n'
                  '    // SAFETY: isolated validation fixture deliberately faults the CPU.\n'
                  f'    unsafe {{ {instruction(fault, mode)} }}\n'
                  '    serial::println("KERNEL_EXCEPTION_PROBE_RETURNED");\n'
-                 '    arch::halt_loop();')
+                 '    arch::halt_loop();\n' + (anchor if fault in PROTECTIONS else ''))
         changes["kernel/src/main.rs"] = [(anchor, probe)]
     patches = []
     for relative, replacements in changes.items():
@@ -136,7 +146,8 @@ def validate_log(log: str, mode: str, fault: str) -> None:
         raise ValueError("invalid saved privilege, instruction, stack or reserved flags bit")
     expected_error = {"de": 0, "ud": 0, "gp": 0 if mode == "user" else 0x38,
                       "pf": 6 if mode == "user" else 2, "nx-data": 0x15, "nx-stack": 0x15,
-                      "wp": 3, "kernel-text": 3, "smep": 0x11, "smap": 1}[fault]
+                      "wp": 3, "kernel-text": 3, "smep": 0x11, "smap": 1,
+                      "alias-rx": 3, "alias-ro": 3, "direct-nx": 0x11}[fault]
     if error != expected_error or (VECTORS[fault] != 14 and cr2 != 0):
         raise ValueError("wrong normalized error code or fault address policy")
     if VECTORS[fault] == 14 and cr2 == 0:
@@ -150,6 +161,10 @@ def validate_log(log: str, mode: str, fault: str) -> None:
         for marker in ("CPU_PROTECTIONS_READY nx=1 wp=1 smep=1 smap=1", "IDT_READONLY_READY"):
             if lines.count(marker) != 1 or lines.index(marker) >= lines.index(frame_line):
                 raise ValueError("CPU protections must be enabled exactly once before the fault")
+        if fault in ALIAS_PROTECTIONS:
+            marker = "PHYSICAL_ALIAS_POLICY_READY identity=only user_alias=sealed direct=nx"
+            if lines.count(marker) != 1 or lines.index(marker) >= lines.index(frame_line):
+                raise ValueError("physical alias policy must precede the fault")
         if mode == "user":
             expected_address = {"nx-data": 0x400000002000, "nx-stack": 0x40000000c000}[fault]
         else:

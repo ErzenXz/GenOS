@@ -163,61 +163,35 @@ pub fn snapshot() -> (kernel::physmem::AllocatorStats, bool) {
     })
 }
 
-pub struct Report {
-    bytes: [u8; 512],
-    len: usize,
-}
-impl core::fmt::Write for Report {
-    fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        let end = self.len.checked_add(text.len()).ok_or(core::fmt::Error)?;
-        if end > self.bytes.len() {
-            return Err(core::fmt::Error);
-        }
-        self.bytes[self.len..end].copy_from_slice(text.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}
-impl Report {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
+pub use kernel::memory_report::Report;
 
 pub fn report() -> Result<Report, core::fmt::Error> {
-    let (stats, consistent, live, kernel, denied, exhausted) = with_memory(|allocator, grants| {
-        (
-            allocator.stats(),
-            allocator.is_consistent()
-                && grants.is_consistent(allocator.allocated_frames(), |frame| {
-                    allocator.contains_live(frame)
-                }),
-            grants.live(),
-            grants.owner_frames(Owner::KERNEL),
-            grants.denied,
-            grants.exhausted,
-        )
-    });
-    let mut report = Report {
-        bytes: [0; 512],
-        len: 0,
-    };
-    stats.write_report(&mut report, consistent)?;
-    use core::fmt::Write;
-    writeln!(
-        report,
-        "grants_live={} capacity={} kernel={} user={}",
-        live,
-        GRANT_CAPACITY,
-        kernel,
-        live.saturating_sub(kernel)
-    )?;
-    writeln!(
-        report,
-        "grant_denials={} grant_exhaustion={}",
-        denied, exhausted
-    )?;
-    Ok(report)
+    let (stats, consistent, live, kernel, denied, exhausted, quota_denials) =
+        with_memory(|allocator, grants| {
+            (
+                allocator.stats(),
+                allocator.is_consistent()
+                    && grants.is_consistent(allocator.allocated_frames(), |frame| {
+                        allocator.contains_live(frame)
+                    }),
+                grants.live(),
+                grants.owner_frames(Owner::KERNEL),
+                grants.denied,
+                grants.exhausted,
+                grants.quota_denials,
+            )
+        });
+    Report::new(
+        stats,
+        consistent,
+        kernel::memory_report::Grants {
+            live,
+            kernel,
+            denied,
+            exhausted,
+            quota_denials,
+        },
+    )
 }
 
 #[cfg(feature = "memory-test-faults")]

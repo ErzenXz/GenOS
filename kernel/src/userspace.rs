@@ -5131,7 +5131,18 @@ pub fn run_memory_rollback_probe(elf_bytes: &[u8]) -> bool {
         memory::fail_after(None);
         let built = result.is_ok();
         let reclaimed = match result {
-            Ok(mut process) => reclaim_process(&mut process).is_ok(),
+            Ok(mut process) => {
+                // Socket EOF completes through this same copy-out helper. A
+                // zero-byte success must preserve bytes, but stale authority
+                // and addresses outside the data capability must still fail.
+                let before = copy_user_u64(&process, paging::USER_DATA, 8);
+                let eof = before.is_some()
+                    && copy_to_user_data(&process, paging::USER_DATA, &[])
+                    && !copy_to_user_data(&process, 0, &[])
+                    && copy_user_u64(&process, paging::USER_DATA, 8) == before;
+                let cleaned = reclaim_process(&mut process).is_ok();
+                eof && cleaned && !copy_to_user_data(&process, paging::USER_DATA, &[])
+            }
             Err(_) => true,
         };
         if !reclaimed || memory::allocated_frames() != baseline {
@@ -6422,12 +6433,13 @@ pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
     process.context = *frame;
     process.event = ProcessEvent::Preempt;
     process.preemptions = process.preemptions.saturating_add(1);
-    unsafe {
-        core::ptr::write_volatile(
-            (process.data_frame + core::mem::offset_of!(UserProcessHeader, preemptions) as u64)
-                as *mut u64,
-            process.preemptions,
-        );
+    if !paging::copy_to_user(
+        process.space,
+        paging::USER_DATA + core::mem::offset_of!(UserProcessHeader, preemptions) as u64,
+        &process.preemptions.to_le_bytes(),
+    ) {
+        terminate_process_fault(process, 13, 0, frame.rip, 0);
+        return true;
     }
     if process.preemptions == 1 {
         crate::serial::trace::print("USER_PREEMPT pid=");
@@ -7182,14 +7194,8 @@ fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64
     {
         return None;
     }
-    let physical = paging::translate(process.space, address)?;
-    let expected = process.data_frame + (address - paging::USER_DATA);
-    if physical != expected {
-        return None;
-    }
-    // SAFETY: the complete eight-byte range belongs to this process's data
-    // frame. Copy through its supervisor-only physical alias under SMAP.
-    Some(unsafe { core::ptr::read_unaligned(physical as *const u64) })
+    let mut bytes = [0; 8];
+    paging::copy_from_user(process.space, address, &mut bytes).then(|| u64::from_le_bytes(bytes))
 }
 
 fn console_line_kind(kind: u64) -> Option<LineKind> {
@@ -7216,17 +7222,13 @@ fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<Fi
     }
     let length = length as usize;
     let mut bytes = [0u8; 80];
-    for (index, slot) in bytes.iter_mut().take(length).enumerate() {
-        let virtual_address = address.checked_add(index as u64)?;
-        let physical = paging::translate(process.space, virtual_address)?;
-        // SAFETY: translation checks each byte inside the bounded owned user
-        // range; the supervisor alias remains mapped for the frame lifetime.
-        let byte = unsafe { core::ptr::read_volatile(physical as *const u8) };
-        *slot = if byte.is_ascii() && !byte.is_ascii_control() {
-            byte
-        } else {
-            b'?'
-        };
+    if !paging::copy_from_user(process.space, address, &mut bytes[..length]) {
+        return None;
+    }
+    for byte in &mut bytes[..length] {
+        if !byte.is_ascii() || byte.is_ascii_control() {
+            *byte = b'?';
+        }
     }
     let text = core::str::from_utf8(&bytes[..length]).ok()?;
     Some(FixedText::from_str(text))
@@ -7246,12 +7248,8 @@ fn copy_user_bytes(process: &UserProcess, address: u64, length: u64) -> Option<F
     }
     let mut data = FileWriteBuffer::empty();
     data.len = length as usize;
-    for (index, slot) in data.bytes.iter_mut().take(data.len).enumerate() {
-        let virtual_address = address.checked_add(index as u64)?;
-        let physical = paging::translate(process.space, virtual_address)?;
-        // SAFETY: bounded process-owned translation, accessed via supervisor
-        // alias. No STAC window or raw userspace dereference is required.
-        *slot = unsafe { core::ptr::read_volatile(physical as *const u8) };
+    if !paging::copy_from_user(process.space, address, &mut data.bytes[..data.len]) {
+        return None;
     }
     Some(data)
 }
@@ -7306,16 +7304,7 @@ fn valid_user_data_buffer(process: &UserProcess, address: u64, length: u64) -> b
     if !syscall::validate_user_buffer(address, length, paging::USER_DATA, paging::PAGE_SIZE) {
         return false;
     }
-    for offset in 0..length {
-        let virtual_address = address + offset;
-        let Some(physical) = paging::translate(process.space, virtual_address) else {
-            return false;
-        };
-        if physical != process.data_frame + (virtual_address - paging::USER_DATA) {
-            return false;
-        }
-    }
-    true
+    paging::valid_user_range(process.space, address, length as usize, true)
 }
 
 fn channel_message_bytes(message: &UserChannelMessage) -> &[u8] {
@@ -7328,19 +7317,14 @@ fn channel_message_bytes(message: &UserChannelMessage) -> &[u8] {
 }
 
 fn copy_to_user_data(process: &UserProcess, address: u64, bytes: &[u8]) -> bool {
-    if bytes.is_empty() {
-        return true;
-    }
-    if !valid_user_data_buffer(process, address, bytes.len() as u64) {
-        return false;
-    }
-    for (offset, byte) in bytes.iter().enumerate() {
-        let physical = process.data_frame + (address - paging::USER_DATA) + offset as u64;
-        unsafe {
-            core::ptr::write_volatile(physical as *mut u8, *byte);
-        }
-    }
-    true
+    syscall::validate_user_buffer(
+        address,
+        // EOF is a successful zero-byte transfer. Still validate the supplied
+        // data address and let paging reject a stale root without dereference.
+        bytes.len().max(1) as u64,
+        paging::USER_DATA,
+        paging::PAGE_SIZE,
+    ) && paging::copy_to_user(process.space, address, bytes)
 }
 
 fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> bool {
@@ -7361,19 +7345,16 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
             && paging::translate(process.space, paging::USER_STACK_GUARD).is_none()
             && process.elf_segments == 2
             && process.elf_pages == 2
-            && unsafe {
-                core::ptr::read_volatile(
-                    (process.data_frame + core::mem::offset_of!(UserProcessHeader, token) as u64)
-                        as *const u64,
-                )
-            } == process.token
-            && unsafe {
-                core::ptr::read_volatile(
-                    (process.data_frame
-                        + core::mem::offset_of!(UserProcessHeader, preemptions) as u64)
-                        as *const u64,
-                )
-            } == process.preemptions
+            && copy_user_u64(
+                process,
+                paging::USER_DATA + core::mem::offset_of!(UserProcessHeader, token) as u64,
+                8,
+            ) == Some(process.token)
+            && copy_user_u64(
+                process,
+                paging::USER_DATA + core::mem::offset_of!(UserProcessHeader, preemptions) as u64,
+                8,
+            ) == Some(process.preemptions)
     });
     let faulting = &processes[0];
     let healthy = &processes[1..];

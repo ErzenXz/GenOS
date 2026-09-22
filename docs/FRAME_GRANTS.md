@@ -6,8 +6,9 @@ A live bitmap bit previously proved only that somebody allocated an address.
 The physical release interface now requires a private-field `Grant` carrying an
 owner, monotonically increasing allocation generation, ledger slot and frame
 kind. `AddressSpace` keeps its root grant and its own never-recycled owner identity.
-This implements the first ownership slice of F3.1/F3.2 and user-alias denial in
-F2.1. It does not close those complete roadmap gates.
+Owner/grant identity remains a bounded F3 contract. The physical-alias policy
+now seals the sole supervisor alias before publishing user read-only/executable
+authority; device/shared lifetime rules remain separate.
 
 The pure `frame_grant::Ledger` is the production authority check, exercised by
 host tests. `memory` joins it to the existing physical bitmap inside one local
@@ -67,7 +68,11 @@ Keeping raw-address release would preserve the stale-address bug. Dense owner an
 generation metadata for every potential 8-GiB page would consume tens of MiB even
 when few frames are live. This bounded live ledger trades an explicit capacity
 limit and linear lookup for smaller static metadata and testable failure behavior.
-Contiguous allocation, shared grants, device pins and per-owner quotas remain open.
+The allocation interface grants one order-0 page only, with no multi-call
+contiguity promise. Explicit shared grants and device pins remain open. User
+owners now have a 64-frame ceiling including page tables; 256 ledger entries
+are reserved against user admission. See [MEMORY.md](MEMORY.md) for pressure
+and early-boot/runtime contracts.
 
 ## Verification and compatibility
 
@@ -91,6 +96,8 @@ exercise this same ownership path. Exact run results belong in VERIFICATION.md.
 
 No userspace ABI, image-layout version or storage format changes. All production
 callers migrate together; reverting requires reverting allocator, paging, loaders
-and their fixture call sites together. No disk migration is involved. Full physical
-W^X across the retained kernel identity map is still unimplemented; writable kernel
-aliases to executable user pages remain a separate F2.1 obligation.
+and their fixture call sites together. No disk migration is involved. Physical permission changes and supervisor alias retirement are described in
+[ADR0007](adr/0007-physical-alias-and-copy-authority.md) and
+[TLB_RETIREMENT.md](TLB_RETIREMENT.md). The kernel rejects extra firmware aliases,
+freezes bootstrap topology, and denies later user aliases/reprotection. CPU
+qualification results remain separate from these implementation contracts.

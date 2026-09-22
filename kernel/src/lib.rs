@@ -14,6 +14,7 @@ pub mod frame_grant;
 pub mod input;
 pub mod ipc;
 pub mod ipv6;
+pub mod memory_report;
 pub mod net;
 pub mod page_table;
 pub mod path_policy;
@@ -26,6 +27,7 @@ pub mod socket;
 pub mod stack;
 pub mod syscall;
 pub mod tasks;
+pub mod user_copy;
 pub mod vfs;
 pub mod xstate;
 

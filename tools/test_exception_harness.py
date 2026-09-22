@@ -22,6 +22,21 @@ def valid_log(mode="user", vector=6, error=0, cr2=0):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_physical_alias_faults_cannot_pass_without_sealing_or_exact_target(self):
+        marker = "PHYSICAL_ALIAS_POLICY_READY identity=only user_alias=sealed direct=nx\n"
+        for fault, error in [("alias-rx", 3), ("alias-ro", 3), ("direct-nx", 0x11)]:
+            log = ("CPU_PROTECTIONS_READY nx=1 wp=1 smep=1 smap=1\nIDT_READONLY_READY\n"
+                   + marker + "CPU_PROTECTION_PROBE_TARGET address=0x7000\n"
+                   + valid_log("kernel", 14, error, 0x7000))
+            validate_log(log, "kernel", fault)
+            for bad in (log.replace(marker, ""), log + marker,
+                        log.replace(marker, "") + marker,
+                        log.replace(marker, "forged " + marker),
+                        log.replace("cr2=0x7000", "cr2=0x8000"),
+                        log.replace(f"error=0x{error:x}", "error=0x2")):
+                with self.subTest(fault=fault), self.assertRaises(ValueError):
+                    validate_log(bad, "kernel", fault)
+
     def test_dirty_source_cannot_be_attributed_to_head(self):
         with patch("test_exception_entry.command_output", return_value=" M kernel/src/interrupts.rs"):
             with self.assertRaises(ValueError):

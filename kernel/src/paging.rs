@@ -24,6 +24,7 @@ const USER_PML4_INDEX: usize = 128;
 
 static mut KERNEL_ROOT: u64 = 0;
 static mut ACTIVE_ROOT: u64 = 0;
+static mut KERNEL_MAPPINGS_SEALED: bool = false;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpace {
@@ -78,6 +79,11 @@ pub fn init_protected_address_space() -> Result<(), PagingError> {
     if current == 0 {
         return Err(PagingError::MissingMapping);
     }
+    // SAFETY: loader/firmware provide the live identity-mapped table tree used
+    // by this CPU. Reject additional aliases before allocating a private clone.
+    if !unsafe { kernel::page_table::identity_mappings(&PhysicalTables, current) } {
+        return Err(PagingError::InvalidAddress);
+    }
     crate::serial::print("PAGING_CLONE_BEGIN root=0x");
     crate::serial::print_hex(current);
     crate::serial::println("");
@@ -102,7 +108,7 @@ pub fn init_protected_address_space() -> Result<(), PagingError> {
 
 pub fn create_user_address_space() -> Result<AddressSpace, PagingError> {
     let kernel_root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
-    if kernel_root == 0 {
+    if kernel_root == 0 || !unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) } {
         return Err(PagingError::MissingMapping);
     }
     let owner = memory::new_owner().ok_or(PagingError::OutOfMemory)?;
@@ -191,9 +197,11 @@ fn map_user_page_inner(
             if *pte & PRESENT != 0 {
                 return Err(PagingError::AddressInUse);
             }
-            if !memory::pin_mapping(grant, space.owner, virtual_address) {
-                return Err(PagingError::InvalidAddress);
-            }
+            // Seal the only kernel alias before publishing user authority.
+            // After this point all admission checks have passed under one
+            // critical section; pin publication cannot recoverably fail.
+            set_user_alias_writable(physical_address, writable)?;
+            assert!(memory::pin_mapping(grant, space.owner, virtual_address));
             *pte = physical_address | flags;
             Ok(())
         })()
@@ -230,6 +238,7 @@ pub fn protect_kernel_page(
 ) -> Result<(), PagingError> {
     let root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
     if root == 0
+        || unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) }
         || active_root() != root
         || address & (PAGE_SIZE - 1) != 0
         || !(PAGE_SIZE..USER_BASE).contains(&address)
@@ -393,25 +402,136 @@ pub fn protect_kernel_image() -> Result<(), PagingError> {
     Ok(())
 }
 
-pub fn activate(space: AddressSpace) {
-    assert!(
-        memory::is_live(space.authority),
-        "stale address-space activation"
-    );
-    unsafe {
-        write_cr3(space.root);
-        core::ptr::addr_of_mut!(ACTIVE_ROOT).write(space.root);
+/// Finish the bootstrap-only supervisor map. Thereafter no public API may
+/// change reserved/firmware/kernel permissions or create another physical alias.
+/// All allocator RAM has a 4-KiB NX identity leaf; every other retained leaf is
+/// NX except the read-only linked kernel text. User RO/RX publication can then
+/// tighten its one supervisor alias without allocating or changing neighbors.
+pub fn seal_kernel_mappings(boot_info: &genos_abi::BootInfo) -> Result<(), PagingError> {
+    if crate::arch::interrupts_enabled() || unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) }
+    {
+        return Err(PagingError::InvalidAddress);
     }
+    let regions = genos_abi::boot_memory::validate_map(&boot_info.memory_map)
+        .map_err(|_| PagingError::InvalidAddress)?;
+    for region in regions {
+        if region.kind != genos_abi::MemoryRegionKind::Usable {
+            continue;
+        }
+        let mut address = (region.start.max(PAGE_SIZE) + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let end = (region.start + region.size) & !(PAGE_SIZE - 1);
+        while address < end {
+            protect_kernel_page(address, true, false)?;
+            address = (address | ((1 << 21) - 1)) + 1;
+        }
+    }
+    unsafe extern "C" {
+        static __kernel_text_start: u8;
+        static __kernel_text_end: u8;
+    }
+    let text_start = core::ptr::addr_of!(__kernel_text_start) as u64;
+    let text_end = core::ptr::addr_of!(__kernel_text_end) as u64;
+    // SAFETY: BSP owns the fully cloned identity-only supervisor tree before
+    // process publication. Restriction is global across its future shared roots.
+    unsafe fn seal_table(physical: u64, level: u8, text_start: u64, text_end: u64) -> bool {
+        for slot in 0..ENTRY_COUNT {
+            let entry = table(physical)[slot];
+            if entry & PRESENT == 0 {
+                continue;
+            }
+            if level == 1 || entry & HUGE_OR_PAT != 0 {
+                let shift = 12 + 9 * (level - 1);
+                let frame = entry & TABLE_ADDRESS_MASK & !((1u64 << shift) - 1);
+                let end = frame + (1u64 << shift);
+                if frame < text_end && text_start < end {
+                    if level != 1 || frame < text_start || end > text_end || entry & WRITABLE != 0 {
+                        return false;
+                    }
+                } else {
+                    table_mut(physical)[slot] |= NO_EXECUTE;
+                }
+            } else if !seal_table(entry & TABLE_ADDRESS_MASK, level - 1, text_start, text_end) {
+                return false;
+            }
+        }
+        true
+    }
+    // SAFETY: IF clear, kernel root active and no user root exists; the CR3
+    // reload retires all old non-global permissions before runtime admission.
+    unsafe {
+        let root = *core::ptr::addr_of!(KERNEL_ROOT);
+        if root == 0 || root != active_root() || !seal_table(root, 4, text_start, text_end) {
+            return Err(PagingError::InvalidAddress);
+        }
+        write_cr3(root);
+        core::ptr::addr_of_mut!(KERNEL_MAPPINGS_SEALED).write(true);
+    }
+    crate::serial::println("PHYSICAL_ALIAS_POLICY_READY identity=only user_alias=sealed direct=nx");
+    Ok(())
+}
+
+/// Caller holds the BSP critical section and either has not yet published the
+/// user leaf or has unlinked it from an inactive, retired address space.
+fn set_user_alias_writable(frame: u64, writable: bool) -> Result<(), PagingError> {
+    // SAFETY: all managed RAM was split and sealed before user construction;
+    // shared supervisor tables remain live for the entire kernel lifetime.
+    unsafe {
+        if !*core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) || crate::arch::interrupts_enabled() {
+            return Err(PagingError::InvalidAddress);
+        }
+        let mut current = *core::ptr::addr_of!(KERNEL_ROOT);
+        for shift in [39, 30, 21] {
+            let entry = table(current)[index(frame, shift)];
+            if entry & PRESENT == 0 || entry & (USER | HUGE_OR_PAT) != 0 {
+                return Err(PagingError::InvalidAddress);
+            }
+            current = entry & TABLE_ADDRESS_MASK;
+        }
+        let entry = &mut table_mut(current)[index(frame, 12)];
+        if *entry & PRESENT == 0
+            || *entry & USER != 0
+            || *entry & NO_EXECUTE == 0
+            || *entry & TABLE_ADDRESS_MASK != frame
+        {
+            return Err(PagingError::InvalidAddress);
+        }
+        if writable {
+            *entry |= WRITABLE;
+        } else {
+            *entry &= !WRITABLE;
+        }
+        asm!("invlpg [{}]", in(reg) frame, options(nostack, preserves_flags));
+    }
+    Ok(())
+}
+
+pub fn activate(space: AddressSpace) {
+    crate::arch::without_interrupts(|| {
+        assert!(
+            memory::is_live(space.authority),
+            "stale address-space activation"
+        );
+        // SAFETY: the admitted BSP holds the live root authority; CR3 and its
+        // bookkeeping change atomically with respect to local interrupts.
+        unsafe {
+            write_cr3(space.root);
+            core::ptr::addr_of_mut!(ACTIVE_ROOT).write(space.root);
+        }
+    });
 }
 
 pub fn activate_kernel() {
-    let root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
-    if root != 0 {
-        unsafe {
-            write_cr3(root);
-            core::ptr::addr_of_mut!(ACTIVE_ROOT).write(root);
+    crate::arch::without_interrupts(|| {
+        let root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
+        if root != 0 {
+            // SAFETY: kernel root outlives the machine. This CR3 reload retires
+            // every previous private translation before teardown is admitted.
+            unsafe {
+                write_cr3(root);
+                core::ptr::addr_of_mut!(ACTIVE_ROOT).write(root);
+            }
         }
-    }
+    });
 }
 
 pub fn active_root() -> u64 {
@@ -457,6 +577,95 @@ pub fn translate(space: AddressSpace, virtual_address: u64) -> Option<u64> {
         return None;
     }
     translate_root(space.root, virtual_address)
+}
+
+/// Resolve only the exact owner's pinned 4-KiB user leaf, including effective
+/// ancestor permissions. Never return a supervisor/huge/foreign mapping as user
+/// memory. Called only with local IRQs masked for the complete copy lifetime.
+fn user_page(space: AddressSpace, address: u64, write: bool) -> Option<u64> {
+    if !memory::is_live(space.authority)
+        || !address.is_multiple_of(PAGE_SIZE)
+        || !(USER_BASE..USER_BASE + (1 << 39)).contains(&address)
+    {
+        return None;
+    }
+    // SAFETY: the live root grant and owner check protect every table lifetime.
+    // The BSP excludes mapping/teardown/scheduling until the caller finishes;
+    // each child grant is checked before dereference. No reference escapes.
+    unsafe {
+        let mut current = space.root;
+        for shift in [39, 30, 21, 12] {
+            memory::find_grant(space.owner, current, Kind::Table)?;
+            let entry = table(current)[index(address, shift)];
+            if entry & (PRESENT | USER) != PRESENT | USER
+                || (write && entry & WRITABLE == 0)
+                || (shift != 12 && entry & HUGE_OR_PAT != 0)
+            {
+                return None;
+            }
+            current = entry & TABLE_ADDRESS_MASK;
+        }
+        memory::mapping_matches(space.owner, current, address).then_some(current)
+    }
+}
+
+pub fn valid_user_range(space: AddressSpace, address: u64, length: usize, write: bool) -> bool {
+    crate::arch::without_interrupts(|| {
+        memory::is_live(space.authority)
+            && kernel::user_copy::Plan::new(address, length)
+                .and_then(|plan| plan.resolve(|page| user_page(space, page, write)))
+                .is_some()
+    })
+}
+
+pub fn copy_from_user(space: AddressSpace, address: u64, output: &mut [u8]) -> bool {
+    crate::arch::without_interrupts(|| {
+        let Some(plan) = kernel::user_copy::Plan::new(address, output.len()) else {
+            return false;
+        };
+        if !memory::is_live(space.authority) {
+            return false;
+        }
+        let Some(physical) = plan.resolve(|page| user_page(space, page, false)) else {
+            return false;
+        };
+        let mut offset = 0;
+        for (chunk, physical) in plan.chunks().iter().zip(physical) {
+            for (index, byte) in output[offset..offset + chunk.length].iter_mut().enumerate() {
+                // SAFETY: the complete plan was validated under the same BSP
+                // critical section. This supervisor alias belongs to a live,
+                // pinned user grant; no teardown, remap or user runs until exit.
+                *byte = unsafe { core::ptr::read_volatile((physical + index as u64) as *const u8) };
+            }
+            offset += chunk.length;
+        }
+        true
+    })
+}
+
+pub fn copy_to_user(space: AddressSpace, address: u64, input: &[u8]) -> bool {
+    crate::arch::without_interrupts(|| {
+        let Some(plan) = kernel::user_copy::Plan::new(address, input.len()) else {
+            return false;
+        };
+        if !memory::is_live(space.authority) {
+            return false;
+        }
+        let Some(physical) = plan.resolve(|page| user_page(space, page, true)) else {
+            return false;
+        };
+        let mut offset = 0;
+        for (chunk, physical) in plan.chunks().iter().zip(physical) {
+            for (index, &byte) in input[offset..offset + chunk.length].iter().enumerate() {
+                // SAFETY: every destination page and its effective writable
+                // authority was checked before the first write. The entire
+                // copy holds the BSP critical section; no raw user borrow lives.
+                unsafe { core::ptr::write_volatile((physical + index as u64) as *mut u8, byte) };
+            }
+            offset += chunk.length;
+        }
+        true
+    })
 }
 
 fn translate_root(root: u64, virtual_address: u64) -> Option<u64> {
@@ -648,6 +857,10 @@ unsafe fn release_user_table(owner: Owner, physical: u64, level: u8, base: u64) 
         let address = base + ((slot as u64) << (12 + 9 * (level - 1)));
         table_mut(physical)[slot] = 0;
         if level == 1 {
+            // The owning root is inactive and its prior CR3 was retired. No
+            // executable/read-only user translation survives this unlink.
+            // Restore write access only now, so scrub/reuse cannot defeat it.
+            set_user_alias_writable(frame, true).expect("validated supervisor alias");
             let grant =
                 memory::retire_mapping(owner, frame, address).expect("validated mapping pin");
             assert!(memory::free_frame(grant), "validated leaf ownership");
@@ -782,5 +995,170 @@ pub fn run_ownership_probe() -> bool {
             return false;
         }
         stale && memory::allocated_frames() == baseline && memory::snapshot().1
+    })
+}
+
+#[cfg(feature = "memory-test-faults")]
+pub fn run_pressure_probe() -> bool {
+    crate::arch::without_interrupts(|| {
+        let baseline = memory::allocated_frames();
+        for _ in 0..2 {
+            let Ok(space) = create_user_address_space() else {
+                return false;
+            };
+            let mut grants = [None; kernel::frame_grant::USER_FRAME_LIMIT - 1];
+            for grant in &mut grants {
+                let Ok(frame) = allocate_zeroed_frame(space) else {
+                    return false;
+                };
+                *grant = Some(frame);
+            }
+            let full = memory::allocated_frames();
+            if allocate_zeroed_frame(space) != Err(PagingError::OutOfMemory)
+                || memory::allocated_frames() != full
+                || memory::owner_frames(space.owner) != kernel::frame_grant::USER_FRAME_LIMIT
+            {
+                return false;
+            }
+            let Ok(witness) = create_user_address_space() else {
+                return false;
+            };
+            if destroy_user_address_space(witness) != Ok(1) {
+                return false;
+            }
+            for grant in grants.into_iter().flatten() {
+                // SAFETY: this probe retains every unpublished grant, with no
+                // references, mappings or device users; IRQs remain masked.
+                if !unsafe { memory::free_frame(grant) } {
+                    return false;
+                }
+            }
+            if destroy_user_address_space(space) != Ok(1) || memory::allocated_frames() != baseline
+            {
+                return false;
+            }
+        }
+        true
+    })
+}
+
+#[cfg(feature = "memory-test-faults")]
+pub fn run_user_copy_probe() -> bool {
+    crate::arch::without_interrupts(|| {
+        let baseline = memory::allocated_frames();
+        let Ok(space) = create_user_address_space() else {
+            return false;
+        };
+        let Ok(other) = create_user_address_space() else {
+            return false;
+        };
+        let Ok(data) = allocate_zeroed_frame(space) else {
+            return false;
+        };
+        let Ok(readonly) = allocate_zeroed_frame(space) else {
+            return false;
+        };
+        if map_user_page(space, USER_DATA, data, true, false).is_err() {
+            return false;
+        }
+        let edge = USER_DATA + PAGE_SIZE - 1;
+        if !copy_to_user(space, edge, &[0x31]) || copy_to_user(space, edge, &[0x41, 0x42]) {
+            return false;
+        }
+        let mut byte = [0];
+        if !copy_from_user(space, edge, &mut byte) || byte != [0x31] {
+            return false;
+        }
+        if map_user_page(space, USER_DATA + PAGE_SIZE, readonly, false, false).is_err()
+            || copy_to_user(space, edge, &[0x41, 0x42])
+        {
+            return false;
+        }
+        let mut pair = [0xff; 2];
+        if !copy_from_user(space, edge, &mut pair)
+            || pair != [0x31, 0]
+            || copy_to_user(other, USER_DATA, &[7])
+            || copy_to_user(space, readonly.address(), &[7])
+            || copy_to_user(space, USER_DATA | (1 << 63), &[7])
+        {
+            return false;
+        }
+        pair.fill(0xff);
+        if copy_from_user(other, edge, &mut pair) || pair != [0xff; 2] {
+            return false;
+        }
+        if destroy_user_address_space(space).is_err()
+            || destroy_user_address_space(other).is_err()
+            || copy_from_user(space, USER_DATA, &mut pair)
+            || copy_to_user(space, USER_DATA, &[])
+            || memory::allocated_frames() != baseline
+        {
+            return false;
+        }
+        true
+    })
+}
+
+#[cfg(feature = "memory-test-faults")]
+pub fn run_translation_probe() -> bool {
+    // SAFETY: fixtures below activate a live root with a known user byte. The
+    // BSP masks IRQs; this bounded read temporarily sets AC for the SMAP-enabled
+    // profile and restores all flags before returning. No user reference escapes.
+    unsafe fn read_user_byte(address: u64) -> u8 {
+        let value: u32;
+        asm!("pushfq", "pop {saved}", "mov {access}, {saved}", "or {access}, 0x40000",
+            "push {access}", "popfq", "movzx {value:e}, byte ptr [{address}]",
+            "push {saved}", "popfq", saved = out(reg) _, access = out(reg) _,
+            value = lateout(reg) value, address = in(reg) address, options(preserves_flags));
+        value as u8
+    }
+    crate::arch::without_interrupts(|| {
+        let baseline = memory::allocated_frames();
+        let Ok(first) = create_user_address_space() else {
+            return false;
+        };
+        let Ok(other) = create_user_address_space() else {
+            return false;
+        };
+        for (space, value) in [(first, 0xa1), (other, 0xb2)] {
+            let Ok(grant) = allocate_zeroed_frame(space) else {
+                return false;
+            };
+            if map_user_page(space, USER_DATA, grant, true, false).is_err()
+                || !copy_to_user(space, USER_DATA, &[value])
+            {
+                return false;
+            }
+        }
+        for (space, expected) in [(first, 0xa1), (other, 0xb2), (first, 0xa1)] {
+            activate(space);
+            // SAFETY: exact fixture mapping and AC/IRQ contract above.
+            if unsafe { read_user_byte(USER_DATA) } != expected {
+                return false;
+            }
+        }
+        activate_kernel();
+        if destroy_user_address_space(first).is_err() {
+            return false;
+        }
+        let Ok(reused) = create_user_address_space() else {
+            return false;
+        };
+        let Ok(grant) = allocate_zeroed_frame(reused) else {
+            return false;
+        };
+        if map_user_page(reused, USER_DATA, grant, true, false).is_err()
+            || !copy_to_user(reused, USER_DATA, &[0xc3])
+        {
+            return false;
+        }
+        activate(reused);
+        // SAFETY: exact live replacement mapping, never a stale grant.
+        let replaced = unsafe { read_user_byte(USER_DATA) } == 0xc3;
+        activate_kernel();
+        replaced
+            && destroy_user_address_space(reused).is_ok()
+            && destroy_user_address_space(other).is_ok()
+            && memory::allocated_frames() == baseline
     })
 }
