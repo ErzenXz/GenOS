@@ -38,6 +38,12 @@ class BspEvidenceTests(unittest.TestCase):
         for case in ("single", "quad", "repeat-entry", "repeat-init", "non-bsp"):
             validate_log(valid_log(case), case)
 
+    def test_single_cpu_without_htt_reports_unavailable_package_capacity(self):
+        log = valid_log("single").replace("per_package=1", "per_package=0")
+        validate_log(log, "single")
+        with self.assertRaises(ValueError):
+            validate_log(log.replace("active_cpus=1", "active_cpus=0"), "single")
+
     def test_each_required_line_is_necessary(self):
         for case in ("single", "quad", "repeat-entry", "repeat-init", "non-bsp"):
             log = valid_log(case)
