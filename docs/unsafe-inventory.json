@@ -328,9 +328,9 @@
       "sha256": "15fea950d2836df5329d9ea9bd0b759ee90e4049037eb4196d9cad875d79e4ad"
     },
     {
-      "lines": 2554,
+      "lines": 2568,
       "path": "tools/xtask/src/main.rs",
-      "sha256": "0a2f54530d368223ea721fd0dbb4515b6df14f9ccf1bc9002ec8eb8d2747dece"
+      "sha256": "37343d28089c7c87fa613253ab5135d5dab243adfbc4dac2baede8d710b70445"
     },
     {
       "lines": 477,
@@ -338,9 +338,9 @@
       "sha256": "a644897f726fd9139db93d96d53ffb187b502eef8204b914144f7bc7a9b2dc03"
     },
     {
-      "lines": 243,
+      "lines": 274,
       "path": "tools/xtask/src/reference_vm.rs",
-      "sha256": "c2614471e345b61acd2bece7863ae8730145650758935755ae3a25c4f6653cfd"
+      "sha256": "487d85eb218d78d2ad5b2c042e485a3d7100cd963575eda45389b962ec3ec1bc"
     },
     {
       "lines": 174,
