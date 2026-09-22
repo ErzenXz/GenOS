@@ -1,4 +1,5 @@
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::boot_cpu::{BootClaim, Features as BootFeatures};
 use kernel::stack::{GuardedStack, Layout as StackLayout, GUARD_BYTES};
 
@@ -13,6 +14,7 @@ use kernel::stack::{GuardedStack, Layout as StackLayout, GUARD_BYTES};
 compile_error!("kernel Rust must use the x86_64-unknown-none soft-float target without SIMD");
 
 static BOOT_CLAIM: BootClaim = BootClaim::new();
+static STACK_GUARDS_READY: AtomicBool = AtomicBool::new(false);
 const IA32_APIC_BASE: u32 = 0x1b;
 
 /// First operation at the kernel entry point, before UART, tables or memory.
@@ -67,13 +69,26 @@ pub unsafe extern "sysv64" fn enter_boot_stack(
     _entry: extern "sysv64" fn(&'static genos_abi::BootInfo) -> !,
 ) -> ! {
     core::arch::naked_asm!(
-        "lea rsp, [rip + {stack}]",
-        "add rsp, {size}",
+        // Fill before making the first kernel stack frame, preserving the two
+        // SysV argument registers in scratch GPRs across REP STOSQ. The range
+        // excludes both guard pages and remains reserved for this admitted BSP.
+        "mov r8, rdi",
+        "mov r9, rsi",
+        "lea rdi, [rip + {stack}]",
+        "add rdi, {guard}",
+        "mov rcx, {words}",
+        "mov rax, {watermark}",
+        "cld",
+        "rep stosq",
+        "mov rsp, rdi",
+        "mov rdi, r8",
         "xor ebp, ebp",
-        "call rsi",
+        "call r9",
         "ud2",
         stack = sym BOOT_STACK,
-        size = const GUARD_BYTES + BOOT_STACK_SIZE,
+        guard = const GUARD_BYTES,
+        words = const BOOT_STACK_SIZE / 8,
+        watermark = const kernel::stack::WATERMARK_WORD,
     );
 }
 
@@ -255,7 +270,66 @@ pub fn install_stack_guards() -> Result<(), crate::paging::PagingError> {
         }
     }
     crate::serial::println("KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096");
+    STACK_GUARDS_READY.store(true, Ordering::Release);
     Ok(())
+}
+
+/// Quiescent BSP measurements over usable storage only. No slice/reference is
+/// created over live stack frames; assembly reads sample physical word bits.
+pub fn stack_usage() -> Option<[(&'static str, usize, usize); 7]> {
+    if !STACK_GUARDS_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    without_interrupts(|| {
+        Some(stack_regions().map(|(name, region)| {
+            let capacity = (region.top - region.usable_start) as usize;
+            let used = kernel::stack::touched_bytes(capacity / 8, |index| {
+                let value: u64;
+                // SAFETY: this page-aligned usable range remains supervisor-
+                // mapped and the index is bounded by capacity/8. The scan never
+                // touches guards or creates typed reads/references to live Rust
+                // locals, padding or moved values: MOV samples hardware bits
+                // into a newly defined register output. IF is clear on the sole
+                // BSP; NMI/fatal paths do not return and mutate this sample.
+                unsafe {
+                    asm!(
+                        "mov {value}, qword ptr [{address}]",
+                        address = in(reg) region.usable_start + index as u64 * 8,
+                        value = out(reg) value,
+                        options(nostack, readonly, preserves_flags),
+                    );
+                }
+                value
+            })
+            .expect("bounded stack capacity");
+            (name, capacity, used)
+        }))
+    })
+}
+
+/// Retain measurements and enforce a one-page observed margin in qualification
+/// runs. Guard/probe policy supplies containment independently of this estimate.
+pub fn report_stack_usage() -> bool {
+    let Some(usage) = stack_usage() else {
+        return false;
+    };
+    let mut margin = true;
+    for (name, capacity, used) in usage {
+        let remaining = capacity - used;
+        crate::serial::print("KERNEL_STACK_USAGE name=");
+        crate::serial::print(name);
+        for (label, value) in [
+            (" capacity=", capacity),
+            (" touched=", used),
+            (" remaining=", remaining),
+        ] {
+            crate::serial::print(label);
+            crate::serial::print_u64(value as u64);
+        }
+        crate::serial::println("");
+        margin &= remaining >= kernel::stack::MIN_REMAINING_BYTES;
+    }
+    margin
 }
 
 pub fn init() {
@@ -306,7 +380,8 @@ fn init_xstate() -> bool {
     // SAFETY: the admitted BSP owns initialization with IF clear and no user
     // state yet. CPUID above establishes FXSAVE/SSE availability. CR0 disables
     // lazy #NM switching; CR4 enables SSE but forbids XSAVE-only components
-    // and user PKRU changes (PKE can enable those independently of OSXSAVE).
+    // and user PKRU/FS/GS base changes (PKE/FSGSBASE enable these independently
+    // of OSXSAVE). General TLS and protection-key interfaces are not exposed.
     // Clear AMD's optional fast-FXSAVE bit, which can omit XMM at CPL0. EFER
     // exists in long mode, and all other bits remain unchanged. These writes
     // alter no memory mappings or stack state; readback gates publication.
@@ -314,7 +389,8 @@ fn init_xstate() -> bool {
         asm!("mov {}, cr0", out(reg) cr0, options(nostack));
         asm!("mov {}, cr4", out(reg) cr4, options(nostack));
         cr0 = (cr0 | xstate::CR0_REQUIRED) & !xstate::CR0_FORBIDDEN;
-        cr4 = (cr4 | xstate::CR4_REQUIRED) & !(xstate::CR4_OSXSAVE | xstate::CR4_PKE);
+        cr4 = (cr4 | xstate::CR4_REQUIRED)
+            & !(xstate::CR4_OSXSAVE | xstate::CR4_PKE | xstate::CR4_FSGSBASE);
         asm!("mov cr0, {}", in(reg) cr0, options(nostack));
         asm!("mov cr4, {}", in(reg) cr4, options(nostack));
         asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") low, out("edx") high, options(nostack));
@@ -401,6 +477,16 @@ pub fn idt_address() -> u64 {
 
 unsafe fn init_gdt() {
     let regions = stack_regions();
+    for (_, region) in &regions[1..] {
+        // SAFETY: these six stacks are disjoint and have never been published
+        // in our TSS. IF is clear; the current boot stack was filled by naked
+        // entry and is deliberately excluded from this initialization loop.
+        core::ptr::write_bytes(
+            region.usable_start as *mut u8,
+            0xa5,
+            (region.top - region.usable_start) as usize,
+        );
+    }
     TSS.ist[(INTERRUPT_IST_INDEX - 1) as usize] = regions[1].1.top;
     // SAFETY: static storage lives for the kernel lifetime, is disjoint, and
     // has 16-byte aligned tops. The processor owns each emergency stack on

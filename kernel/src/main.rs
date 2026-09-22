@@ -262,6 +262,10 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         serial::println("UNIFIED_HANDLE_TABLE_READY");
         serial::println("ASYNC_REQUEST_IDENTITY_READY");
         serial::println("CONSOLE_TRANSCRIPT_READY");
+        if !arch::report_stack_usage() {
+            serial::println("KERNEL_STACK_BUDGET_FAILED");
+            arch::halt_loop();
+        }
     }
 
     serial::println("SERVER_TERMINAL_READY mode=serial ui=off");

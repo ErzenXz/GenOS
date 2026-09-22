@@ -25,13 +25,15 @@ from reference_vm import environment, load_profile, qemu_args
 STACK_SIZES = {"boot": 2 * 1024 * 1024, "irq": 64 * 1024, "privilege": 64 * 1024,
                "double-fault": 16 * 1024, "nmi": 16 * 1024,
                "machine-check": 16 * 1024, "debug": 16 * 1024}
-CASES = {"boot-lower": (0, "boot", "lower"), "privilege-lower": (2, "privilege", "lower"),
-         "irq-lower": (1, "irq", "lower"), "double-fault-upper": (3, "double-fault", "upper")}
+CASES = {f"{name}-{side}": (index, name, side)
+         for index, name in enumerate(STACK_SIZES) for side in ("lower", "upper")}
+CASES.update({"compiler-probe": (0, "boot", "probe"), "usage": (-1, "all", "usage")})
 READY = "KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096"
 REGION = re.compile(r"^STACK_GUARD_REGION name=([a-z-]+) lower=0x([0-9a-f]+)"
                     r" usable=0x([0-9a-f]+) top=0x([0-9a-f]+) end=0x([0-9a-f]+)$", re.MULTILINE)
-TARGET = re.compile(r"^STACK_GUARD_PROBE_TARGET stack=([a-z-]+) side=(lower|upper)"
+TARGET = re.compile(r"^STACK_GUARD_PROBE_TARGET stack=([a-z-]+) side=(lower|upper|probe)"
                     r" address=0x([0-9a-f]+)$", re.MULTILINE)
+USAGE = re.compile(r"^KERNEL_STACK_USAGE name=([a-z-]+) capacity=(\d+) touched=(\d+) remaining=(\d+)$", re.MULTILINE)
 
 
 def patch_fixture(root: Path, case: str) -> str:
@@ -55,9 +57,32 @@ def patch_fixture(root: Path, case: str) -> str:
         serial::println("");
     }
 '''
+    if case == "usage":
+        probe += '''
+    for (name, region) in arch::stack_regions() {
+        let distance = if name == "boot" { region.top - region.usable_start - 8192 } else { 8192 };
+        let pointer = region.top - distance;
+        // SAFETY: bounded fixture touches initialized private stack storage,
+        // away from every guard, then restores the live boot stack pointer.
+        unsafe { core::arch::asm!("mov r15, rsp", "mov rsp, {pointer}",
+            "mov qword ptr [rsp], 0", "mov rsp, r15", pointer = in(reg) pointer, out("r15") _); }
+    }
+    if !arch::report_stack_usage() { serial::println("STACK_USAGE_PROBE_FAILED"); arch::halt_loop(); }
+    serial::println("STACK_USAGE_PROBE_OK stacks=7");
+    arch::halt_loop();
+'''
+        after = replace_once(before, anchor, anchor + probe)
+        path.write_text(after)
+        return "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+            fromfile="a/kernel/src/main.rs", tofile="b/kernel/src/main.rs"))
     probe += f'    let region = arch::stack_regions()[{index}].1;\n'
     probe += ('    let target = region.usable_start - 8;\n' if side == "lower"
+              else '    let target = region.lower_guard;\n' if side == "probe"
               else '    let target = region.top;\n')
+    if side == "probe":
+        access = ('core::arch::asm!("mov r15, rsp", "mov rsp, {floor}", "call {probe}", "mov rsp, r15", '
+                  'floor = in(reg) region.usable_start + 4096, '
+                  'probe = in(reg) stack_depth_probe as *const (), out("r15") _, clobber_abi("C"));')
     probe += f'    serial::print("STACK_GUARD_PROBE_TARGET stack={name} side={side} address=0x");\n'
     probe += '    serial::print_hex(target); serial::println("");\n'
     probe += ('    // SAFETY: isolated, non-returning fault fixture uses the real production guard.\n'
@@ -65,6 +90,16 @@ def patch_fixture(root: Path, case: str) -> str:
               '    serial::println("STACK_GUARD_PROBE_RETURNED");\n'
               '    arch::halt_loop();\n')
     after = replace_once(before, anchor, anchor + probe)
+    if side == "probe":
+        after = replace_once(after, '#[panic_handler]', '''// The same pinned compiler/profile must probe this multipage frame before
+// crossing its guard. Keep the address escape so optimization retains storage.
+#[inline(never)]
+extern "C" fn stack_depth_probe() {
+    let mut bytes = [0u8; 12 * 1024];
+    core::hint::black_box(&mut bytes);
+}
+
+#[panic_handler]''')
     path.write_text(after)
     return "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
         fromfile="a/kernel/src/main.rs", tofile="b/kernel/src/main.rs"))
@@ -88,11 +123,30 @@ def validate_log(log: str, case: str) -> None:
     ordered = sorted(regions.values())
     if any(left[3] > right[0] for left, right in zip(ordered, ordered[1:])):
         raise ValueError("stack allocations overlap")
+    common = ["KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx", READY,
+              "EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated", "IDT_READONLY_READY",
+              *[match.group(0) for match in REGION.finditer(log)]]
+    if case == "usage":
+        samples = USAGE.findall(log)
+        if len(samples) != 7 or {sample[0] for sample in samples} != STACK_SIZES.keys():
+            raise ValueError("missing or duplicate stack usage")
+        for name, capacity, touched, remaining in samples:
+            capacity, touched, remaining = map(int, (capacity, touched, remaining))
+            required_touch = STACK_SIZES[name] - 8192 if name == "boot" else 8192
+            if (capacity != STACK_SIZES[name] or touched + remaining != capacity
+                    or touched % 8 or touched < required_touch or remaining < 4096):
+                raise ValueError("wrong measured usage or insufficient stack margin")
+        required = [*common, *[match.group(0) for match in USAGE.finditer(log)], "STACK_USAGE_PROBE_OK stacks=7"]
+        if (any(lines.count(marker) != 1 for marker in required)
+                or [lines.index(marker) for marker in required] != sorted(lines.index(marker) for marker in required)
+                or any("EXCEPTION_FRAME" in line or "_FAILED" in line or "GENOS_READY" in line for line in lines)):
+            raise ValueError("invalid usage proof phase or continuation")
+        return
     targets = TARGET.findall(log)
     if len(targets) != 1 or targets[0][:2] != (expected_name, expected_side):
         raise ValueError("missing, duplicated or wrong guard target")
     lower, usable, top, _ = regions[expected_name]
-    expected_address = usable - 8 if expected_side == "lower" else top
+    expected_address = usable - 8 if expected_side == "lower" else lower if expected_side == "probe" else top
     if int(targets[0][2], 16) != expected_address:
         raise ValueError("fault target is outside the selected guard")
     frames = FRAME.findall(log)
@@ -101,13 +155,14 @@ def validate_log(log: str, case: str) -> None:
     vector, cpl = (int(value) for value in frames[0][:2])
     error, rip, cs, flags, rsp, ss, cr2 = (int(value, 16) for value in frames[0][2:])
     if (vector != 14 or cpl != 0 or error != 2 or cs != 8 or ss != 16
-            or not rip or flags & (1 << 9) or cr2 != expected_address):
+            or not rip or flags & (1 << 9)
+            or (cr2 != expected_address if expected_side != "probe" else not lower <= cr2 < usable)):
         raise ValueError("guard did not cause the expected supervisor non-present write fault")
     if expected_side == "lower" and rsp != usable:
         raise ValueError("overflow probe did not fault with RSP at the stack floor")
-    required = ["KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx", READY,
-                "EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated", "IDT_READONLY_READY",
-                *[match.group(0) for match in REGION.finditer(log)], TARGET.search(log).group(0),
+    if expected_side == "probe" and not lower <= rsp <= usable + 4096:
+        raise ValueError("compiler skipped the guard before its first fault")
+    required = [*common, TARGET.search(log).group(0),
                 FRAME.search(log).group(0), "EXCEPTION_FATAL_HALT"]
     if any(lines.count(marker) != 1 for marker in required):
         raise ValueError("missing or duplicated ordered protection/fault proof")
@@ -136,7 +191,8 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
                 log = serial.read_text(errors="replace") if serial.exists() else ""
                 if process.poll() is not None:
                     raise RuntimeError(f"QEMU exited/reset unexpectedly: {process.returncode}")
-                if "EXCEPTION_FATAL_HALT" in log:
+                marker = "STACK_USAGE_PROBE_OK stacks=7" if case == "usage" else "EXCEPTION_FATAL_HALT"
+                if marker in log:
                     time.sleep(0.5)
                     if process.poll() is not None:
                         raise RuntimeError("QEMU exited/reset after apparent containment")
