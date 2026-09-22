@@ -47,6 +47,20 @@ impl<'a> Profile<'a> {
         if !is_sha256(values["firmware_sha256"]) {
             return Err("invalid reference firmware SHA256".into());
         }
+        // QEMU disables the other family when only one ipv4/ipv6 switch is
+        // explicit. Both address layouts below require an explicit dual stack.
+        let network: Vec<_> = values["network_backend"].split(',').collect();
+        for family in ["ipv4", "ipv6"] {
+            let switches: Vec<_> = network
+                .iter()
+                .filter(|part| part.starts_with(&format!("{family}=")))
+                .collect();
+            if switches.len() != 1 || **switches[0] != format!("{family}=on") {
+                return Err(format!(
+                    "reference network requires exactly one {family}=on"
+                ));
+            }
+        }
         Ok(Self(values))
     }
 
@@ -185,6 +199,23 @@ mod tests {
             SOURCE.replace("firmware_sha256=3309", "firmware_sha256=xyz"),
         ] {
             assert!(Profile::parse(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn dual_stack_backend_rejects_implicit_disabled_or_conflicting_families() {
+        assert!(Profile::parse(SOURCE).is_ok());
+        for family in ["ipv4", "ipv6"] {
+            for invalid in [
+                SOURCE.replace(&format!("{family}=on,"), ""),
+                SOURCE.replace(&format!("{family}=on"), &format!("{family}=off")),
+                SOURCE.replace(
+                    &format!("{family}=on"),
+                    &format!("{family}=on,{family}=off"),
+                ),
+            ] {
+                assert!(Profile::parse(&invalid).is_err());
+            }
         }
     }
 

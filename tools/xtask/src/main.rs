@@ -1280,12 +1280,17 @@ fn smoke_network_qemu() -> Result<(), String> {
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
     let (server_sender, server_receiver) = mpsc::channel();
+    let (server_stop_sender, server_stop_receiver) = mpsc::channel();
     let server = thread::spawn(move || {
         // Cross-architecture TCG and loaded CI hosts need the same 120-second
         // wall-clock budget as the other boot gates; evidence requirements are unchanged.
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut accepted = 0usize;
         while Instant::now() < deadline {
+            match server_stop_receiver.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -1328,6 +1333,8 @@ fn smoke_network_qemu() -> Result<(), String> {
     let firmware = find_ovmf_code()?;
     let serial_log = Path::new("build/serial-network.log");
     let _ = fs::remove_file(serial_log);
+    let qemu_log = Path::new("build/serial-network-qemu.log");
+    let stderr = File::create(qemu_log).map_err(|error| error.to_string())?;
     let mut child = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
@@ -1360,7 +1367,7 @@ fn smoke_network_qemu() -> Result<(), String> {
         .arg(format!("file:{}", serial_log.display()))
         .arg("-no-reboot")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|error| format!("failed to launch network QEMU smoke test: {error}"))?;
     let (inbound_trigger_sender, inbound_trigger_receiver) = mpsc::channel();
@@ -1558,6 +1565,8 @@ fn smoke_network_qemu() -> Result<(), String> {
     }
     let _ = child.kill();
     let _ = child.wait();
+    let _ = server_stop_sender.send(());
+    drop(inbound_trigger_sender);
     let server_ok = server_receiver
         .recv_timeout(Duration::from_secs(2))
         .unwrap_or(false);
@@ -1573,7 +1582,8 @@ fn smoke_network_qemu() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "network smoke failed (markers={passed} http_server={server_ok} inbound_clients={inbound_ok}); serial:\n{output}"
+            "network smoke failed (markers={passed} http_server={server_ok} inbound_clients={inbound_ok}); QEMU stderr ({}):\n{}\nserial:\n{output}",
+            qemu_log.display(), fs::read_to_string(qemu_log).unwrap_or_default()
         ))
     }
 }
@@ -1582,6 +1592,8 @@ fn smoke_network_without_http_server() -> Result<(), String> {
     let firmware = find_ovmf_code()?;
     let serial_log = Path::new("build/serial-network-normal-run.log");
     let _ = fs::remove_file(serial_log);
+    let qemu_log = Path::new("build/serial-network-normal-run-qemu.log");
+    let stderr = File::create(qemu_log).map_err(|error| error.to_string())?;
     let mut child = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
@@ -1611,7 +1623,7 @@ fn smoke_network_without_http_server() -> Result<(), String> {
         .arg(format!("file:{}", serial_log.display()))
         .arg("-no-reboot")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|error| format!("failed to launch normal network boot test: {error}"))?;
     let required = [
@@ -1667,7 +1679,9 @@ fn smoke_network_without_http_server() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "normal network boot did not degrade safely; serial:\n{output}"
+            "normal network boot did not degrade safely; QEMU stderr ({}):\n{}\nserial:\n{output}",
+            qemu_log.display(),
+            fs::read_to_string(qemu_log).unwrap_or_default()
         ))
     }
 }
