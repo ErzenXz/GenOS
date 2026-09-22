@@ -70,14 +70,29 @@ transition campaign is separate evidence and is not implied by the ISA cases.
 ```sh
 cargo test -p kernel --lib xstate
 python3 -m unittest discover -s tools -p test_cpu_feature_harness.py
-python3 tools/test_cpu_features.py
+python3 tools/test_cpu_features.py --lane kernel
+python3 tools/test_cpu_features.py --lane firmware-limit
 ```
 
 The CPU harness requires a clean commit and retains an independent source
 archive, deliberate fixture diff, exact QEMU arguments, image hash, serial log
 and success/failure manifest for each case under `build/cpu-feature-evidence`.
-The matrix contains eighteen cases: six missing-feature CPUs, all four SMEP/SMAP
-combinations, and eight isolated unsupported/privileged instructions. Hardware
+The matrix contains twenty cases: six missing-feature CPUs, all four SMEP/SMAP
+combinations, eight isolated unsupported/privileged instructions and two
+explicitly injected CPUID samples. The named lanes preserve all cases:
+
+- `kernel` runs eighteen reproducible kernel checks: four actual missing-feature
+  CPUs, four SMEP/SMAP combinations, eight ISA instructions and two CPUID samples.
+  Every case must pass; any failure makes the command return nonzero.
+- `firmware-limit` runs the two actual unsupported FXSR/SSE variants. On the
+  pinned firmware these remain failed cases, with retained evidence and a
+  nonzero command result. This is a separate platform-limitation investigation,
+  not a passing kernel qualification lane.
+- `all` (also the default) attempts all twenty cases, retains every result and
+  returns nonzero if any failed. It continues collecting after a failure; it
+  neither drops firmware cases nor turns their resets into success.
+
+`--case` selects a single case and cannot be combined with `--lane`. Hardware
 variants change the CPU argument explicitly; they do not replace the reference
 CPU or silently count as reference qualification.
 
@@ -87,6 +102,26 @@ pass. A firmware fault, reset, timeout, missing marker or continued application
 admission fails; some firmware may itself require these architectural features.
 Such failures must be retained and described, not relabeled as successful kernel
 admission tests.
+
+On the pinned firmware, actual `fxsr=off` and `sse=off` variants reset before
+loader/kernel serial output. QEMU exception traces show firmware #UD followed
+by a triple fault; the FXSR case first recurses through its exception handler.
+These are observed firmware prerequisites and retained platform failures, not
+deliberate kernel containment. Both variants admit no applications, but they
+cannot demonstrate the kernel's rejection branch because the kernel never runs.
+
+The independent `sample-fxsr` and `sample-sse` fixtures boot the real reference
+CPU. Immediately before the production XSTATE admission predicate, each checks
+that hardware reports the selected feature, logs `actual=1 admitted_sample=0`,
+and clears only that bit in the sample passed to the unchanged predicate. The
+kernel must then emit its exact unsupported-state diagnostic and halt before
+publishing the GDT/IDT. The fixture changes no CR/MSR write, fault handler,
+application mapping, or admission decision. Its manifest says **injected CPUID
+sample**, and this evidence must never be described as a physical absent-feature
+boot. Run these explicitly with `--case sample-fxsr` and `--case sample-sse`.
+The actual `missing-fxsr`/`missing-sse` cases retain their strict kernel-marker
+requirement and fail on this firmware; even when all eighteen kernel checks
+pass, the `all` command reports the two platform failures and returns nonzero.
 
 ISA cases use QEMU's `max` CPU as an explicitly named test variant. Each extension
 case checks its real CPUID feature bit before launching the faulting application;
