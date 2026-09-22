@@ -116,6 +116,11 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
             arch::halt_loop();
         }
         serial::println("MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero");
+        if !paging::run_ownership_probe() {
+            serial::println("FRAME_OWNERSHIP_FAILED");
+            arch::halt_loop();
+        }
+        serial::println("FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true");
         serial::println("IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored");
     }
     #[cfg(feature = "memory-test-faults")]

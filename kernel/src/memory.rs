@@ -1,6 +1,9 @@
 use genos_abi::{BootInfo, MemoryRegionKind};
-use kernel::physmem::{scrub_page, AllocatorStats, FrameAllocator, KERNEL_BITMAP_WORDS, PAGE_SIZE};
+pub use kernel::frame_grant::{Grant, Kind, Owner};
+use kernel::frame_grant::{Ledger, GRANT_CAPACITY};
+use kernel::physmem::{scrub_page, FrameAllocator, KERNEL_BITMAP_WORDS, PAGE_SIZE};
 
+static mut GRANTS: Ledger<GRANT_CAPACITY> = Ledger::new();
 static mut ALLOCATOR: FrameAllocator<KERNEL_BITMAP_WORDS> = FrameAllocator::new();
 #[cfg(feature = "memory-test-faults")]
 static mut FAIL_AFTER: Option<usize> = None;
@@ -34,10 +37,19 @@ pub fn init(boot_info: &BootInfo) {
 /// The closure cannot return an allocator borrow. NMI/fatal handlers must not
 /// call this module; the boot admission gate excludes other CPUs.
 fn with_allocator<R>(operation: impl FnOnce(&mut FrameAllocator<KERNEL_BITMAP_WORDS>) -> R) -> R {
+    with_memory(|allocator, _| operation(allocator))
+}
+
+fn with_memory<R>(
+    operation: impl FnOnce(&mut FrameAllocator<KERNEL_BITMAP_WORDS>, &mut Ledger<GRANT_CAPACITY>) -> R,
+) -> R {
     crate::arch::without_interrupts(|| {
         // SAFETY: the admitted BSP is the sole owner. Local IRQs are masked
         // before creating this exclusive reference and no borrow escapes it.
-        operation(unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) })
+        operation(
+            unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) },
+            unsafe { &mut *core::ptr::addr_of_mut!(GRANTS) },
+        )
     })
 }
 
@@ -47,8 +59,8 @@ pub fn usable_bytes() -> u64 {
 }
 
 /// Return an exclusively granted, zero-filled identity-mapped physical frame.
-pub fn alloc_frame() -> Option<u64> {
-    with_allocator(|allocator| {
+pub fn alloc_frame(owner: Owner, kind: Kind) -> Option<Grant> {
+    with_memory(|allocator, grants| {
         #[cfg(feature = "memory-test-faults")]
         // SAFETY: the same IRQ-masked BSP section protects fault configuration.
         unsafe {
@@ -59,14 +71,15 @@ pub fn alloc_frame() -> Option<u64> {
                 core::ptr::addr_of_mut!(FAIL_AFTER).write(Some(remaining - 1));
             }
         }
-        let frame = allocator.alloc_frame()?;
+        let grant = grants.allocate(owner, kind, || allocator.alloc_frame())?;
+        let frame = grant.address();
         // SAFETY: the bitmap just granted this usable, aligned page exclusively.
         // Firmware/retained supervisor identity mappings cover managed RAM.
         // It is zeroed before any caller can publish a user or table mapping.
         unsafe {
             core::ptr::write_bytes(frame as *mut u8, 0, PAGE_SIZE as usize);
         }
-        Some(frame)
+        Some(grant)
     })
 }
 
@@ -80,23 +93,52 @@ pub fn fail_after(allocations: Option<usize>) {
     });
 }
 
-/// Validation precedes all stores; the bitmap stays allocated through scrubbing.
+/// Validate allocation identity and mapping pins before touching the page.
 ///
 /// # Safety
-/// If the address names a live grant, the caller must own it exclusively and
-/// retire mappings, references and device access before release. Invalid/unissued
-/// addresses are rejected. A live bit cannot establish caller identity.
-pub unsafe fn free_frame(frame: u64) -> bool {
-    with_allocator(|allocator| {
-        allocator.free_frame_with(frame, |frame| {
-            // SAFETY: the live-grant check established aligned managed RAM before
-            // this callback. The caller retired all users, the BSP owns this page,
-            // IRQs are masked, and supervisor identity mappings still cover it.
-            let page = unsafe { &mut *(frame as *mut [u8; PAGE_SIZE as usize]) };
-            scrub_page(page);
-            true
+/// The grant holder must retire Rust references, hardware translations and any
+/// device access before release. Possession of an address is not authority.
+pub unsafe fn free_frame(grant: Grant) -> bool {
+    with_memory(|allocator, grants| {
+        grants.release(grant, |frame| {
+            allocator.free_frame_with(frame, |frame| {
+                // SAFETY: ledger identity and the live bitmap were validated before
+                // entering this callback. Caller retired users; the BSP owns this
+                // page with IRQs masked and a retained supervisor identity mapping.
+                let page = unsafe { &mut *(frame as *mut [u8; PAGE_SIZE as usize]) };
+                scrub_page(page);
+                true
+            })
         })
     })
+}
+
+pub fn new_owner() -> Option<Owner> {
+    with_memory(|_, grants| grants.new_owner())
+}
+pub fn is_live(grant: Grant) -> bool {
+    with_memory(|_, grants| grants.is_live(grant))
+}
+pub fn find_grant(owner: Owner, frame: u64, kind: Kind) -> Option<Grant> {
+    with_memory(|_, grants| grants.find(owner, frame, kind))
+}
+pub fn can_map(grant: Grant, owner: Owner) -> bool {
+    with_memory(|_, grants| grants.can_bind(grant, owner))
+}
+pub fn pin_mapping(grant: Grant, owner: Owner, address: u64) -> bool {
+    with_memory(|_, grants| grants.bind(grant, owner, address))
+}
+pub fn mapping_matches(owner: Owner, frame: u64, address: u64) -> bool {
+    with_memory(|_, grants| grants.mapping_matches(owner, frame, address))
+}
+/// # Safety
+/// The exact PTE must be removed and translations retired before this call.
+/// No DMA or other aliases may still reference this exclusively mapped frame.
+pub unsafe fn retire_mapping(owner: Owner, frame: u64, address: u64) -> Option<Grant> {
+    with_memory(|_, grants| grants.retire(owner, frame, address))
+}
+pub fn owner_frames(owner: Owner) -> usize {
+    with_memory(|_, grants| grants.owner_frames(owner))
 }
 
 pub fn allocated_frames() -> u64 {
@@ -108,8 +150,17 @@ pub fn recycled_frames() -> usize {
     with_allocator(|allocator| allocator.recycled_frames())
 }
 
-pub fn snapshot() -> (AllocatorStats, bool) {
-    with_allocator(|allocator| (allocator.stats(), allocator.is_consistent()))
+#[cfg(feature = "memory-test-faults")]
+pub fn snapshot() -> (kernel::physmem::AllocatorStats, bool) {
+    with_memory(|allocator, grants| {
+        (
+            allocator.stats(),
+            allocator.is_consistent()
+                && grants.is_consistent(allocator.allocated_frames(), |frame| {
+                    allocator.contains_live(frame)
+                }),
+        )
+    })
 }
 
 pub struct Report {
@@ -134,12 +185,38 @@ impl Report {
 }
 
 pub fn report() -> Result<Report, core::fmt::Error> {
-    let (stats, consistent) = snapshot();
+    let (stats, consistent, live, kernel, denied, exhausted) = with_memory(|allocator, grants| {
+        (
+            allocator.stats(),
+            allocator.is_consistent()
+                && grants.is_consistent(allocator.allocated_frames(), |frame| {
+                    allocator.contains_live(frame)
+                }),
+            grants.live(),
+            grants.owner_frames(Owner::KERNEL),
+            grants.denied,
+            grants.exhausted,
+        )
+    });
     let mut report = Report {
         bytes: [0; 512],
         len: 0,
     };
     stats.write_report(&mut report, consistent)?;
+    use core::fmt::Write;
+    writeln!(
+        report,
+        "grants_live={} capacity={} kernel={} user={}",
+        live,
+        GRANT_CAPACITY,
+        kernel,
+        live.saturating_sub(kernel)
+    )?;
+    writeln!(
+        report,
+        "grant_denials={} grant_exhaustion={}",
+        denied, exhausted
+    )?;
     Ok(report)
 }
 
@@ -147,9 +224,10 @@ pub fn report() -> Result<Report, core::fmt::Error> {
 pub fn run_hygiene_probe() -> bool {
     crate::arch::without_interrupts(|| {
         let baseline = allocated_frames();
-        let Some(frame) = alloc_frame() else {
+        let Some(grant) = alloc_frame(Owner::KERNEL, Kind::User) else {
             return false;
         };
+        let frame = grant.address();
         // SAFETY: validation owns the exact grant and its physical identity map.
         // IRQs stay masked throughout poisoning, release, inspection and reuse.
         // The post-release reads deliberately inspect the free page before any
@@ -160,32 +238,41 @@ pub fn run_hygiene_probe() -> bool {
             for offset in 0..PAGE_SIZE {
                 core::ptr::write_volatile((frame + offset) as *mut u8, 0xa5);
             }
-            let denied = !free_frame(frame + 1) && !free_frame(0);
+            let denied = find_grant(Owner::KERNEL, frame + 1, Kind::User).is_none()
+                && find_grant(Owner::KERNEL, 0, Kind::User).is_none();
             let poison_intact = denied
                 && (0..PAGE_SIZE)
                     .all(|offset| core::ptr::read_volatile((frame + offset) as *const u8) == 0xa5);
-            let erased = free_frame(frame)
+            let erased = free_frame(grant)
                 && (0..PAGE_SIZE)
                     .all(|offset| core::ptr::read_volatile((frame + offset) as *const u8) == 0);
             (initial_zero, poison_intact, erased)
         };
         // SAFETY: this probe owns the original identity; a retired grant is
         // deliberately retried to check rejection before any physical access.
-        let double_denied = unsafe { !free_frame(frame) };
-        let Some(reused) = alloc_frame() else {
+        let double_denied = unsafe { !free_frame(grant) };
+        let Some(fresh) = alloc_frame(Owner::KERNEL, Kind::User) else {
             return false;
         };
-        // SAFETY: the new live grant remains exclusively owned by this probe.
-        let reuse_zero = unsafe {
-            (0..PAGE_SIZE)
-                .all(|offset| core::ptr::read_volatile((reused + offset) as *const u8) == 0)
+        let reused = fresh.address();
+        // SAFETY: this fresh identity owns the complete page. Check zeroing,
+        // then poison it so stale release would observably damage its new owner.
+        let (reuse_zero, stale_denied) = unsafe {
+            let zero = (0..PAGE_SIZE)
+                .all(|offset| core::ptr::read_volatile((reused + offset) as *const u8) == 0);
+            core::ptr::write_bytes(reused as *mut u8, 0x5a, PAGE_SIZE as usize);
+            let denied = !free_frame(grant)
+                && (0..PAGE_SIZE)
+                    .all(|offset| core::ptr::read_volatile((reused + offset) as *const u8) == 0x5a);
+            (zero, denied)
         };
         // SAFETY: the new grant is owned only by this probe and is not mapped to a user.
-        let returned = unsafe { free_frame(reused) };
+        let returned = unsafe { free_frame(fresh) };
         initial_zero
             && poison_intact
             && erased
             && double_denied
+            && stale_denied
             && reused == frame
             && reuse_zero
             && returned

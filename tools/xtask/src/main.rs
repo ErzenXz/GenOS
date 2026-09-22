@@ -564,6 +564,7 @@ fn test_memory() -> Result<(), String> {
                 "FRAME_ALLOCATOR_BITMAP_READY",
                 "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
                 "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
+                "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
                 "IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored",
                 "USER_SHELL_READY",
                 "GENOS_READY",
