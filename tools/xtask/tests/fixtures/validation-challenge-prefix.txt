@@ -1,0 +1,72 @@
+SERIAL_RX_OK
+eUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=101
+USER_INPUT_BLOCK pid=33 mask=1
+cUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=99
+USER_INPUT_BLOCK pid=33 mask=1
+hUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=104
+USER_INPUT_BLOCK pid=33 mask=1
+oUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=111
+USER_INPUT_BLOCK pid=33 mask=1
+ USER_INPUT_WAKE pid=33 kind=1 code=1 value0=32
+USER_INPUT_BLOCK pid=33 mask=1
+GUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=71
+USER_INPUT_BLOCK pid=33 mask=1
+EUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=69
+USER_INPUT_BLOCK pid=33 mask=1
+NUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=78
+USER_INPUT_BLOCK pid=33 mask=1
+OUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=79
+USER_INPUT_BLOCK pid=33 mask=1
+SUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=83
+USER_INPUT_BLOCK pid=33 mask=1
+_USER_INPUT_WAKE pid=33 kind=1 code=1 value0=95
+USER_INPUT_BLOCK pid=33 mask=1
+RUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=82
+USER_INPUT_BLOCK pid=33 mask=1
+UUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=85
+USER_INPUT_BLOCK pid=33 mask=1
+NUSER_INPUT_WAKE pid=33 kind=1 code=1 value0=78
+USER_INPUT_BLOCK pid=33 mask=1
+_USER_INPUT_WAKE pid=33 kind=1 code=1 value0=95
+USER_INPUT_BLOCK pid=33 mask=1
+1USER_INPUT_WAKE pid=33 kind=1 code=1 value0=49
+USER_INPUT_BLOCK pid=33 mask=1
+7USER_INPUT_WAKE pid=33 kind=1 code=1 value0=55
+USER_INPUT_BLOCK pid=33 mask=1
+9USER_INPUT_WAKE pid=33 kind=1 code=1 value0=57
+USER_INPUT_BLOCK pid=33 mask=1
+0USER_INPUT_WAKE pid=33 kind=1 code=1 value0=48
+USER_INPUT_BLOCK pid=33 mask=1
+0USER_INPUT_WAKE pid=33 kind=1 code=1 value0=48
+USER_INPUT_BLOCK pid=33 mask=1
+7USER_INPUT_WAKE pid=33 kind=1 code=1 value0=55
+USER_INPUT_BLOCK pid=33 mask=1
+7USER_INPUT_WAKE pid=33 kind=1 code=1 value0=55
+USER_INPUT_BLOCK pid=33 mask=1
+6USER_INPUT_WAKE pid=33 kind=1 code=1 value0=54
+USER_INPUT_BLOCK pid=33 mask=1
+7USER_INPUT_WAKE pid=33 kind=1 code=1 value0=55
+USER_INPUT_BLOCK pid=33 mask=1
+9USER_INPUT_WAKE pid=33 kind=1 code=1 value0=57
+USER_INPUT_BLOCK pid=33 mask=1
+3USER_INPUT_WAKE pid=33 kind=1 code=1 value0=51
+USER_INPUT_BLOCK pid=33 mask=1
+9USER_INPUT_WAKE pid=33 kind=1 code=1 value0=57
+USER_INPUT_BLOCK pid=33 mask=1
+4USER_INPUT_WAKE pid=33 kind=1 code=1 value0=52
+USER_INPUT_BLOCK pid=33 mask=1
+9USER_INPUT_WAKE pid=33 kind=1 code=1 value0=57
+USER_INPUT_BLOCK pid=33 mask=1
+0USER_INPUT_WAKE pid=33 kind=1 code=1 value0=48
+USER_INPUT_BLOCK pid=33 mask=1
+7USER_INPUT_WAKE pid=33 kind=1 code=1 value0=55
+USER_INPUT_BLOCK pid=33 mask=1
+0USER_INPUT_WAKE pid=33 kind=1 code=1 value0=48
+USER_INPUT_BLOCK pid=33 mask=1
+0USER_INPUT_WAKE pid=33 kind=1 code=1 value0=48
+USER_INPUT_BLOCK pid=33 mask=1
+0USER_INPUT_WAKE pid=33 kind=1 code=1 value0=48
+USER_INPUT_BLOCK pid=33 mask=1
+
+USER_INPUT_WAKE pid=33 kind=1 code=2 value0=0
+USER_CONSOLE_WRITE pid=33 text=/> echo GENOS_RUN_1790077679394907000

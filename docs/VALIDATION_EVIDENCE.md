@@ -26,7 +26,10 @@ Each run must satisfy all of the following:
   half-close and EOF. The no-HTTP variant rejects HTTP/TCP/passive success proofs.
 - A fresh run-specific `echo GENOS_RUN_<id>` command sent only after the proof
   contract completes, followed by its exact command echo and response. A stale,
-  unsolicited, duplicated or embedded token fails. The serial-input lane also
+  unsolicited, duplicated or embedded token fails. Validation builds must provide
+  both exact `USER_CONSOLE_WRITE pid=... text=...` diagnostics from one process
+  and their visible Ring 3 `/> ...` prompt/response; diagnostics alone never pass.
+  Normal mode retains its separate untraced `genos> ...` contract. The serial-input lane also
   requires a newly issued `uname`, its command echo, exact ABI/version response
   and receive record; an old boot banner cannot satisfy it.
 - The emulator remains alive while collecting another 500 ms of output after
