@@ -17,7 +17,7 @@ mod storage;
 mod userspace;
 
 use core::panic::PanicInfo;
-use genos_abi::{BootInfo, BOOT_INFO_MAGIC, BOOT_INFO_VERSION};
+use genos_abi::BootInfo;
 use kernel::tasks::{TaskRegistry, TaskState};
 use kernel::vfs::RamVfs;
 
@@ -42,10 +42,25 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         "BOOT_MODE normal"
     });
 
-    if boot_info.magic != BOOT_INFO_MAGIC || boot_info.version != BOOT_INFO_VERSION {
-        serial::println("Invalid BootInfo; halting");
+    unsafe extern "C" {
+        static __kernel_text_start: u8;
+        static __kernel_data_end: u8;
+    }
+    let kernel_start = core::ptr::addr_of!(__kernel_text_start) as u64;
+    let kernel_end = core::ptr::addr_of!(__kernel_data_end) as u64;
+    if kernel_end <= kernel_start
+        || genos_abi::boot_memory::validate_boot_info(
+            boot_info,
+            core::ptr::from_ref(boot_info) as u64,
+            kernel_start,
+            kernel_end - kernel_start,
+        )
+        .is_err()
+    {
+        serial::println("BOOT_INFO_REJECTED");
         arch::halt_loop();
     }
+    serial::println("BOOT_MEMORY_MAP_VALIDATED");
 
     arch::init();
     if !kernel::recovery::boundary_is_minimal() {

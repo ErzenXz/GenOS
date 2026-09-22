@@ -1,5 +1,39 @@
 # Managed-frame memory contract
 
+## Firmware handoff admission
+
+The loader decodes UEFI version-1 descriptor prefixes from bytes using the
+firmware's returned stride. Extended and unaligned strides are supported without
+constructing potentially misaligned descriptor references. Empty/truncated maps,
+unknown descriptor versions, more than 256 descriptors, zero/overflowing or
+unaligned ranges, and any overlapping ranges are rejected. Unknown memory types,
+runtime-attributed descriptors and boot-services memory remain reserved. No
+descriptor is silently discarded to fit the BootInfo capacity.
+
+Before architecture tables or allocation initialize, the kernel validates the
+versioned BootInfo, command-line bounds/UTF-8, complete map, framebuffer extent,
+and retained coverage of the linker-defined kernel image, BootInfo object and
+initrd. Coverage may span adjacent descriptors in an unsorted map, but may not
+cross a gap or usable-memory region. The allocator checks map validity again.
+`BOOT_MEMORY_MAP_VALIDATED` means these admission checks passed. Rejected input
+halts with `BOOT_MEMORY_MAP_REJECTED` in the loader or `BOOT_INFO_REJECTED` in
+the kernel; the loader's fatal path never calls boot services after exit.
+
+The handoff still trusts the loader to provide a mapped, aligned, live Rust
+BootInfo object with valid enum representations and a correctly loaded kernel.
+This is not validation of an arbitrary pointer or a hostile firmware implementation.
+The pinned `uefi` 0.36.1 helper owns map allocation and retries ExitBootServices
+once for a stale key; it does not provide an exhaustive map-growth/retry fault
+campaign. Those firmware interactions and kernel ELF loading still need their
+own F1.1 review. The ABI layout and version are unchanged.
+
+`cargo test -p genos_abi` tests malformed map bytes and handoff bounds.
+`python3 tools/test_boot_memory.py` builds immutable source fixtures and tests
+six actual VM rejection paths; each retains the patch, image/environment hashes,
+serial log and pass/failure manifest under `build/boot-memory-evidence/`.
+
+## Allocator execution ownership
+
 The single admitted BSP owns the physical allocator. Initialization uses static
 storage with local interrupts disabled; subsequent allocation, release, snapshots
 and injection configuration use a scoped IRQ-masked section. Nested sections

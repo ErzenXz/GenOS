@@ -9,12 +9,11 @@ pub fn init(boot_info: &BootInfo) {
     // SAFETY: BSP initialization with interrupts disabled is the only owner.
     // Initialize in static storage to avoid copying the 256-KiB bitmap.
     let allocator = unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) };
-    for region in boot_info
-        .memory_map
-        .regions
-        .iter()
-        .take(boot_info.memory_map.region_count as usize)
-    {
+    let Ok(regions) = genos_abi::boot_memory::validate_map(&boot_info.memory_map) else {
+        crate::serial::println("FRAME_ALLOCATOR_MAP_REJECTED invalid_handoff=true");
+        crate::arch::halt_loop();
+    };
+    for region in regions {
         if region.kind == MemoryRegionKind::Usable && !allocator.add_region(*region) {
             crate::serial::println("FRAME_ALLOCATOR_MAP_REJECTED overlap_or_capacity=true");
             crate::arch::halt_loop();
