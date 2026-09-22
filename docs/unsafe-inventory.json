@@ -378,9 +378,9 @@
       "sha256": "0bcd4e4236697784b24308dd275904c9b88f48febb91e065667d92f9e9c1e575"
     },
     {
-      "lines": 838,
+      "lines": 865,
       "path": "tools/xtask/src/evidence_contract.rs",
-      "sha256": "e1f6ebc8930e669a425d9f53eb17ae0aff76660ffefdbe71dc19decbc0b6695e"
+      "sha256": "61adfcbd2a720daade546dc27a648b72edbf9b23f3bb024a21f783324576b664"
     },
     {
       "lines": 2371,
