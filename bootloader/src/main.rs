@@ -8,7 +8,7 @@ mod elf;
 use alloc::vec::Vec;
 use core::ptr::{addr_of_mut, copy_nonoverlapping};
 use core::{mem::size_of, panic::PanicInfo, time::Duration};
-use genos_abi::{BootInfo, MemoryRegion, MemoryRegionKind, BOOTLOADER_VERSION, MAX_MEMORY_REGIONS};
+use genos_abi::{boot_memory, BootInfo, BOOTLOADER_VERSION};
 use uefi::boot::{self, AllocateType, MemoryType};
 use uefi::fs::FileSystem;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
@@ -67,9 +67,21 @@ fn boot_main() -> Result<(), Status> {
     boot_info.initrd = initrd_info;
     boot_info.set_cmdline(CMDLINE);
 
+    // Release file/protocol owners before ExitBootServices. Loaded segments,
+    // initrd and BootInfo have separate retained page allocations.
+    drop(fs);
+    drop(kernel);
+    drop(initrd);
+    // SAFETY: no boot-service protocol or pool owner is used after this call.
+    // uefi 0.36.1 owns the map buffer and retries a stale exit key once.
     let memory_map = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
-    fill_memory_map(&mut boot_info, &memory_map);
+    if fill_memory_map(&mut boot_info, &memory_map).is_err() {
+        halt_after_exit(b"BOOT_MEMORY_MAP_REJECTED\r\n");
+    }
 
+    // SAFETY: boot_info_ptr is a retained, aligned page allocation; the loaded
+    // ELF supplies the trusted SysV64 kernel entry. Neither operation returns
+    // to boot services, and the handoff object remains live indefinitely.
     unsafe {
         addr_of_mut!(*boot_info_ptr).write(boot_info);
         let entry: KernelEntry = core::mem::transmute(loaded_kernel.entry);
@@ -118,40 +130,53 @@ fn allocate_boot_info() -> Result<*mut BootInfo, Status> {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {
-        boot::stall(Duration::from_secs(1));
-    }
+    halt_after_exit(b"BOOTLOADER_PANIC\r\n")
 }
 
-fn fill_memory_map(boot_info: &mut BootInfo, map: &MemoryMapOwned) {
-    let mut count = 0usize;
-    for desc in map.entries() {
-        if count >= MAX_MEMORY_REGIONS {
-            break;
-        }
-        boot_info.memory_map.regions[count] = MemoryRegion {
-            start: desc.phys_start,
-            size: desc.page_count * 4096,
-            kind: classify_memory(desc.ty),
-        };
-        count += 1;
-    }
-    boot_info.memory_map.region_count = count as u64;
+fn fill_memory_map(
+    boot_info: &mut BootInfo,
+    map: &MemoryMapOwned,
+) -> Result<(), boot_memory::BootMemoryError> {
+    let meta = map.meta();
+    let bytes = map
+        .buffer()
+        .get(..meta.map_size)
+        .ok_or(boot_memory::BootMemoryError::DescriptorLength)?;
+    boot_info.memory_map = boot_memory::decode_uefi_map(bytes, meta.desc_size, meta.desc_version)?;
+    Ok(())
 }
 
-fn classify_memory(kind: MemoryType) -> MemoryRegionKind {
-    match kind {
-        MemoryType::CONVENTIONAL => MemoryRegionKind::Usable,
-        MemoryType::LOADER_CODE | MemoryType::LOADER_DATA => MemoryRegionKind::Bootloader,
-        // Keep firmware boot-services memory reserved until GenOS can prove that no active
-        // page table or firmware-owned structure still references it.
-        MemoryType::BOOT_SERVICES_CODE | MemoryType::BOOT_SERVICES_DATA => {
-            MemoryRegionKind::Reserved
+/// Fatal handoff errors cannot call boot services (including stall/printing).
+fn halt_after_exit(message: &[u8]) -> ! {
+    // SAFETY: this x86_64 loader owns the boot CPU. Bounded COM1 port access has
+    // no memory aliases; no firmware operation or allocator is called. CLI/HLT
+    // deliberately prevents continuation with a rejected map, even if no UART
+    // exists. The assembly clobbers only its declared AL/DX registers.
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+        for (port, byte) in [
+            (0x3f9u16, 0u8),
+            (0x3fb, 0x80),
+            (0x3f8, 3),
+            (0x3f9, 0),
+            (0x3fb, 3),
+            (0x3fa, 0xc7),
+            (0x3fc, 0x0b),
+        ] {
+            core::arch::asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack));
         }
-        MemoryType::ACPI_RECLAIM | MemoryType::ACPI_NON_VOLATILE => MemoryRegionKind::Acpi,
-        MemoryType::MMIO | MemoryType::MMIO_PORT_SPACE | MemoryType::PAL_CODE => {
-            MemoryRegionKind::Mmio
+        for &byte in message {
+            for _ in 0..100_000 {
+                let status: u8;
+                core::arch::asm!("in al, dx", in("dx") 0x3fdu16, out("al") status, options(nomem, nostack));
+                if status & 0x20 != 0 {
+                    core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") byte, options(nomem, nostack));
+                    break;
+                }
+            }
         }
-        _ => MemoryRegionKind::Reserved,
+        loop {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
     }
 }

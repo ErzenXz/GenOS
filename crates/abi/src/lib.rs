@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod boot_memory;
+
 pub const BOOT_INFO_MAGIC: u64 = 0x4745_4e4f_535f_4249; // GENOS_BI
 pub const BOOT_INFO_VERSION: u32 = 1;
 pub const BOOTLOADER_VERSION: u32 = 1;
