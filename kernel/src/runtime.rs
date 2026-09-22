@@ -450,35 +450,49 @@ impl RuntimeCoordinator {
                     }
                 }
                 if allowed && request.path.as_str().eq_ignore_ascii_case("/MEMORY.STATUS") {
-                    // Snapshot once at open; subsequent reads see this bounded
-                    // diagnostic file. It is outside the persistent /USER volume
-                    // and the ordinary capability policy denies all user writes.
-                    allowed = crate::memory::report().is_ok_and(|report| {
-                        self.vfs.write("/MEMORY.STATUS", report.as_bytes()).is_ok()
-                    });
+                    // Capture once, then attach the complete report to the exact
+                    // read-only capability. Other opens cannot replace its bytes.
+                    let report = crate::memory::report().ok();
+                    self.processes.complete_file_open_snapshot(
+                        request,
+                        report.as_ref().map(|report| report.as_bytes()),
+                    )
+                } else {
+                    let info = allowed
+                        .then(|| self.vfs.find(request.path.as_str()))
+                        .flatten()
+                        .and_then(|node| match node.kind() {
+                            NodeKind::File if !manageable => Some(userspace::FileOpenInfo {
+                                size: node.len() as u64,
+                                kind: genos_abi::USER_FILE_KIND_REGULAR,
+                            }),
+                            NodeKind::File => None,
+                            NodeKind::Directory => Some(userspace::FileOpenInfo {
+                                size: 0,
+                                kind: genos_abi::USER_FILE_KIND_DIRECTORY,
+                            }),
+                        });
+                    self.processes.complete_file_open(request, info)
                 }
-                let info = allowed
-                    .then(|| self.vfs.find(request.path.as_str()))
-                    .flatten()
-                    .and_then(|node| match node.kind() {
-                        NodeKind::File if !manageable => Some(userspace::FileOpenInfo {
-                            size: node.len() as u64,
-                            kind: genos_abi::USER_FILE_KIND_REGULAR,
-                        }),
-                        NodeKind::File => None,
-                        NodeKind::Directory => Some(userspace::FileOpenInfo {
-                            size: 0,
-                            kind: genos_abi::USER_FILE_KIND_DIRECTORY,
-                        }),
-                    });
-                self.processes.complete_file_open(request, info)
             }
             userspace::UserVfsRequest::Read(request) => {
-                let bytes = self.vfs.read(request.path.as_str()).ok().map(|data| {
-                    let start = (request.offset as usize).min(data.len());
-                    &data[start..]
-                });
-                self.processes.complete_file_read(request, bytes)
+                if request.handle == 0
+                    && request.path.as_str().eq_ignore_ascii_case("/MEMORY.STATUS")
+                {
+                    // The legacy path-read syscall has no open lifetime. Each
+                    // such operation receives one fresh bounded sample.
+                    let report = crate::memory::report().ok();
+                    self.processes.complete_file_read(
+                        request,
+                        report.as_ref().map(|report| report.as_bytes()),
+                    )
+                } else {
+                    let bytes = self.vfs.read(request.path.as_str()).ok().map(|data| {
+                        let start = (request.offset as usize).min(data.len());
+                        &data[start..]
+                    });
+                    self.processes.complete_file_read(request, bytes)
+                }
             }
             userspace::UserVfsRequest::Write(request) => {
                 let written = if self.persistent_write_denied(request.path.as_str()) {
