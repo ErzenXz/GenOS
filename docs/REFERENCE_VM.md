@@ -38,6 +38,7 @@ Profile v3 additionally enables both `ipv4=on` and `ipv6=on` explicitly. QEMU
 otherwise disables IPv4 when only the IPv6 switch is supplied, rejecting the
 configured IPv4 subnet/host/DNS before guest startup. Both profile parsers reject
 missing, disabled or conflicting protocol switches.
+This follows QEMU's [user-network option semantics](https://www.qemu.org/docs/master/system/qemu-manpage.html#network-options).
 
 The profile spells out IPv4 subnet `10.0.2.0/24`, host `10.0.2.2`, DHCP start
 `10.0.2.15`, DNS `10.0.2.3`, IPv6 prefix `fec0::/64`, host `fec0::2` and DNS

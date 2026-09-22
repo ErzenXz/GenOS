@@ -112,6 +112,11 @@ scheduler does not establish fairness/priority behavior for broad workloads, quo
 priority inversion or multicore scaling. Full POSIX, fork and dynamic linking are
 possible later design choices, not requirements to copy another OS. **Roadmap:** C1–C5.
 
+The linked validation shell uses 32,656 of its 32,768 executable bytes (112 bytes
+spare); the normal shell uses 17,200 bytes. Further validation growth needs shared
+or separate test programs within explicit image budgets. Clippy alone does not
+establish that an executable fits; actual linking remains required.
+
 ## Storage integrity and scale
 
 Current persistence uses two bounded GFS2 snapshots on the ATA/MBR reference path,

@@ -121,6 +121,7 @@ must not deepen a known ownership or isolation violation.
 - [x] Separate normal debug/release, validation, no-NIC, network, storage and CPU proof commands exist locally.
 - [x] Serial logs, image/source identities, fixture patches and scoped manifests exist; new CI jobs are configured in the local branch.
 - [x] A versioned VM candidate and exact tool/firmware preflight exist; new normal evidence requires a fresh serial challenge, ordered readiness, unique retained run files and failure details. CPU-state and exception proofs reject duplicate/wrong-phase records.
+- [x] September 22 local checks passed the complete suite, six malformed-boot cases, five BSP cases, eight original exceptions, strict reference acceptance and ten consecutive release boots. [Exact commits and limits](docs/VERIFICATION.md#september-22-foundation-implementation-and-verification) are part of the claim; no release level advanced.
 - [ ] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
 - [ ] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
   The candidate settings and upgrade procedure are implemented in [REFERENCE_VM.md](docs/REFERENCE_VM.md). Broader feature-matrix qualification and reproducible artifact acquisition remain open.
