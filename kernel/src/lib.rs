@@ -24,6 +24,7 @@ pub mod socket;
 pub mod syscall;
 pub mod tasks;
 pub mod vfs;
+pub mod xstate;
 
 #[cfg(test)]
 extern crate self as kernel;

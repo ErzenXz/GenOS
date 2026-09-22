@@ -1,6 +1,16 @@
 use core::arch::asm;
 use kernel::boot_cpu::{BootClaim, Features as BootFeatures};
 
+// Entry can leave a user's floating-point state live while Rust handles the
+// trap. The pinned bare-metal soft-float target must never consume that state.
+#[cfg(any(
+    target_feature = "sse",
+    target_feature = "sse2",
+    target_feature = "avx",
+    target_feature = "avx512f"
+))]
+compile_error!("kernel Rust must use the x86_64-unknown-none soft-float target without SIMD");
+
 static BOOT_CLAIM: BootClaim = BootClaim::new();
 const IA32_APIC_BASE: u32 = 0x1b;
 
@@ -181,6 +191,10 @@ pub fn init() {
     if !BOOT_CLAIM.begin_table_init(features, apic_base) {
         halt_loop();
     }
+    if !init_xstate() {
+        crate::serial::println("CPU_XSTATE_UNSUPPORTED required=x87,mmx,fxsr,sse,sse2");
+        halt_loop();
+    }
     crate::serial::print("SMP_DISABLED policy=bsp-only active_cpus=1 initial_apic_id=");
     crate::serial::print_u64(u64::from(features.initial_apic_id));
     crate::serial::print(" cpuid_max_logical_per_package=");
@@ -206,6 +220,47 @@ pub fn init() {
         asm!("lidt [{}]", in(reg) &ptr, options(readonly, nostack, preserves_flags));
     }
     crate::serial::println("IDT initialized");
+}
+
+fn init_xstate() -> bool {
+    use core::arch::x86_64::__cpuid;
+    use kernel::xstate;
+    if __cpuid(0).eax < 1 || !xstate::supported(__cpuid(1).edx) {
+        return false;
+    }
+    let (mut cr0, mut cr4): (u64, u64);
+    let (mut low, high): (u32, u32);
+    // SAFETY: the admitted BSP owns initialization with IF clear and no user
+    // state yet. CPUID above establishes FXSAVE/SSE availability. CR0 disables
+    // lazy #NM switching; CR4 enables SSE but forbids XSAVE-only components.
+    // Clear AMD's optional fast-FXSAVE bit, which can omit XMM at CPL0. EFER
+    // exists in long mode, and all other bits remain unchanged. These writes
+    // alter no memory mappings or stack state; readback gates publication.
+    unsafe {
+        asm!("mov {}, cr0", out(reg) cr0, options(nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack));
+        cr0 = (cr0 | xstate::CR0_REQUIRED) & !xstate::CR0_FORBIDDEN;
+        cr4 = (cr4 | xstate::CR4_REQUIRED) & !xstate::CR4_OSXSAVE;
+        asm!("mov cr0, {}", in(reg) cr0, options(nostack));
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack));
+        asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") low, out("edx") high, options(nostack));
+        low &= !(xstate::EFER_FFXSR as u32);
+        asm!("wrmsr", in("ecx") 0xc000_0080u32, in("eax") low, in("edx") high, options(nostack));
+        asm!("mov {}, cr0", out(reg) cr0, options(nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack));
+    }
+    let (low, high): (u32, u32);
+    // SAFETY: same single-BSP EFER contract; this read verifies the write.
+    unsafe {
+        asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") low, out("edx") high, options(nostack));
+    }
+    if !xstate::configured(cr0, cr4, (u64::from(high) << 32) | u64::from(low)) {
+        return false;
+    }
+    crate::serial::println(
+        "CPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float",
+    );
+    true
 }
 
 /// Called only after the supervisor-only page-table clone is active: enabling
