@@ -9,6 +9,7 @@ pub mod display;
 pub mod elf;
 pub mod endpoint;
 pub mod exception;
+pub mod file_snapshot;
 pub mod frame_grant;
 pub mod input;
 pub mod ipc;

@@ -24,6 +24,7 @@ use kernel::{
     display::{FixedText, LineKind},
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     endpoint::{EndpointRole, EndpointState, PendingReceive, QueueResult},
+    file_snapshot::FileSnapshots,
     input::{InputEvent, KeyEvent, MouseButtons},
     request::RequestSequence,
     socket::{
@@ -709,6 +710,7 @@ struct ManagedProcess {
     request_ids: RequestSequence,
     handles: HandleTable<HANDLE_TABLE_CAPACITY>,
     file_handles: [Option<FileCapability>; FILE_HANDLE_CAPACITY],
+    file_snapshots: FileSnapshots<FILE_HANDLE_CAPACITY>,
     next_file_generation: u64,
     endpoints: EndpointState,
     sockets: SocketSet,
@@ -854,6 +856,7 @@ struct FileCapability {
     size: u64,
     kind: u64,
     rights: u64,
+    snapshot: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -910,6 +913,7 @@ impl ManagedProcess {
             request_ids: RequestSequence::new(),
             handles,
             file_handles: [None; FILE_HANDLE_CAPACITY],
+            file_snapshots: FileSnapshots::new(),
             next_file_generation: 1,
             endpoints,
             sockets: SocketSet::new(),
@@ -932,8 +936,16 @@ impl ManagedProcess {
         path: FixedText,
         info: FileOpenInfo,
         rights: u64,
+        snapshot: Option<&[u8]>,
     ) -> Option<u64> {
         if rights == 0 || rights & !USER_FILE_RIGHTS_MASK != 0 {
+            return None;
+        }
+        if snapshot.is_some_and(|bytes| {
+            rights != USER_FILE_RIGHT_READ
+                || info.kind != USER_FILE_KIND_REGULAR
+                || info.size != bytes.len() as u64
+        }) {
             return None;
         }
         let slot = self.file_handles.iter().position(Option::is_none)?;
@@ -943,6 +955,11 @@ impl ManagedProcess {
         if !self.handles.register(handle, HandleKind::File, rights) {
             return None;
         }
+        if snapshot.is_some_and(|bytes| !self.file_snapshots.insert(handle, bytes, &self.handles)) {
+            let revoked = self.handles.unregister(handle, HandleKind::File);
+            debug_assert!(revoked);
+            return None;
+        }
         self.file_handles[slot] = Some(FileCapability {
             handle,
             path,
@@ -950,6 +967,7 @@ impl ManagedProcess {
             size: info.size,
             kind: info.kind,
             rights,
+            snapshot: snapshot.is_some(),
         });
         Some(handle)
     }
@@ -1000,6 +1018,7 @@ impl ManagedProcess {
             return false;
         }
         self.file_handles[slot] = None;
+        self.file_snapshots.remove(handle);
         true
     }
 
@@ -1061,6 +1080,7 @@ impl ManagedProcess {
         });
         self.handles.clear();
         self.file_handles = [None; FILE_HANDLE_CAPACITY];
+        self.file_snapshots.clear();
         self.endpoints.clear_payload();
         self.pending_file_open = None;
         self.pending_file_read = None;
@@ -1115,10 +1135,27 @@ impl ManagedProcess {
         {
             return false;
         }
+        if self.file_snapshots.len()
+            != self
+                .file_handles
+                .iter()
+                .flatten()
+                .filter(|capability| capability.snapshot)
+                .count()
+        {
+            return false;
+        }
         if self.file_handles.iter().flatten().any(|capability| {
-            !self
-                .handles
-                .allows(capability.handle, HandleKind::File, capability.rights)
+            let snapshot = self.file_snapshots.size(capability.handle);
+            (capability.snapshot != snapshot.is_some())
+                || snapshot.is_some_and(|size| {
+                    capability.size != size as u64
+                        || capability.kind != USER_FILE_KIND_REGULAR
+                        || capability.rights != USER_FILE_RIGHT_READ
+                })
+                || !self
+                    .handles
+                    .allows(capability.handle, HandleKind::File, capability.rights)
                 || self.handles.allows(
                     capability.handle,
                     HandleKind::EndpointSend,
@@ -1152,6 +1189,7 @@ impl ManagedProcess {
     fn resources_are_revoked(&self) -> bool {
         self.handles.is_empty()
             && self.file_handles.iter().all(Option::is_none)
+            && self.file_snapshots.is_empty()
             && self.endpoints.resources_are_revoked()
             && self.sockets.len_owner(SocketOwner {
                 slot: self.key.slot,
@@ -3038,6 +3076,7 @@ impl ProcessManager {
                         let handle = entry.expect("matched file capability").handle;
                         let removed = managed.handles.unregister(handle, HandleKind::File);
                         debug_assert!(removed);
+                        managed.file_snapshots.remove(handle);
                         *entry = None;
                     }
                 }
@@ -3592,6 +3631,27 @@ impl ProcessManager {
         request: FileOpenRequest,
         info: Option<FileOpenInfo>,
     ) -> Result<ProcessUpdate, LaunchError> {
+        self.complete_file_open_inner(request, info, None)
+    }
+
+    pub fn complete_file_open_snapshot(
+        &mut self,
+        request: FileOpenRequest,
+        bytes: Option<&[u8]>,
+    ) -> Result<ProcessUpdate, LaunchError> {
+        let info = bytes.map(|bytes| FileOpenInfo {
+            size: bytes.len() as u64,
+            kind: USER_FILE_KIND_REGULAR,
+        });
+        self.complete_file_open_inner(request, info, bytes)
+    }
+
+    fn complete_file_open_inner(
+        &mut self,
+        request: FileOpenRequest,
+        info: Option<FileOpenInfo>,
+        snapshot: Option<&[u8]>,
+    ) -> Result<ProcessUpdate, LaunchError> {
         let managed = self
             .slots
             .iter_mut()
@@ -3631,7 +3691,7 @@ impl ProcessManager {
                 }
             })
             .and_then(|metadata| {
-                managed.allocate_file_handle(request.path, metadata, request.rights)
+                managed.allocate_file_handle(request.path, metadata, request.rights, snapshot)
             });
         if handle.is_some() {
             OPENED_FILE_HANDLES.fetch_add(1, Ordering::AcqRel);
@@ -4076,10 +4136,33 @@ impl ProcessManager {
         {
             return Err(LaunchError::InvalidResult);
         }
+        let snapshot = if pending.handle != 0 {
+            let capability = managed
+                .file_handle(pending.handle, USER_FILE_RIGHT_READ)
+                .ok_or(LaunchError::InvalidResult)?;
+            if capability.path != pending.path || capability.offset != pending.offset {
+                return Err(LaunchError::InvalidResult);
+            }
+            capability.snapshot
+        } else {
+            false
+        };
         let pending = managed
             .pending_file_read
             .take()
             .ok_or(LaunchError::InvalidResult)?;
+        // A synthetic file never falls back to the shared VFS bytes. Its
+        // exact handle owns the immutable sample captured at successful open.
+        let data = if snapshot {
+            managed.file_snapshots.read(
+                pending.handle,
+                pending.offset,
+                pending.capacity,
+                &managed.handles,
+            )
+        } else {
+            data
+        };
         let copied = data.and_then(|bytes| {
             let length = bytes.len().min(pending.capacity as usize);
             (length == 0 || copy_to_user_data(&managed.process, pending.address, &bytes[..length]))
