@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 
 KEYS = frozenset(("profile", "machine", "cpu", "accel", "memory", "smp", "qemu_version",
-                  "rust_release", "firmware_sha256", "boot_drive", "storage_controller",
+                  "rust_release", "firmware_sha256", "boot_drive", "boot_device", "boot_order", "storage_controller",
                   "storage_device", "network_backend", "network_device"))
 
 
@@ -42,7 +42,8 @@ def qemu_args(cpus: int = 1, root: Path | None = None) -> list[str]:
     profile = load_profile(root)
     topology = profile["smp"] if cpus == 1 else "4,sockets=1,cores=4,threads=1"
     return ["qemu-system-x86_64", "-machine", profile["machine"], "-cpu", profile["cpu"],
-            "-accel", profile["accel"], "-m", profile["memory"], "-smp", topology]
+            "-accel", profile["accel"], "-m", profile["memory"],
+            "-boot", profile["boot_order"], "-device", profile["boot_device"], "-smp", topology]
 
 
 def mismatches(profile: dict[str, str], rust: str, qemu: str, firmware_sha256: str) -> list[str]:

@@ -1062,7 +1062,7 @@ fn smoke_qemu() -> Result<(), String> {
             "USER_STORAGE_FAILURE_VISIBLE_OK",
             "STORAGE_FAILURE_SURFACE_READY",
             "USER_RAMFS_TEMP_APP_OK",
-            "USER_SESSION_WRITE_OK",
+            "USER_STORAGE_UNAVAILABLE_MUTATION_DENIED_OK",
             "USER_SHELL_READY",
         ],
         false,
@@ -1117,7 +1117,10 @@ fn smoke_qemu_phase(
         .spawn()
         .map_err(|e| format!("failed to launch qemu smoke test: {e}"))?;
 
-    let deadline = Instant::now() + Duration::from_secs(if require_full_smoke { 60 } else { 20 });
+    // Firmware alone took about 20 seconds on a loaded cross-architecture
+    // host. Every phase gets the existing full-smoke deadline, including cold
+    // firmware startup; this timeout is a liveness bound, not a latency target.
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut output = String::new();
     let mut ready_at = None;
     while Instant::now() < deadline {

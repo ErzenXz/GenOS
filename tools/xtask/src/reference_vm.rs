@@ -13,6 +13,8 @@ const KEYS: &[&str] = &[
     "rust_release",
     "firmware_sha256",
     "boot_drive",
+    "boot_device",
+    "boot_order",
     "storage_controller",
     "storage_device",
     "network_backend",
@@ -82,6 +84,8 @@ pub fn command() -> Result<Command, String> {
         ("-cpu", "cpu"),
         ("-accel", "accel"),
         ("-m", "memory"),
+        ("-boot", "boot_order"),
+        ("-device", "boot_device"),
         ("-smp", "smp"),
     ] {
         command.args([flag, profile.get(key)]);
@@ -227,6 +231,10 @@ mod tests {
                 "tcg,thread=single",
                 "-m",
                 "512M",
+                "-boot",
+                "strict=on,menu=off",
+                "-device",
+                "ide-hd,drive=genos-boot,bus=ide.0,unit=0,bootindex=1",
                 "-smp",
                 "1,sockets=1,cores=1,threads=1"
             ]

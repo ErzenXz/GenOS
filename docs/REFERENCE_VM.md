@@ -1,7 +1,7 @@
 # Versioned reference VM
 
 [`tools/reference-vm.conf`](../tools/reference-vm.conf) defines the candidate
-`genos-q35-tcg-v1` environment. All xtask boot commands and the standalone
+`genos-q35-tcg-v2` environment. All xtask boot commands and the standalone
 exception/BSP harnesses consume its machine, CPU, accelerator, memory and topology
 settings. A pinned environment makes results comparable; it does not make GenOS
 stable or establish that all roadmap qualification workloads have passed.
@@ -14,11 +14,18 @@ stable or establish that all roadmap qualification workloads have passed.
 | CPU | `qemu64-v1,smep=on,smap=on` |
 | Execution | TCG, one emulation thread; 512 MiB; one socket/core/thread |
 | UEFI firmware | SHA256 `33090cc07675baa5190d9f1e84bf5176b33bcbfa9bacac522961150cdb6dbb2a` |
-| Boot volume | Raw IDE disk, index 0, on q35's boot storage controller |
+| Boot volume | Snapshot-backed raw disk; explicit `ide-hd` on q35 `ide.0`, unit 0, `bootindex=1`; strict boot order |
 | Data volume | Raw 8 MiB disk; separate `piix3-ide` controller and `ide-hd`, bus 0/unit 0; writeback cache |
 | Console | Serial; acceptance runs have no graphical display or QEMU monitor |
 | Normal debug network | No NIC |
 | Normal release network | Modern VirtIO PCI; fixed MAC `52:54:00:12:34:56`; QEMU user networking |
+
+The boot device has explicit priority so firmware does not first search the
+persistent data volume for an EFI application. Boot-image writes, including
+firmware `NvVars`, go to a discarded QEMU snapshot; repeated boots cannot mutate
+the hashed source image or inherit a previous run's firmware state. The data
+volume keeps its separate persistence behavior. Profile v2 supersedes v1's
+implicit boot-device ordering and writable boot image.
 
 The firmware digest identifies the EDK2 image supplied by the local QEMU 11.1.1
 installation at `/opt/homebrew/share/qemu/edk2-x86_64-code.fd`. The path is not the
@@ -89,3 +96,10 @@ The existing Linux workflow uses distribution tools and remains a developer
 portability lane until its exact tool and firmware artifacts are pinned and its
 reference workloads run. The versioned 8.2 machine is intentionally available on
 those older hosts as well as QEMU 11.1.1; it does not disguise a version mismatch.
+
+
+Storage-validation phases allow 60 seconds including firmware startup, matching
+the full smoke phase. A loaded cross-architecture host was observed spending
+about 20 seconds before the first loader line, exhausting the former short-phase
+budget. This bounded harness deadline is not a boot-performance target; startup
+performance still needs controlled workload measurements.

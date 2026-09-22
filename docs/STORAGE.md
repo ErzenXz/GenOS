@@ -122,13 +122,13 @@ The next boot mounts that snapshot. Before rewriting anything, the shell opens `
 
 ## Application-visible state
 
-The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=recovered`, `state=readonly`, or `state=error`. A quarantined volume publishes additional newline-separated fields: `commit=not-published` or `commit=unknown`, `view=last-acknowledged`, and `recovery=remount`. Read it with `cat /STORAGE.STATUS`. The Ring 3 shell reads the status through its normal capability-scoped VFS path. In read-only recovery it verifies the durable file, then proves both write-file and namespace-management capabilities are denied before mutation. When both slots are corrupt, QEMU requires `USER_STORAGE_FAILURE_VISIBLE_OK` while `/TMP/SESSION.TXT` remains readable.
+The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=recovered`, `state=readonly`, or `state=error`. A quarantined volume publishes additional newline-separated fields: `commit=not-published` or `commit=unknown`, `view=last-acknowledged`, and `recovery=remount`. Read it with `cat /STORAGE.STATUS`. The Ring 3 shell reads the status through its normal capability-scoped VFS path. In read-only recovery it verifies the durable file, then proves both write-file and namespace-management capabilities are denied before mutation. When both slots are corrupt, QEMU requires `USER_STORAGE_FAILURE_VISIBLE_OK` and `USER_STORAGE_UNAVAILABLE_MUTATION_DENIED_OK`: persistent mutations must fail, `/USER` must remain empty, and the exact `/TMP/SESSION.TXT` contents must remain readable.
 
 ## Host inspection and QEMU contract
 
 `cargo xtask inspect-data` independently parses the MBR and both `GFS2` slots. It prints each valid generation and every file or directory. `cargo xtask repair-data` repairs only an image with exactly one valid snapshot: it copies that trusted snapshot to the alternate slot, increments the generation, recalculates the checksum, writes the image, and decodes it again to verify two valid copies. Healthy images are unchanged. If no valid snapshot exists, repair refuses to write rather than discarding or inventing metadata.
 
-`cargo xtask test` performs six boots:
+The storage sub-suite within `cargo xtask test` performs six boots:
 
 1. Create the partitioned filesystem, commit a Ring 3-created file, and inspect it from the host.
 2. Restore that file, complete the full runtime smoke suite, reach `GENOS_READY`, and remain interrupt-responsive.

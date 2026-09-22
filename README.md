@@ -186,7 +186,8 @@ A successful reference boot writes `SERVER_TERMINAL_READY`, `SERIAL_TERMINAL_REA
 
 - Rust 1.97.0, pinned by `rust-toolchain.toml` (1.97 is the declared minimum supported version);
 - `x86_64-unknown-uefi` and `x86_64-unknown-none` Rust targets;
-- QEMU with EDK2/OVMF firmware;
+- QEMU 8.2 or newer with EDK2/OVMF firmware for the versioned developer VM; exact QEMU 11.1.1 and the recorded firmware digest for reference qualification;
+- Python 3.12 or newer for the source-archive CPU and boot validation harnesses;
 - `mtools`.
 
 On macOS with Homebrew:
