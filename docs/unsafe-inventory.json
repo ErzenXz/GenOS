@@ -403,9 +403,9 @@
       "sha256": "f05a1c9bf287d1009bc11273ee0738a9e6dbbf00ab147f4c534d96ceb1297e48"
     },
     {
-      "lines": 427,
+      "lines": 609,
       "path": "tools/xtask/src/validation_run.rs",
-      "sha256": "ed81327a215a34978c9d1f7447a02d48e4deb6ec4f9e379b1d6b4ff156dd317d"
+      "sha256": "14471f68003d8f5f1869880a4c50e48def6eca118255c1758c9d27bb60aeb94c"
     },
     {
       "lines": 6,

@@ -1,6 +1,6 @@
 //! A live validation run owns its process, pipes and unique retained evidence.
 //! Every exit path, including preflight/spawn failure, finalizes the manifest.
-use crate::{evidence_contract::Contract, normal_boot::Freshness, reference_vm};
+use crate::{evidence_contract::Contract, reference_vm};
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Write},
@@ -150,7 +150,7 @@ impl Evidence {
         let started = Instant::now();
         let deadline = started + budget;
         let mut output = String::new();
-        let mut freshness = Freshness::new(&self.run_id)?;
+        let mut freshness = ValidationFreshness::new(&self.run_id)?;
         let mut issued = false;
         let mut ready_at = None;
         let mut settled = None;
@@ -231,40 +231,148 @@ impl Drop for Evidence {
     }
 }
 
-#[derive(Default)]
-struct UnameProof {
-    issued: bool,
-    echoed: bool,
-    received: bool,
-    replied: bool,
+// Validation builds deliberately retain a diagnostic console record as well
+// as the visible Ring 3 output. Require both streams, not a broad trace-strip.
+struct ConsoleRoundTrip {
+    command: String,
+    response: String,
+    pid: Option<u8>,
+    prompt: bool,
+    traced_response: bool,
+    response_seen: bool,
 }
-impl UnameProof {
-    fn observe(&mut self, line: &str) -> Result<(), String> {
-        match line {
-            "SERIAL_RX_OK" | "genos> SERIAL_RX_OK" => {
-                if !self.issued || self.received {
-                    return Err("stale/duplicate serial receive proof".into());
-                }
-                self.received = true;
+impl ConsoleRoundTrip {
+    fn new(command: String, response: String) -> Self {
+        Self {
+            command,
+            response,
+            pid: None,
+            prompt: false,
+            traced_response: false,
+            response_seen: false,
+        }
+    }
+    fn observe(&mut self, line: &str, issued: bool) -> Result<(), String> {
+        if !issued {
+            return Err("unsolicited validation console proof".into());
+        }
+        let prompt = format!("/> {}", self.command);
+        if let Some(record) = line.strip_prefix("USER_CONSOLE_WRITE pid=") {
+            let (pid, text) = record
+                .split_once(" text=")
+                .ok_or("malformed console diagnostic")?;
+            if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+                return Err("invalid console owner encoding".into());
             }
-            "genos> uname" => {
-                if !self.issued || self.echoed {
-                    return Err("stale/duplicate uname echo".into());
+            let pid = pid
+                .parse::<u8>()
+                .ok()
+                .filter(|pid| *pid != 0)
+                .ok_or("invalid console owner")?;
+            if text == prompt {
+                if self.pid.is_some() {
+                    return Err("duplicate console command diagnostic".into());
                 }
-                self.echoed = true;
-            }
-            "GenOS v0.56 ring3-shell x86_64 ABI 18" if self.issued => {
-                if !self.echoed || self.replied {
-                    return Err("wrong-phase/duplicate uname result".into());
+                self.pid = Some(pid);
+            } else if text == self.response {
+                if self.pid != Some(pid) || !self.prompt || self.traced_response {
+                    return Err(
+                        "wrong-owner, duplicate or premature console response diagnostic".into(),
+                    );
                 }
-                self.replied = true;
+                self.traced_response = true;
+            } else {
+                return Err("stale or forged console diagnostic payload".into());
             }
-            _ => {}
+        } else if line == prompt {
+            if self.pid.is_none() || self.prompt {
+                return Err("duplicate or premature visible command".into());
+            }
+            self.prompt = true;
+        } else if line == self.response {
+            if !self.prompt || !self.traced_response || self.response_seen {
+                return Err("duplicate or premature visible response".into());
+            }
+            self.response_seen = true;
+        } else {
+            return Err("stale or embedded validation console proof".into());
         }
         Ok(())
     }
     fn complete(&self) -> bool {
-        self.issued && self.echoed && self.received && self.replied
+        self.pid.is_some() && self.prompt && self.traced_response && self.response_seen
+    }
+}
+
+struct ValidationFreshness {
+    issued: bool,
+    command: String,
+    console: ConsoleRoundTrip,
+}
+impl ValidationFreshness {
+    fn new(run_id: &str) -> Result<Self, String> {
+        if run_id.is_empty() || run_id.len() > 32 || !run_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err("run identity must contain 1–32 ASCII digits".into());
+        }
+        let token = format!("GENOS_RUN_{run_id}");
+        let command = format!("echo {token}");
+        Ok(Self {
+            issued: false,
+            command: format!("{command}\r"),
+            console: ConsoleRoundTrip::new(command, token),
+        })
+    }
+    fn issue(&mut self) -> Result<&str, String> {
+        if self.issued {
+            return Err("validation challenge issued twice".into());
+        }
+        self.issued = true;
+        Ok(&self.command)
+    }
+    fn observe(&mut self, line: &str) -> Result<(), String> {
+        if !line.contains("GENOS_RUN_") {
+            return Ok(());
+        }
+        self.console.observe(line, self.issued)
+    }
+    fn complete(&self) -> bool {
+        self.console.complete()
+    }
+}
+
+struct UnameProof {
+    issued: bool,
+    received: bool,
+    console: ConsoleRoundTrip,
+}
+impl Default for UnameProof {
+    fn default() -> Self {
+        Self {
+            issued: false,
+            received: false,
+            console: ConsoleRoundTrip::new(
+                "uname".into(),
+                "GenOS v0.56 ring3-shell x86_64 ABI 18".into(),
+            ),
+        }
+    }
+}
+impl UnameProof {
+    fn observe(&mut self, line: &str) -> Result<(), String> {
+        if matches!(line, "SERIAL_RX_OK" | "genos> SERIAL_RX_OK") {
+            if !self.issued || self.received {
+                return Err("stale/duplicate serial receive proof".into());
+            }
+            self.received = true;
+        } else if self.issued
+            && (line.contains("/> uname") || line.contains(&self.console.response))
+        {
+            self.console.observe(line, true)?;
+        }
+        Ok(())
+    }
+    fn complete(&self) -> bool {
+        self.issued && self.received && self.console.complete()
     }
 }
 
@@ -333,7 +441,9 @@ while not command.endswith(b'\r'):
     command.extend(value)
 text = command.decode().strip()
 if mode == 'stale': text = 'echo GENOS_RUN_0'
-print('genos> ' + text, flush=True)
+print('USER_CONSOLE_WRITE pid=33 text=/> ' + text, flush=True)
+print('/> ' + text, flush=True)
+print('USER_CONSOLE_WRITE pid=33 text=' + text.removeprefix('echo '), flush=True)
 print(text.removeprefix('echo '), flush=True)
 if mode == 'duplicate':
     time.sleep(0.1); print('GENOS_READY', flush=True)
@@ -372,20 +482,92 @@ time.sleep(2)
     }
 
     #[test]
-    fn serial_input_requires_the_issued_command_and_its_own_reply() {
+    fn validation_trace_and_visible_output_must_both_prove_the_current_round_trip() {
+        let records = [
+            "USER_CONSOLE_WRITE pid=33 text=/> echo GENOS_RUN_1234",
+            "/> echo GENOS_RUN_1234",
+            "USER_CONSOLE_WRITE pid=33 text=GENOS_RUN_1234",
+            "GENOS_RUN_1234",
+        ];
+        for omitted in 0..records.len() {
+            let mut proof = ValidationFreshness::new("1234").unwrap();
+            proof.issue().unwrap();
+            for (index, record) in records.iter().enumerate() {
+                if index != omitted && proof.observe(record).is_err() {
+                    break;
+                }
+            }
+            assert!(!proof.complete());
+        }
+        for malformed in [
+            "USER_CONSOLE_WRITE pid=0 text=/> echo GENOS_RUN_1234",
+            "USER_CONSOLE_WRITE pid=33 text=/> echo GENOS_RUN_9999",
+            "prefix GENOS_RUN_1234",
+            "genos> echo GENOS_RUN_1234",
+            "GENOS_RUN_1234",
+        ] {
+            let mut proof = ValidationFreshness::new("1234").unwrap();
+            proof.issue().unwrap();
+            assert!(proof.observe(malformed).is_err(), "{malformed}");
+        }
+        let mut reordered = ValidationFreshness::new("1234").unwrap();
+        reordered.issue().unwrap();
+        reordered.observe(records[0]).unwrap();
+        assert!(reordered.observe(records[2]).is_err());
+        for duplicate in 0..records.len() {
+            let mut proof = ValidationFreshness::new("1234").unwrap();
+            proof.issue().unwrap();
+            for record in records.iter().take(duplicate + 1) {
+                proof.observe(record).unwrap();
+            }
+            assert!(proof.observe(records[duplicate]).is_err());
+        }
+        let mut proof = ValidationFreshness::new("1234").unwrap();
+        assert!(proof.observe(records[0]).is_err());
+        proof.issue().unwrap();
+        proof.observe(records[0]).unwrap();
+        assert!(proof
+            .observe("USER_CONSOLE_WRITE pid=34 text=GENOS_RUN_1234")
+            .is_err());
+    }
+
+    #[test]
+    fn recorded_validation_input_trace_is_not_mistaken_for_embedded_success() {
+        let mut proof = ValidationFreshness::new("1790077679394907000").unwrap();
+        proof.issue().unwrap();
+        for line in include_str!("../tests/fixtures/validation-challenge-prefix.txt").lines() {
+            proof.observe(line).unwrap();
+        }
+        assert!(!proof.complete());
+        for line in [
+            "/> echo GENOS_RUN_1790077679394907000",
+            "USER_CONSOLE_WRITE pid=33 text=GENOS_RUN_1790077679394907000",
+            "GENOS_RUN_1790077679394907000",
+        ] {
+            proof.observe(line).unwrap();
+        }
+        assert!(proof.complete());
+    }
+
+    #[test]
+    fn serial_input_requires_the_issued_command_and_its_own_visible_reply() {
         let mut proof = UnameProof::default();
         proof
-            .observe("GenOS v0.56 ring3-shell x86_64 ABI 18")
+            .observe("USER_CONSOLE_WRITE pid=33 text=/> uname")
+            .unwrap();
+        proof
+            .observe("USER_CONSOLE_WRITE pid=33 text=GenOS v0.56 ring3-shell x86_64 ABI 18")
             .unwrap();
         assert!(!proof.complete());
-        assert!(proof.observe("genos> uname").is_err());
         proof.issued = true;
         assert!(proof
             .observe("GenOS v0.56 ring3-shell x86_64 ABI 18")
             .is_err());
         for line in [
             "genos> SERIAL_RX_OK",
-            "genos> uname",
+            "USER_CONSOLE_WRITE pid=33 text=/> uname",
+            "/> uname",
+            "USER_CONSOLE_WRITE pid=33 text=GenOS v0.56 ring3-shell x86_64 ABI 18",
             "GenOS v0.56 ring3-shell x86_64 ABI 18",
         ] {
             proof.observe(line).unwrap();
