@@ -16,6 +16,9 @@ cannot use AVX/AVX-512/AMX or other XSAVE-only state. It also clears EFER.FFXSR:
 AMD's optional fast-FXSAVE mode must not omit XMM state from CPL0 saves.
 CR4.PKE is cleared separately, because user PKRU instructions can otherwise
 expose unsaved state independently of OSXSAVE.
+CR4.FSGSBASE is also cleared: direct user FS/GS base writes are unavailable until
+the kernel has a complete TLS/context contract. This opt-in is independent of
+OSXSAVE, as described in [Intel's FSGSBASE guidance](https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/best-practices/guidance-enabling-fsgsbase.html).
 Control-register/MSR readback must match before `CPU_XSTATE_READY` is emitted.
 
 The fixed policy is deliberate: current programs do not need variable-sized
@@ -23,6 +26,8 @@ XSAVE components, and 512 bytes per process is a bounded memory cost. Supporting
 additional state requires a separate CPUID/XCR0/size/alignment policy and matching
 isolation tests. Exposing an instruction-set feature in hardware CPUID alone is
 not an OS promise that its extended state is enabled.
+The [CPU feature matrix](CPU_FEATURES.md) states the exact admission and disabled
+instruction contracts and the independent hardware variants used to test them.
 
 Each newly constructed process owns a private, 16-byte-aligned 512-byte image
 inside its kernel process record. The image begins with FCW `0x037f`, MXCSR

@@ -1,6 +1,21 @@
 //! Storage geometry for statically reserved, downward-growing kernel stacks.
 
 pub const GUARD_BYTES: usize = 4096;
+pub const WATERMARK_WORD: u64 = 0xa5a5_a5a5_a5a5_a5a5;
+pub const MIN_REMAINING_BYTES: usize = GUARD_BYTES;
+
+/// Return the deepest overwritten word's distance from the top. A byte pattern
+/// measures touched storage, with eight-byte granularity; it is not a sampled
+/// RSP or a promise that arbitrary data cannot equal the initialization pattern.
+pub fn touched_bytes(words: usize, mut read: impl FnMut(usize) -> u64) -> Option<usize> {
+    let capacity = words.checked_mul(core::mem::size_of::<u64>())?;
+    for index in 0..words {
+        if read(index) != WATERMARK_WORD {
+            return Some(capacity - index * core::mem::size_of::<u64>());
+        }
+    }
+    Some(0)
+}
 
 /// Guard storage remains part of the reserved kernel image, but its identity
 /// mappings are removed before interrupts or processes can use these stacks.
@@ -125,5 +140,22 @@ mod tests {
         assert!(first.overlaps(first));
         assert!(first.overlaps(Layout::new(first.top, 4096).unwrap()));
         assert_ne!(first.guards()[1], second.guards()[0]);
+    }
+
+    #[test]
+    fn watermark_measures_deepest_touch_and_never_reads_outside_capacity() {
+        let mut words = [WATERMARK_WORD; 64];
+        assert_eq!(touched_bytes(words.len(), |index| words[index]), Some(0));
+        words[63] = 0;
+        assert_eq!(touched_bytes(words.len(), |index| words[index]), Some(8));
+        words[16] = 0;
+        assert_eq!(touched_bytes(words.len(), |index| words[index]), Some(384));
+        words[0] = 0;
+        assert_eq!(touched_bytes(words.len(), |index| words[index]), Some(512));
+        assert_eq!(touched_bytes(0, |_| panic!("empty scan read")), Some(0));
+        assert_eq!(
+            touched_bytes(usize::MAX, |_| panic!("overflow scan read")),
+            None
+        );
     }
 }

@@ -55,6 +55,38 @@ ordinary IST stack's lower boundary, where entry reloads that stack's configured
 top before the fatal handler runs. This tests a bounded fatal path, not safe
 recovery of arbitrary nested frames.
 
+## Usage measurements and overflow bounds
+
+Before its first call, naked BSP entry fills the usable boot stack with a fixed
+word pattern. GDT/TSS initialization fills the six other usable stacks before
+publishing their pointers. Guards are excluded. `stack_usage` scans usable words
+with bounded assembly MOV reads while local IRQs are masked and reports the
+deepest changed word's distance from the top. No Rust slice or typed memory read
+is created over live frames, which can contain logically uninitialized padding
+or moved locals despite the original fill. The assembly defines its register
+output from the observed hardware bits without treating such bytes as a Rust
+value.
+
+Validation emits one `KERNEL_STACK_USAGE` record for each stack after its console
+and process workload, including usable capacity, touched high-water bytes and
+remaining bytes. Qualification fails if any measured remaining budget is below
+4 KiB. The dedicated usage fixture exercises a known depth on all seven stacks
+and verifies the measured depth, arithmetic and minimum remaining budget.
+
+This pattern method measures touched storage to eight-byte granularity. It
+includes measurement overhead and can undercount storage that was reserved but
+not touched, or overwritten with the same pattern. It is therefore an engineering
+measurement, not the protection mechanism or an exact maximum-RSP proof.
+
+The protection policy also requires the pinned Rust target's generated stack
+probes. A dedicated fixture enters a non-inlined Rust function with less than one
+page left and a 12 KiB local array whose address escapes optimization. The first
+fault must occur inside the guard, with RSP not below that guard; skipping the
+guard into adjacent memory fails qualification. Handwritten stack adjustments
+remain confined to the fixed entry frames, known stack-top transfers and this
+explicit fixture. New dynamic stack allocation or unchecked manual RSP changes
+require their own bounded contract and probe evidence.
+
 ## Verification and remaining limits
 
 The host geometry tests check storage offsets, alignment, preserved usable
@@ -67,27 +99,26 @@ python3 tools/test_stack_guards.py
 ```
 
 The VM harness requires clean committed source and creates disposable source
-copies. Each copy injects one deliberate fault after production guard and IDT
-installation. Three cases move RSP to the boot, privilege or IRQ stack floor
-and execute a real PUSH into the lower guard. The fourth writes the double-fault
-stack's upper guard from the intact boot stack. The harness checks every stack's
+copies. Fourteen cases each inject one deliberate fault after production guard
+and IDT installation: a real PUSH at each stack floor and a write at each upper
+guard. Two additional cases exercise usage measurements and the compiler's
+multipage stack probing. The harness checks every stack's
 two-guard geometry, exactly one supervisor non-present write page fault, its
 exact CR2, the expected faulting RSP for PUSH, and the explicit fatal halt. It
 rejects missing/duplicate/wrong-phase evidence, successful return, continued boot
 or QEMU exit/reset. It retains source identity, fixture diff, image hash, command,
 serial output and success/failure manifests under `build/stack-guard-evidence`.
 
-All four CPU cases passed in the September 22 campaign recorded in
-[VERIFICATION.md](VERIFICATION.md). The parser's negative tests supplement those
-real CPU cases.
-NMI, machine-check and debug guards receive installation/readback and geometry
-checks; this bounded campaign does not individually overflow those handlers.
+The earlier four-case guard campaign passed as recorded in
+[VERIFICATION.md](VERIFICATION.md); the expanded campaign must retain its own
+exact-commit evidence before qualification. Harness negative tests cover missing
+and forged measurements, incorrect fault addresses, missing margins and a
+compiler-probe RSP that skipped below its guard.
 
 Guards become active only after protected page tables and image permissions are
 installed. The earlier firmware/admission and initial boot-stack setup therefore
-remain outside their protection window. A large unchecked stack-pointer jump
-can skip a single-page guard; compiler stack probing and stack-use budgeting
-remain necessary. Per-stack high-water measurements, repeated NMI/same-IST
-nesting, fault-during-return, real double-fault recovery and physical-hardware
-qualification remain open. The guards complete a containment slice of roadmap
-F1.3, not the entire stack or nested-exception gate.
+remain outside their protection window. General unchecked stack-pointer jumps
+are unsupported; the compiler probe and fixed assembly entry audit are required
+parts of the reference policy. Repeated NMI/same-IST nesting, fault-during-return,
+real double-fault recovery and physical-hardware qualification remain separate
+work; ordinary guard containment does not establish them.
