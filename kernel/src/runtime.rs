@@ -968,12 +968,13 @@ impl RuntimeCoordinator {
     }
 
     fn persist_change(&mut self) -> bool {
-        if !self.persistent_fs.available() || self.persistent_fs.sync(&self.vfs) {
-            return true;
+        match self.persistent_fs.sync(&mut self.vfs, restore_vfs) {
+            storage::CommitOutcome::Committed => true,
+            storage::CommitOutcome::Rejected | storage::CommitOutcome::Failed(_) => {
+                serial::trace::println("PERSISTENT_WRITE_FAILED");
+                false
+            }
         }
-        restore_vfs(&mut self.vfs);
-        serial::trace::println("PERSISTENT_WRITE_FAILED");
-        false
     }
 
     fn persistent_write_denied(&self, path: &str) -> bool {

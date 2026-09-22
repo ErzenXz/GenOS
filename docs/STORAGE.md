@@ -45,14 +45,74 @@ Every successful file creation, write, truncate, directory creation, or removal 
 6. Rewrite and flush the first sector with the commit byte and checksum.
 7. Return success to Ring 3 only after the commit completes.
 
-If a device or flush error occurs, the current implementation restores the
-pre-mutation VFS in RAM and returns failure. This does not establish that the disk
-contains only the old state: a final commit header/flush can reach media before a
-failure or timeout is reported. There is no explicit unknown-outcome quarantine or
-reconciliation state yet; the [S1 roadmap gate](../ROADMAP.md#stage-4-continuation--storage-integrity-and-useful-capacity)
-requires a deterministic reproducer and that contract. Under the stated ordering
-and successful-flush assumptions, a crash before submitting step 6 leaves the
-destination uncommitted and the prior slot authoritative. At mount, the higher valid generation wins. A damaged newer generation produces `PERSISTENT_STORAGE_RECOVERED_TORN_WRITE`; a later successful mutation overwrites and repairs the damaged slot.
+The kernel distinguishes these outcomes:
+
+| Outcome | RAM visible to running applications | Media after a fresh mount |
+| --- | --- | --- |
+| Committed | New snapshot; the operation returns success | New snapshot, assuming the device honors successful flushes |
+| Rejected before I/O | Pre-mutation snapshot; the operation returns failure | Unchanged by this attempt |
+| Device failure before publication | Pre-mutation snapshot; persistent volume becomes read-only | Prior active generation remains authoritative under the ordering assumptions |
+| Unknown publication outcome | Pre-mutation snapshot; persistent volume becomes read-only | Either complete old or complete new generation; the failed operation is never acknowledged as durable |
+
+A failure becomes **unknown** once the final committed header is about to enter
+the cache/write path. The header or its final flush may have reached media before
+a write error, timeout, or lost completion is reported. Rolling back RAM cannot
+undo that publication.
+
+Every write/flush failure quarantines the mounted volume for the remainder of the
+boot. The cache discards all entries without writing them back. The active-slot
+and generation counters retain their last acknowledged values. Existing writable
+handles, new writable/manage opens, and namespace mutations are denied before
+changing the VFS, and an attempted internal retry also performs no device I/O.
+Unavailable storage likewise denies persistent mutations; it cannot silently
+acknowledge `/USER/` changes as durable RAM-only writes.
+
+Reads continue from the last acknowledged RAM snapshot, including through
+already-open handles. The failed mutation returns the existing syscall failure
+value; no ABI or disk-format version changes. The kernel restores RAM **before**
+replacing `/STORAGE.STATUS` with the read-only diagnostic. Failed first-volume
+creation removes its unacknowledged seed files from RAM. Temporary session files
+remain readable.
+
+There is no in-place reconciliation, retry, or unquarantine command. A fresh boot
+with a reset/quiescent device discards the old kernel cache, reads the slots again,
+and selects the highest valid generation. This can reveal a complete mutation
+whose earlier caller received failure. Applications must inspect the recovered
+state before retrying a non-idempotent operation. A damaged newer generation
+produces `PERSISTENT_STORAGE_RECOVERED_TORN_WRITE`; a later successful mutation
+overwrites and repairs the damaged slot. A failure during that replacement
+quarantines the new mount again.
+
+Commits are synchronous and bounded by ATA polling limits. There is no cancellation
+point after a mutation enters the commit path; a missing caller acknowledgement
+cannot be interpreted as proof that the mutation was absent from disk.
+
+## Commit fault evidence and device assumptions
+
+`cargo test -p kernel --lib storage_under_test` compiles the production storage
+module and runs its cache, encoder, commit state machine, rollback callback, and
+remount decoder against an injected block device. The regression demonstrates a
+failed final flush with both old and new durable media outcomes. A second test
+injects failure before and after **each of the 41 sector writes and three flushes**,
+under both volatile write-back and immediate write-through models (176 cases).
+Every case checks RAM rollback, sticky read-only state, unchanged acknowledged
+generation, cache discard, no device I/O on a second mutation, and exact recovered
+file contents. Another 25 cases tear selected writes at five byte offsets while
+replacing an already damaged inactive generation, exercising failure during
+recovery. Mount decoding is transactional: a malformed late entry or insufficient
+VFS capacity leaves the original namespace intact, with regression tests for both. Successful-flush durability, generation overflow, invalid empty
+snapshots, explicit read-only mode, and unavailable volumes are also covered.
+
+These are deterministic host state-machine tests, not physical power-loss or
+ATA-controller fault qualification. The device contract assumes a successful
+flush makes all preceding accepted writes durable and that a failed write does
+not damage unrelated sectors. No write reordering across a successful flush is
+allowed by that contract. Before the commit-header phase, ordering keeps the
+previous active slot intact. Checksums detect modeled torn snapshots; the current
+32-bit FNV checksum is neither collision-free nor an adversarial integrity check.
+Unreported lost writes, devices that lie about flushes, arbitrary cross-sector
+corruption, controller reset behavior, and hardware qualification remain outside
+this proof. The reference path uses ATA `FLUSH CACHE` (`0xe7`), not FUA.
 
 ## Ring 3 durability proof
 
@@ -62,7 +122,7 @@ The next boot mounts that snapshot. Before rewriting anything, the shell opens `
 
 ## Application-visible state
 
-The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=recovered`, `state=readonly`, or `state=error`. The Ring 3 shell reads the status through its normal capability-scoped VFS path. In read-only recovery it verifies the durable file, then proves both write-file and namespace-management capabilities are denied before mutation. When both slots are corrupt, QEMU requires `USER_STORAGE_FAILURE_VISIBLE_OK` while `/TMP/SESSION.TXT` remains readable.
+The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=recovered`, `state=readonly`, or `state=error`. A quarantined volume publishes additional newline-separated fields: `commit=not-published` or `commit=unknown`, `view=last-acknowledged`, and `recovery=remount`. Read it with `cat /STORAGE.STATUS`. The Ring 3 shell reads the status through its normal capability-scoped VFS path. In read-only recovery it verifies the durable file, then proves both write-file and namespace-management capabilities are denied before mutation. When both slots are corrupt, QEMU requires `USER_STORAGE_FAILURE_VISIBLE_OK` while `/TMP/SESSION.TXT` remains readable.
 
 ## Host inspection and QEMU contract
 
@@ -79,8 +139,9 @@ The kernel publishes read-only `/STORAGE.STATUS` with `state=healthy`, `state=re
 
 The current format remains deliberately bounded. It has no allocation bitmap, extents, large files, or incremental metadata journal; each mutation commits one full snapshot. Useful capacity and recovery guarantees are required by S2/C5; allocation bitmaps,
 extents, journaling and other commit mechanisms remain alternatives under the S2.1
-design decision. The original milestone does not establish general filesystem
-reliability or close the S1 ambiguous-outcome and recovery-failure work.
+design decision. The original milestone and current fault model do not establish general filesystem
+reliability; broader corruption, lost/reordered-sector, host-checker agreement,
+and device-failure qualification remain S1 work.
 
 ## Host-tool volume preservation (GenOS 0.55)
 

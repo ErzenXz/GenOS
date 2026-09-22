@@ -71,6 +71,46 @@ enum StorageError {
     Vfs,
 }
 
+/// A failed publication can have reached stable media even when its completion
+/// was lost. Neither failure acknowledges the requested mutation to userspace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitFailure {
+    NotPublished,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitOutcome {
+    Committed,
+    Rejected,
+    Failed(CommitFailure),
+}
+
+/// The device seam preserves the same cache and commit ordering in host fault
+/// tests and the ATA implementation. Successful flush means preceding writes
+/// are durable; an error makes no promise about the failing operation's effect.
+trait BlockIo {
+    fn read(&mut self, lba: u32, output: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError>;
+    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError>;
+    fn flush(&mut self) -> Result<(), StorageError>;
+}
+
+struct AtaIo;
+
+impl BlockIo for AtaIo {
+    fn read(&mut self, lba: u32, output: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+        ata_read_sector(lba, output)
+    }
+
+    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+        ata_write_sector(lba, data)
+    }
+
+    fn flush(&mut self) -> Result<(), StorageError> {
+        ata_flush()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Partition {
     start_lba: u32,
@@ -125,7 +165,12 @@ impl BlockCache {
         }
     }
 
-    fn read(&mut self, lba: u32, output: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+    fn read(
+        &mut self,
+        lba: u32,
+        output: &mut [u8; SECTOR_BYTES],
+        io: &mut impl BlockIo,
+    ) -> Result<(), StorageError> {
         self.clock = self.clock.saturating_add(1);
         if let Some(index) = self
             .entries
@@ -139,8 +184,8 @@ impl BlockCache {
         }
         self.misses = self.misses.saturating_add(1);
         let index = self.replacement_index();
-        self.writeback(index)?;
-        ata_read_sector(lba, &mut self.entries[index].data)?;
+        self.writeback(index, io)?;
+        io.read(lba, &mut self.entries[index].data)?;
         self.entries[index].lba = lba;
         self.entries[index].age = self.clock;
         self.entries[index].valid = true;
@@ -149,7 +194,12 @@ impl BlockCache {
         Ok(())
     }
 
-    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+    fn write(
+        &mut self,
+        lba: u32,
+        data: &[u8; SECTOR_BYTES],
+        io: &mut impl BlockIo,
+    ) -> Result<(), StorageError> {
         self.clock = self.clock.saturating_add(1);
         let index = if let Some(index) = self
             .entries
@@ -161,7 +211,7 @@ impl BlockCache {
         } else {
             self.misses = self.misses.saturating_add(1);
             let index = self.replacement_index();
-            self.writeback(index)?;
+            self.writeback(index, io)?;
             index
         };
         self.entries[index].lba = lba;
@@ -172,11 +222,16 @@ impl BlockCache {
         Ok(())
     }
 
-    fn flush(&mut self) -> Result<(), StorageError> {
+    fn flush(&mut self, io: &mut impl BlockIo) -> Result<(), StorageError> {
         for index in 0..self.entries.len() {
-            self.writeback(index)?;
+            self.writeback(index, io)?;
         }
-        ata_flush()
+        io.flush()
+    }
+
+    fn discard(&mut self) {
+        // Quarantine must never write back an unacknowledged transaction.
+        self.entries.fill(CacheEntry::empty());
     }
 
     fn replacement_index(&self) -> usize {
@@ -193,9 +248,9 @@ impl BlockCache {
             })
     }
 
-    fn writeback(&mut self, index: usize) -> Result<(), StorageError> {
+    fn writeback(&mut self, index: usize, io: &mut impl BlockIo) -> Result<(), StorageError> {
         if self.entries[index].valid && self.entries[index].dirty {
-            ata_write_sector(self.entries[index].lba, &self.entries[index].data)?;
+            io.write(self.entries[index].lba, &self.entries[index].data)?;
             self.entries[index].dirty = false;
             self.writebacks = self.writebacks.saturating_add(1);
         }
@@ -209,6 +264,7 @@ pub struct PersistentFs {
     active_slot: Option<usize>,
     generation: u64,
     read_only: bool,
+    quarantine: Option<CommitFailure>,
 }
 
 impl PersistentFs {
@@ -218,61 +274,123 @@ impl PersistentFs {
             cache: BlockCache::new(),
             active_slot: None,
             generation: 0,
-            read_only: false,
+            read_only: true,
+            quarantine: None,
         }
     }
 
-    pub fn sync(&mut self, vfs: &RamVfs) -> bool {
-        self.commit(vfs).is_ok()
+    pub fn sync(&mut self, vfs: &mut RamVfs, restore: impl FnOnce(&mut RamVfs)) -> CommitOutcome {
+        // SAFETY: boot and the single-BSP runtime exclusively own storage, call
+        // it synchronously, and never access SLOT_BUFFER from an interrupt.
+        // No buffer reference escapes this call or aliases the VFS rollback.
+        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
+        self.sync_with(vfs, restore, &mut AtaIo, buffer)
     }
 
-    pub fn available(&self) -> bool {
-        self.partition.is_some()
+    fn sync_with(
+        &mut self,
+        vfs: &mut RamVfs,
+        restore: impl FnOnce(&mut RamVfs),
+        io: &mut impl BlockIo,
+        buffer: &mut [u8; SLOT_BYTES],
+    ) -> CommitOutcome {
+        let outcome = self.commit_with(vfs, io, buffer);
+        if outcome != CommitOutcome::Committed {
+            restore(vfs);
+            // Restore first so the prior healthy status cannot overwrite the
+            // quarantine diagnostic along with the last acknowledged files.
+            self.publish_failure_status(vfs);
+        }
+        outcome
     }
 
     pub fn read_only(&self) -> bool {
-        self.read_only
+        self.read_only || self.quarantine.is_some()
     }
 
-    fn commit(&mut self, vfs: &RamVfs) -> Result<(), StorageError> {
-        let partition = self.partition.ok_or(StorageError::InvalidPartition)?;
-        if self.read_only {
-            return Err(StorageError::Device);
+    fn publish_failure_status(&self, vfs: &mut RamVfs) {
+        if let Some(failure) = self.quarantine {
+            seed_status(vfs, match failure {
+                CommitFailure::NotPublished => b"state=readonly\ncommit=not-published\nview=last-acknowledged\nrecovery=remount",
+                CommitFailure::Unknown => b"state=readonly\ncommit=unknown\nview=last-acknowledged\nrecovery=remount",
+            });
+        }
+    }
+
+    fn commit(&mut self, vfs: &RamVfs) -> CommitOutcome {
+        // SAFETY: mount is single-BSP, synchronous, and precedes runtime
+        // publication; interrupt handlers cannot access this scratch buffer.
+        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
+        self.commit_with(vfs, &mut AtaIo, buffer)
+    }
+
+    fn commit_with(
+        &mut self,
+        vfs: &RamVfs,
+        io: &mut impl BlockIo,
+        buffer: &mut [u8; SLOT_BYTES],
+    ) -> CommitOutcome {
+        let Some(partition) = self.partition else {
+            return CommitOutcome::Rejected;
+        };
+        if self.read_only() {
+            return CommitOutcome::Rejected;
         }
         let target = self.active_slot.map(|slot| slot ^ 1).unwrap_or(0);
-        let generation = self
-            .generation
-            .checked_add(1)
-            .ok_or(StorageError::NoSpace)?;
-        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
-        encode_snapshot(vfs, generation, buffer)?;
-
-        let base = partition
-            .start_lba
-            .checked_add(SLOT_OFFSETS[target])
-            .ok_or(StorageError::InvalidPartition)?;
-        let mut sector = [0u8; SECTOR_BYTES];
-
-        // Invalidate the destination before any payload sector can replace the
-        // previous generation. A crash anywhere before the final header write
-        // leaves this slot uncommitted and the other slot authoritative.
-        sector.copy_from_slice(&buffer[..SECTOR_BYTES]);
-        self.cache.write(base, &sector)?;
-        self.cache.flush()?;
-        for index in 1..SLOT_SECTORS as usize {
-            sector.copy_from_slice(&buffer[index * SECTOR_BYTES..(index + 1) * SECTOR_BYTES]);
-            self.cache.write(base + index as u32, &sector)?;
+        let Some(generation) = self.generation.checked_add(1) else {
+            return CommitOutcome::Rejected;
+        };
+        if encode_snapshot(vfs, generation, buffer).is_err() {
+            return CommitOutcome::Rejected;
         }
-        self.cache.flush()?;
+        let Some(base) = partition.start_lba.checked_add(SLOT_OFFSETS[target]) else {
+            return CommitOutcome::Rejected;
+        };
+        let mut publishing = false;
+        let result = (|| -> Result<(), StorageError> {
+            let mut sector = [0u8; SECTOR_BYTES];
 
-        buffer[7] = RECORD_COMMITTED;
-        buffer[RECORD_CHECKSUM_OFFSET..RECORD_CHECKSUM_OFFSET + 4].fill(0);
-        let checksum = checksum(buffer);
-        buffer[RECORD_CHECKSUM_OFFSET..RECORD_CHECKSUM_OFFSET + 4]
-            .copy_from_slice(&checksum.to_le_bytes());
-        sector.copy_from_slice(&buffer[..SECTOR_BYTES]);
-        self.cache.write(base, &sector)?;
-        self.cache.flush()?;
+            // Invalidate the destination before any payload sector can replace the
+            // previous generation. A crash anywhere before the final header write
+            // leaves this slot uncommitted and the other slot authoritative.
+            sector.copy_from_slice(&buffer[..SECTOR_BYTES]);
+            self.cache.write(base, &sector, io)?;
+            self.cache.flush(io)?;
+            for index in 1..SLOT_SECTORS as usize {
+                sector.copy_from_slice(&buffer[index * SECTOR_BYTES..(index + 1) * SECTOR_BYTES]);
+                self.cache.write(base + index as u32, &sector, io)?;
+            }
+            self.cache.flush(io)?;
+
+            buffer[7] = RECORD_COMMITTED;
+            buffer[RECORD_CHECKSUM_OFFSET..RECORD_CHECKSUM_OFFSET + 4].fill(0);
+            let checksum = checksum(buffer);
+            buffer[RECORD_CHECKSUM_OFFSET..RECORD_CHECKSUM_OFFSET + 4]
+                .copy_from_slice(&checksum.to_le_bytes());
+            sector.copy_from_slice(&buffer[..SECTOR_BYTES]);
+            // From here even a reported write/flush failure may have published
+            // the new generation. A RAM rollback cannot settle media state.
+            publishing = true;
+            self.cache.write(base, &sector, io)?;
+            self.cache.flush(io)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let failure = if publishing {
+                CommitFailure::Unknown
+            } else {
+                CommitFailure::NotPublished
+            };
+            self.quarantine = Some(failure);
+            self.cache.discard();
+            serial::println(match failure {
+                CommitFailure::Unknown => "PERSISTENT_STORAGE_QUARANTINED outcome=unknown",
+                CommitFailure::NotPublished => {
+                    "PERSISTENT_STORAGE_QUARANTINED outcome=not-published"
+                }
+            });
+            return CommitOutcome::Failed(failure);
+        }
 
         self.active_slot = Some(target);
         self.generation = generation;
@@ -281,13 +399,22 @@ impl PersistentFs {
         serial::trace::print(" slot=");
         serial::trace::print_u64(target as u64);
         serial::trace::println("");
-        Ok(())
+        CommitOutcome::Committed
     }
 
     fn read_slot(
         &mut self,
         slot: usize,
         output: &mut [u8; SLOT_BYTES],
+    ) -> Result<(), StorageError> {
+        self.read_slot_with(slot, output, &mut AtaIo)
+    }
+
+    fn read_slot_with(
+        &mut self,
+        slot: usize,
+        output: &mut [u8; SLOT_BYTES],
+        io: &mut impl BlockIo,
     ) -> Result<(), StorageError> {
         let partition = self.partition.ok_or(StorageError::InvalidPartition)?;
         let base = partition
@@ -296,7 +423,7 @@ impl PersistentFs {
             .ok_or(StorageError::InvalidPartition)?;
         let mut sector = [0u8; SECTOR_BYTES];
         for index in 0..SLOT_SECTORS as usize {
-            self.cache.read(base + index as u32, &mut sector)?;
+            self.cache.read(base + index as u32, &mut sector, io)?;
             output[index * SECTOR_BYTES..(index + 1) * SECTOR_BYTES].copy_from_slice(&sector);
         }
         Ok(())
@@ -314,6 +441,11 @@ pub fn init_session_ramfs(vfs: &mut RamVfs) -> bool {
 }
 
 pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) {
+    // Reserve the diagnostic node before importing a possibly full volume.
+    // Later quarantine status updates must not require another VFS slot.
+    if !seed_status(vfs, b"state=error") {
+        return unavailable(vfs);
+    }
     let controller = match discover_pci_ide_controller() {
         Ok(controller) => controller,
         Err(_) => {
@@ -361,6 +493,7 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
         active_slot: None,
         generation: 0,
         read_only: partition.read_only,
+        quarantine: None,
     };
     let mut summaries = [SlotSummary {
         generation: None,
@@ -414,17 +547,28 @@ pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) 
         return (PersistentBootState::Restored, fs);
     }
 
-    if !fs.read_only
-        && summaries.iter().all(|slot| slot.readable && slot.blank)
-        && vfs.write(PERSISTENT_PATH, PERSISTENT_PAYLOAD).is_ok()
-        && vfs.write(KEEP_PATH, KEEP_PAYLOAD).is_ok()
-        && fs.commit(vfs).is_ok()
-    {
-        seed_status(vfs, b"state=healthy");
-        serial::println("PERSISTENT_STORAGE_CREATED files=2 generation=1");
-        serial::println("PERSISTENT_STORAGE_READY");
-        report_cache(&fs.cache);
-        return (PersistentBootState::Created, fs);
+    if !fs.read_only && summaries.iter().all(|slot| slot.readable && slot.blank) {
+        // Creation must not leave unacknowledged seed files visible in RAM.
+        // Boot provides an empty /USER namespace; refuse conflicting seeds.
+        let clean = vfs.find(PERSISTENT_PATH).is_none() && vfs.find(KEEP_PATH).is_none();
+        if clean {
+            let created = vfs.write(PERSISTENT_PATH, PERSISTENT_PAYLOAD).is_ok()
+                && vfs.write(KEEP_PATH, KEEP_PAYLOAD).is_ok();
+            if created && fs.commit(vfs) == CommitOutcome::Committed {
+                seed_status(vfs, b"state=healthy");
+                serial::println("PERSISTENT_STORAGE_CREATED files=2 generation=1");
+                serial::println("PERSISTENT_STORAGE_READY");
+                report_cache(&fs.cache);
+                return (PersistentBootState::Created, fs);
+            }
+            let _ = vfs.remove(PERSISTENT_PATH);
+            let _ = vfs.remove(KEEP_PATH);
+            if fs.quarantine.is_some() {
+                fs.publish_failure_status(vfs);
+                serial::println("PERSISTENT_STORAGE_UNAVAILABLE");
+                return (PersistentBootState::Unavailable, fs);
+            }
+        }
     }
 
     unavailable(vfs)
@@ -452,9 +596,12 @@ fn report_cache(cache: &BlockCache) {
     }
 }
 
-fn seed_status(vfs: &mut RamVfs, status: &[u8]) {
+fn seed_status(vfs: &mut RamVfs, status: &[u8]) -> bool {
     if vfs.write(STATUS_PATH, status).is_err() {
         serial::println("STORAGE_STATUS_VFS_FAILED");
+        false
+    } else {
+        true
     }
 }
 
@@ -531,9 +678,9 @@ fn ata_port(offset: u16) -> u16 {
 
 fn discover_partition(cache: &mut BlockCache) -> Result<Partition, StorageError> {
     let mut mbr = [0u8; SECTOR_BYTES];
-    cache.read(0, &mut mbr)?;
+    cache.read(0, &mut mbr, &mut AtaIo)?;
     let mut cached_mbr = [0u8; SECTOR_BYTES];
-    cache.read(0, &mut cached_mbr)?;
+    cache.read(0, &mut cached_mbr, &mut AtaIo)?;
     if cached_mbr != mbr {
         return Err(StorageError::Device);
     }
@@ -669,8 +816,23 @@ fn validate_snapshot(snapshot: &[u8; SLOT_BYTES]) -> Result<u64, StorageError> {
     ))
 }
 
+#[inline(never)]
 fn apply_snapshot(vfs: &mut RamVfs, snapshot: &[u8; SLOT_BYTES]) -> Result<(), StorageError> {
     validate_snapshot(snapshot)?;
+    // Decode into a bounded private namespace. A later malformed entry or
+    // exhausted VFS must not expose an earlier portion of an unmounted volume.
+    // This boot-only scratch value is below 32 KiB on the owned 2 MiB stack.
+    let mut candidate = RamVfs::new();
+    if vfs.find("/").is_some() {
+        candidate.init_root();
+    }
+    for node in vfs.list_root() {
+        match node.kind() {
+            NodeKind::File => candidate.write(node.path(), node.data()),
+            NodeKind::Directory => candidate.mkdir(node.path()),
+        }
+        .map_err(|_| StorageError::Vfs)?;
+    }
     let used = u32::from_le_bytes(
         snapshot[16..20]
             .try_into()
@@ -680,15 +842,16 @@ fn apply_snapshot(vfs: &mut RamVfs, snapshot: &[u8; SLOT_BYTES]) -> Result<(), S
     for _ in 0..snapshot[6] {
         let (path, kind, data, next) = decode_entry(snapshot, cursor, used)?;
         let path = core::str::from_utf8(path).map_err(|_| StorageError::InvalidRecord)?;
-        if !path.starts_with("/USER/") || vfs.find(path).is_some() {
+        if !path.starts_with("/USER/") || candidate.find(path).is_some() {
             return Err(StorageError::InvalidRecord);
         }
         match kind {
-            NodeKind::File => vfs.write(path, data).map_err(|_| StorageError::Vfs)?,
-            NodeKind::Directory => vfs.mkdir(path).map_err(|_| StorageError::Vfs)?,
+            NodeKind::File => candidate.write(path, data).map_err(|_| StorageError::Vfs)?,
+            NodeKind::Directory => candidate.mkdir(path).map_err(|_| StorageError::Vfs)?,
         }
         cursor = next;
     }
+    *vfs = candidate;
     Ok(())
 }
 
@@ -867,3 +1030,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "storage_tests.rs"]
+mod commit_tests;
