@@ -11,6 +11,8 @@ pub const FORBIDDEN: &[&str] = &[
     "SDK_APPLICATION_READY",
     "SCHED_DISPATCH_BENCH",
     "SUPERVISOR_CLEANUP_READY",
+    "USER_XSTATE_OK",
+    "USER_XSTATE_PREEMPTIONS",
 ];
 
 #[derive(Clone, Copy)]
@@ -88,6 +90,8 @@ pub fn repetition_count(value: Option<&str>) -> Result<usize, String> {
 #[derive(Default)]
 pub struct Transcript {
     policy: bool,
+    boot_memory_validated: bool,
+    cpu_state_ready: bool,
     kernel_ready: bool,
     shell_ready: bool,
     step: usize,
@@ -141,8 +145,20 @@ impl Transcript {
                 }
                 self.policy = true;
             }
+            "BOOT_MEMORY_MAP_VALIDATED" => {
+                if !self.policy || self.boot_memory_validated || self.kernel_ready {
+                    return Err("invalid boot memory validation order".into());
+                }
+                self.boot_memory_validated = true;
+            }
+            crate::cpu_evidence::POLICY => {
+                if !self.boot_memory_validated || self.cpu_state_ready || self.kernel_ready {
+                    return Err("invalid CPU state policy order".into());
+                }
+                self.cpu_state_ready = true;
+            }
             "GENOS_READY" => {
-                if !self.policy || self.kernel_ready {
+                if !self.cpu_state_ready || self.kernel_ready {
                     return Err("invalid kernel readiness order".into());
                 }
                 self.kernel_ready = true;
@@ -158,6 +174,9 @@ impl Transcript {
         }
         if self.shell_ready && self.step < STEPS.len() {
             if line.strip_prefix("genos> ") == Some(STEPS[self.step].0.trim_end_matches('\r')) {
+                if self.command_seen {
+                    return Err("duplicate command echo".into());
+                }
                 self.command_seen = true;
                 return Ok(None);
             }
@@ -224,6 +243,8 @@ mod tests {
     fn ready(network: bool) -> Transcript {
         let mut proof = Transcript::new(network);
         proof.observe("BOOT_MODE normal").unwrap();
+        proof.observe("BOOT_MEMORY_MAP_VALIDATED").unwrap();
+        proof.observe(crate::cpu_evidence::POLICY).unwrap();
         proof.observe("GENOS_READY").unwrap();
         assert_eq!(
             proof.observe("NORMAL_SHELL_READY").unwrap(),
@@ -318,6 +339,20 @@ mod tests {
         let mut proof = ready(false);
         assert!(proof.observe("NORMAL_SHELL_READY").is_err());
         assert!(proof.observe("BOOT_MODE normal").is_err());
+        assert!(proof.observe("BOOT_MEMORY_MAP_VALIDATED").is_err());
+        let mut missing_map = Transcript::default();
+        missing_map.observe("BOOT_MODE normal").unwrap();
+        assert!(missing_map.observe("GENOS_READY").is_err());
+        assert!(Transcript::default()
+            .observe("BOOT_MEMORY_MAP_VALIDATED")
+            .is_err());
+    }
+
+    #[test]
+    fn a_duplicated_command_echo_is_not_accepted_as_fresh_input() {
+        let mut proof = ready(false);
+        proof.observe("genos> help").unwrap();
+        assert!(proof.observe("genos> help").is_err());
     }
 
     #[test]
@@ -331,6 +366,112 @@ mod tests {
             "USER_HANDLE_READ_OK",
         ]) {
             assert!(ready(false).observe(marker).is_err(), "{marker}");
+        }
+    }
+}
+
+/// A per-launch serial round trip prevents an old successful transcript from
+/// qualifying a new run. This detects stale evidence, not a malicious guest.
+pub struct Freshness {
+    token: String,
+    command: String,
+    issued: bool,
+    echoed: bool,
+    complete: bool,
+}
+
+impl Freshness {
+    pub fn new(run_id: &str) -> Result<Self, String> {
+        if run_id.is_empty() || run_id.len() > 32 || !run_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err("run identity must contain 1–32 ASCII digits".into());
+        }
+        let token = format!("GENOS_RUN_{run_id}");
+        Ok(Self {
+            command: format!("echo {token}\r"),
+            token,
+            issued: false,
+            echoed: false,
+            complete: false,
+        })
+    }
+
+    pub fn issue(&mut self) -> Result<&str, String> {
+        if self.issued {
+            return Err("freshness challenge issued twice".into());
+        }
+        self.issued = true;
+        Ok(&self.command)
+    }
+
+    pub fn observe(&mut self, line: &str) -> Result<(), String> {
+        if !line.contains("GENOS_RUN_") {
+            return Ok(());
+        }
+        if !self.issued || self.complete {
+            return Err("wrong-phase or duplicate freshness evidence".into());
+        }
+        if line == format!("genos> {}", self.command.trim_end_matches('\r')) {
+            if self.echoed {
+                return Err("duplicate freshness command echo".into());
+            }
+            self.echoed = true;
+        } else if line == self.token && self.echoed {
+            self.complete = true;
+        } else {
+            return Err("stale, embedded or out-of-order freshness evidence".into());
+        }
+        Ok(())
+    }
+
+    pub fn complete(&self) -> bool {
+        self.complete
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::Freshness;
+
+    #[test]
+    fn only_a_current_ordered_round_trip_can_complete() {
+        let mut proof = Freshness::new("1234").unwrap();
+        assert_eq!(proof.issue().unwrap(), "echo GENOS_RUN_1234\r");
+        proof.observe("unrelated startup output").unwrap();
+        assert!(!proof.complete());
+        proof.observe("genos> echo GENOS_RUN_1234").unwrap();
+        assert!(!proof.complete());
+        proof.observe("GENOS_RUN_1234").unwrap();
+        assert!(proof.complete());
+        assert!(proof.observe("GENOS_RUN_1234").is_err());
+    }
+
+    #[test]
+    fn stale_embedded_duplicate_omitted_and_wrong_phase_evidence_fail_closed() {
+        let mut early = Freshness::new("2").unwrap();
+        assert!(early.observe("genos> echo GENOS_RUN_2").is_err());
+        for invalid in [
+            "GENOS_RUN_2",
+            "genos> echo GENOS_RUN_1",
+            "noise GENOS_RUN_2",
+        ] {
+            let mut proof = Freshness::new("2").unwrap();
+            proof.issue().unwrap();
+            assert!(proof.observe(invalid).is_err(), "{invalid}");
+            assert!(!proof.complete());
+        }
+        let mut duplicate = Freshness::new("2").unwrap();
+        duplicate.issue().unwrap();
+        duplicate.observe("genos> echo GENOS_RUN_2").unwrap();
+        assert!(duplicate.observe("genos> echo GENOS_RUN_2").is_err());
+        assert!(!duplicate.complete());
+        assert!(duplicate.issue().is_err());
+        for invalid in [
+            "",
+            "2\necho forged",
+            "a",
+            "123456789012345678901234567890123",
+        ] {
+            assert!(Freshness::new(invalid).is_err());
         }
     }
 }

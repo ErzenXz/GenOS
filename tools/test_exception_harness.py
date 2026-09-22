@@ -14,9 +14,10 @@ def valid_log(mode="user", vector=6, error=0, cr2=0):
              f" ss=0x{ss:x} cr2=0x{cr2:x}")
     lines = ["EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated", frame]
     if mode == "user":
-        lines += [f"USER_FAULT_TERMINATED pid=1 vector={vector} error=0x{error:x}", *USER_READY]
+        lines += [f"USER_FAULT_TERMINATED pid=1 vector={vector} error=0x{error:x} rip=0x400000 cr2=0x{cr2:x}", *USER_READY]
     else:
-        lines += ["KERNEL_EXCEPTION_PROBE_ARMED", "EXCEPTION_FATAL_HALT"]
+        lines.insert(1, "KERNEL_EXCEPTION_PROBE_ARMED")
+        lines += ["EXCEPTION_FATAL_HALT"]
     return "\n".join(lines) + "\n"
 
 
@@ -74,6 +75,18 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_log(valid_log("kernel") + extra + "\n", "kernel", "ud")
 
+    def test_duplicate_wrong_phase_and_forged_fault_identity_cannot_pass(self):
+        for mode in ("user", "kernel"):
+            log = valid_log(mode)
+            lines = log.splitlines()
+            for line in lines:
+                with self.subTest(mode=mode, duplicate=line), self.assertRaises(ValueError):
+                    validate_log(log + line + "\n", mode, "ud")
+            with self.assertRaises(ValueError):
+                validate_log("\n".join(reversed(lines)) + "\n", mode, "ud")
+        with self.assertRaises(ValueError):
+            validate_log(valid_log().replace("error=0x0 rip=0x400000 cr2=", "error=0x1 rip=0x400000 cr2="), "user", "ud")
+
     def test_fixture_requires_exactly_one_anchor(self):
         self.assertEqual(replace_once("before", "before", "after"), "after")
         for text in ("", "before before"):
@@ -88,7 +101,7 @@ class EvidenceTests(unittest.TestCase):
             init.parent.mkdir(parents=True)
             kernel.parent.mkdir(parents=True)
             init.write_text("write_volatile(runtime::STACK_GUARD as *mut u64, token);\n")
-            kernel.write_text("const FAULT_EXIT_CODE: u8 = 128 + 14;\n"
+            kernel.write_text("if !xstate_probe::run() {\n}\nconst FAULT_EXIT_CODE: u8 = 128 + 14;\n"
                               "faulting.fault_vector == 14\n"
                               "faulting.fault_error == 0x6\n"
                               "faulting.fault_address == paging::USER_STACK_GUARD\n")
@@ -97,7 +110,7 @@ class EvidenceTests(unittest.TestCase):
             self.assertIn("faulting.fault_vector == 0", kernel.read_text())
             self.assertNotIn("interrupts.rs", patch)
             self.assertNotIn("terminate_process_fault", patch)
-            self.assertEqual(patch_fixture(root, "user", "pf"), "")
+            self.assertIn("isolated exception fixture", kernel.read_text())
 
 
 if __name__ == "__main__":

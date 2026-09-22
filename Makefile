@@ -1,4 +1,4 @@
-.PHONY: build run test bench test-sdk test-release build-test build-release clean
+.PHONY: build run test bench test-sdk test-release build-test build-release reference-check test-reference clean
 
 build:
 	cargo xtask build
@@ -26,3 +26,9 @@ build-release:
 
 test-release:
 	cargo xtask test-release
+
+reference-check:
+	cargo xtask reference-check
+
+test-reference:
+	cargo xtask test-reference

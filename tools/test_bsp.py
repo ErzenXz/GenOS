@@ -20,6 +20,8 @@ import tarfile
 import tempfile
 import time
 
+from reference_vm import environment, load_profile, qemu_args
+
 from test_exception_entry import command_output, firmware_path, replace_once, require_clean_source
 
 CASES = ("single", "quad", "repeat-entry", "repeat-init", "non-bsp")
@@ -98,13 +100,19 @@ def validate_log(log: str, case: str) -> None:
         if any(lines.count(marker) != 1 for marker in required):
             raise ValueError("normal BSP boot must enter, initialize and launch exactly once")
         topology = TOPOLOGY.findall(log)
-        if len(topology) != 1 or (case == "quad" and int(topology[0][1]) != 4):
+        if len(topology) != 1 or int(topology[0][1]) != (4 if case == "quad" else 1):
             raise ValueError("missing, duplicate or incorrect BSP-only topology diagnostic")
         if any("BSP_PROBE_" in line for line in lines):
             raise ValueError("normal image contains validation probe output")
+        order = ("GenOS kernel entered", "GDT/TSS initialized", "IDT initialized",
+                 "GENOS_READY", "NORMAL_SHELL_READY")
+        if [lines.index(marker) for marker in order] != sorted(lines.index(marker) for marker in order):
+            raise ValueError("normal CPU initialization and shell readiness are out of order")
         return
     if lines.count(f"BSP_PROBE_ARMED case={case}") != 1 or lines.count("BSP_PROBE_REJECTED") != 1:
         raise ValueError("missing exact rejection branch evidence")
+    if lines.index(f"BSP_PROBE_ARMED case={case}") >= lines.index("BSP_PROBE_REJECTED"):
+        raise ValueError("CPU rejection appeared before the probe was armed")
     if any(marker in lines for marker in ("NORMAL_SHELL_READY", "GENOS_READY")):
         raise ValueError("rejected entrant continued normal boot")
     expected_entries = 0 if case == "non-bsp" else 1
@@ -122,10 +130,10 @@ def validate_log(log: str, case: str) -> None:
 def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
     log_path = evidence / "serial.log"
     cpus = 1 if case == "single" else 4
-    args = ["qemu-system-x86_64", "-machine", "q35", "-m", "512M",
-            "-smp", f"{cpus},sockets=1,cores={cpus},threads=1",
+    profile = load_profile(root)
+    args = qemu_args(cpus=cpus, root=root) + [
             "-drive", f"if=pflash,format=raw,readonly=on,file={firmware_path()}",
-            "-drive", "format=raw,file=build/genos.img", "-net", "none",
+            "-drive", profile["boot_drive"] + ",file=build/genos.img", "-net", "none",
             "-display", "none", "-monitor", "none", "-serial", f"file:{log_path}",
             "-no-reboot"]
     (evidence / "qemu-command.json").write_text(json.dumps(args, indent=2) + "\n")
@@ -176,6 +184,7 @@ def main() -> None:
         evidence.mkdir(parents=True, exist_ok=False)
         manifest = {"case": case, "status": "incomplete", "commit": commit, "source_clean": True}
         try:
+            manifest.update(environment(firmware_path(), source))
             manifest.update({"rust": command_output(["rustc", "-Vv"], source),
                              "qemu": command_output(["qemu-system-x86_64", "--version"], source)})
             with tempfile.TemporaryDirectory(prefix="genos-bsp-") as temporary:
@@ -192,7 +201,14 @@ def main() -> None:
                 manifest["image_sha256"] = hashlib.sha256((root / "build/genos.img").read_bytes()).hexdigest()
                 boot(root, evidence, case, options.timeout)
                 manifest["status"] = "passed"
+        except Exception as error:
+            manifest.update(status="failed", failure=f"{type(error).__name__}: {error}")
+            raise
         finally:
+            for name in ("serial.log", "qemu.log", "build.log"):
+                artifact = evidence / name
+                if artifact.is_file():
+                    manifest[name + "_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
             (evidence / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"BSP_PROBE_OK case={case} evidence={evidence}", flush=True)
 
