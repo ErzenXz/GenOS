@@ -92,8 +92,9 @@ handle. Close, exit, fault, kill and resource revocation release snapshot owners
 The ordinary typed handle registry and pending-request identity checks still
 govern access; stale handles cannot read a reopened report. Operation counters
 saturate; deliberate pre-allocation injection is not counted as bitmap exhaustion.
-This completes snapshot coherence only: per-owner frame accounting and general
-memory-pressure policy remain separate F3.5 work.
+The grant ledger now counts frames per owner, and the public report groups
+kernel/user grants. Per-process quotas and general memory-pressure policy remain
+separate F3.5 work.
 
 Consistency checks cover region ordering/alignment, bitmap capacity, unused bits,
 live population and high-water bounds. The managed-address limit is 8 GiB/64 regions. A separate 8192-live-grant

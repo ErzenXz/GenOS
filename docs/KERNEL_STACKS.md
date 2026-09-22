@@ -77,7 +77,9 @@ rejects missing/duplicate/wrong-phase evidence, successful return, continued boo
 or QEMU exit/reset. It retains source identity, fixture diff, image hash, command,
 serial output and success/failure manifests under `build/stack-guard-evidence`.
 
-The parser's negative tests do not substitute for running those real CPU cases.
+All four CPU cases passed in the September 22 campaign recorded in
+[VERIFICATION.md](VERIFICATION.md). The parser's negative tests supplement those
+real CPU cases.
 NMI, machine-check and debug guards receive installation/readback and geometry
 checks; this bounded campaign does not individually overflow those handlers.
 

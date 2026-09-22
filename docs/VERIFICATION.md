@@ -1,4 +1,12 @@
-# GenOS 0.56 integration verification — 2026-09-08
+# GenOS 0.56 verification record
+
+The latest completed campaign covers frame ownership, guarded kernel stacks,
+kernel ELF admission and coherent diagnostic handles. See the
+[September 22 hardening results](#frame-ownership-and-stack-hardening--2026-09-22)
+for current totals and exact source identities. Earlier entries retain their
+original scope and dates.
+
+## Original integration — 2026-09-08
 
 PR #4 (quality gates), PR #6 (normalized exception entry), and PR #7 (GenOS 0.56 integration) are merged to main. This integration preserves the later GenOS 0.50–0.55 network/SDK work and adds CPU page protections and transactional memory construction. It advances the roadmap without claiming a finished or hardened operating system.
 
@@ -196,3 +204,75 @@ patches, source/image/firmware identities and serial logs remain in
 `build/boot-memory-evidence/`, `build/bsp-evidence/`, `build/exception-evidence/`
 and `build/normal-evidence/`. These are local results; the new CI configuration
 has not run remotely. GenOS test VMs were stopped after verification.
+
+
+## Frame ownership and stack hardening — 2026-09-22
+
+The complete `cargo xtask test` suite, six boot-memory rejection cases, five BSP
+admission cases, eight original user/kernel exception cases, and strict
+`cargo xtask test-reference` passed on **`2df68f5`** in a clean detached checkout.
+The four new kernel-stack fault cases and the new Ring 3 memory-snapshot case
+also passed on that commit. The strengthened six-case ELF rejection campaign
+passed on **`f5b1aac`**, requiring actual QMP guest-shutdown evidence. That later
+commit changes only the ELF test harness, its tests and documentation: kernel,
+bootloader, ABI, userspace and reference-profile sources are identical to `2df68f5`.
+
+| Delivered slice | Executable evidence | Remaining boundary |
+| --- | --- | --- |
+| Bounded kernel ELF plan before allocation/copy | 14 host tests; actual debug/release images accepted; six malformed staged images rejected by the real loader, before kernel entry, with explicit guest shutdown | Firmware allocation/map/exit fault campaign, authenticity and other firmware implementations |
+| Seven kernel stacks with fourteen guards | Four host geometry tests; all guard mappings checked during boot; four exact CPU fault/CR2/controlled-halt cases | High-water measurements, guard-skipping, same-IST/NMI nesting and return faults |
+| Owner/generation frame grants and user mapping pins | Seven host tests; production VM probe rejects foreign, stale, aliased, pinned and active-root operations without erasing owned bytes; all ten allocation rollback points reclaim exactly | Kernel direct-map W^X, sharing, DMA/reference retirement, quotas and SMP |
+| Immutable reports per open handle | Five host tests plus real Ring 3 interleaved seven-byte reads, stable stat/EOF, stale-handle denial and two full-capacity close/reuse cycles | Dedicated process-death-with-open-snapshot CPU case and broader pressure policy |
+
+The snapshot VM measured **1043 → 1053 → 1043 live frames**: launching a held
+process changed the second report while the first retained its exact original
+contents; kill/reap restored the live-frame baseline. The ordinary shell and ABI
+remain unchanged. The owned allocator now has a separate 8192-live-grant limit
+(32 MiB including page tables), while the bitmap still covers up to 8 GiB of
+usable pages in 64 ranges. Its ledger uses at most 328,000 bytes; worst-case
+lookup/IRQ latency is not qualified. These bounds are part of the delivered
+contract, not a claim of general memory scalability.
+
+Current local totals: **228 Rust host tests**, **58 Python tests**, **2 parser CLI
+tests**, and **100,000 parser mutations** with seed `20260923` passed. The parser
+run also replayed the 12-input corpus and 693 proper prefixes. Strict Clippy for
+the changed kernel/loader/tool modules and all shipped user targets, formatting,
+Markdown links, whitespace and unsafe-context checks pass. The updated inventory
+records **419 lexical sites in 80 source files**; it is review context, not proof
+that all unsafe assumptions are discharged.
+
+The full integration suite covers storage creation/restore/corruption/recovery,
+serial input, DHCP/ICMP/DNS/HTTP/concurrent TCP and injected packet faults, external
+SDK execution, memory hygiene/ownership/rollback, six CPU page-protection cases,
+and normal debug/release shell workflows. The additional CPU/handoff matrices
+plus the eleven new guard/ELF/snapshot cases provide **36 scoped case manifests**;
+the full suite and strict reference run retain **four normal-boot acceptance
+manifests**. This is not a sustained soak or a 1000-boot result.
+
+Review caught an active-root mapping rollback risk: intermediate translations
+could remain cached after failed construction. The mapper now requires an
+inactive root before any mutation. Review also caught an evidence gap: QEMU
+exit zero with `-no-reboot` could mean a reset. ELF tests now subscribe to QMP
+before starting the guest, require `guest=true`/`reason=guest-shutdown`, reject
+reset/panic/host exits, and bound message sizes, counts, deadlines and the
+EOF/process-exit race. All six cases passed with the stronger oracle.
+
+One initial isolated host invocation failed before boot because an inherited
+`SDKROOT` selected SDK stubs incompatible with its host linker. Repeating the
+campaign with the normal project environment and Python 3.14.7 passed; the
+failed log/manifest remain retained. This does not resolve independent host-SDK
+reproduction or the other F0.5 requirements.
+
+Evidence is indexed in `build/roadmap-hardening-evidence/summary.json`. The copied
+clean-checkout campaign and all its logs/manifests are under its `core/` directory;
+new guards, explicit-QMP ELF rejections and diagnostic handles are under
+`guards/`, `elf/` and `snapshot/`. The index also records test totals, hashes,
+source identities and retained earlier failures/superseded evidence. Original
+per-case source paths remain in immutable manifests; fixture archives/checkouts
+are temporary and their retained copies supply the lasting local record.
+
+Eleven independent guard/ELF/snapshot CI cases are configured in
+`.github/workflows/foundation-hardening.yml`. They have not run remotely; the
+previous workflow-scope publication restriction remains unresolved. No release
+promotion occurs: GenOS remains Experimental, and the roadmap now names the
+remaining alias, sharing/device, CPU/stack and console-platform work explicitly.

@@ -321,6 +321,7 @@ foundation gates; GenOS remains experimental.
 
 
 The normal terminal now keeps development event traces out of interactive output.
-Use `mem` for allocator counters and consistency; `/MEMORY.STATUS` is read-only.
+Use `mem` for allocator counters and consistency; each read-only `/MEMORY.STATUS`
+handle keeps a coherent snapshot through partial reads.
 The `clear` command clears the serial terminal, and ordinary application output is
 shown without syscall trace prefixes. Validation images retain their detailed logs.
