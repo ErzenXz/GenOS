@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import socket
 import struct
 import subprocess
 import sys
@@ -24,6 +25,163 @@ from test_exception_entry import firmware_path, require_clean_source
 CASES = {"truncated-header": "Header", "program-range": "ProgramHeaders",
          "segment-overflow": "MemoryRange", "overlap": "Overlap",
          "writable-code": "Permissions", "entry-data": "Entry"}
+
+MAX_QMP_MESSAGE_BYTES = 64 * 1024
+MAX_QMP_TOTAL_BYTES = 1024 * 1024
+MAX_QMP_MESSAGES = 256
+CAPABILITIES_ID = "genos-capabilities"
+START_ID = "genos-start"
+
+
+class QmpMonitor:
+    """Bounded JSON-line reader retaining the exact received/sent wire bytes."""
+    def __init__(self, connection, received, sent):
+        self.connection = connection
+        self.received = received
+        self.sent = sent
+        self.pending = bytearray()
+        self.total = 0
+        self.messages = []
+
+    def read(self, deadline: float) -> dict | None:
+        while True:
+            newline = self.pending.find(b"\n")
+            if newline >= 0:
+                if newline > MAX_QMP_MESSAGE_BYTES:
+                    raise ValueError("QMP message exceeds byte budget")
+                line = bytes(self.pending[:newline])
+                del self.pending[:newline + 1]
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("QMP message must be a JSON object")
+                if len(self.messages) >= MAX_QMP_MESSAGES:
+                    raise ValueError("QMP event/reply count exceeds budget")
+                self.messages.append(record)
+                return record
+            if len(self.pending) > MAX_QMP_MESSAGE_BYTES:
+                raise ValueError("QMP message exceeds byte budget")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("QMP receive deadline expired")
+            self.connection.settimeout(min(0.1, remaining))
+            try:
+                data = self.connection.recv(4096)
+            except socket.timeout:
+                continue
+            if not data:
+                if self.pending:
+                    raise ValueError("QMP stream ended with a truncated message")
+                return None
+            self.received.write(data)
+            self.received.flush()
+            self.total += len(data)
+            if self.total > MAX_QMP_TOTAL_BYTES:
+                raise ValueError("QMP stream exceeds total byte budget")
+            self.pending.extend(data)
+
+    def command(self, execute: str, identity: str, deadline: float) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("QMP command deadline expired")
+        wire = (json.dumps({"execute": execute, "id": identity}) + "\n").encode()
+        self.sent.write(wire)
+        self.sent.flush()
+        self.connection.settimeout(min(1.0, remaining))
+        self.connection.sendall(wire)
+        while True:
+            reply = self.read(deadline)
+            if reply is None:
+                raise RuntimeError("QMP disconnected before command acknowledgement")
+            if "event" in reply:
+                continue
+            if reply.get("id") != identity or reply.get("return") != {} or "error" in reply:
+                raise ValueError(f"QMP rejected or mismatched {execute} acknowledgement")
+            return
+
+    def start(self, deadline: float) -> None:
+        greeting = self.read(deadline)
+        if greeting is None or not isinstance(greeting.get("QMP"), dict):
+            raise ValueError("missing QMP greeting")
+        self.command("qmp_capabilities", CAPABILITIES_ID, deadline)
+        # QEMU starts paused: the monitor is subscribed before any guest code
+        # can reject an ELF and shut down, so terminal events cannot be missed.
+        self.command("cont", START_ID, deadline)
+
+
+def connect_qmp(path: Path, process, deadline: float):
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("QEMU exited before QMP connection")
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(min(0.1, max(0.001, deadline - time.monotonic())))
+        try:
+            connection.connect(str(path))
+            return connection
+        except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+            connection.close()
+            time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+        except Exception:
+            connection.close()
+            raise
+    raise TimeoutError("QMP connection deadline expired")
+
+
+def validate_qmp(messages: list[dict]) -> dict:
+    if any(not isinstance(message, dict) or sum(key in message for key in
+           ("QMP", "return", "event", "error")) != 1 for message in messages):
+        raise ValueError("unrecognized or ambiguous QMP message")
+    if not messages or not isinstance(messages[0].get("QMP"), dict):
+        raise ValueError("missing initial QMP greeting")
+    if sum("QMP" in message for message in messages) != 1:
+        raise ValueError("duplicated QMP greeting")
+    if any("error" in message for message in messages):
+        raise ValueError("QMP command error during rejection proof")
+    replies = [(index, message) for index, message in enumerate(messages)
+               if "return" in message]
+    if (len(replies) != 2 or [message.get("id") for _, message in replies]
+            != [CAPABILITIES_ID, START_ID] or any(message["return"] != {} for _, message in replies)):
+        raise ValueError("missing, duplicated or out-of-order QMP command acknowledgements")
+    events = [(index, message) for index, message in enumerate(messages) if "event" in message]
+    if any(message["event"] in ("RESET", "GUEST_PANICKED", "WATCHDOG") for _, message in events):
+        raise ValueError("QEMU reset, panic or watchdog event during rejection proof")
+    resumes = [index for index, message in events if message["event"] == "RESUME"]
+    shutdowns = [(index, message) for index, message in events if message["event"] == "SHUTDOWN"]
+    if len(resumes) != 1 or len(shutdowns) != 1:
+        raise ValueError("missing or duplicated QMP resume/shutdown event")
+    at, shutdown = shutdowns[0]
+    data = shutdown.get("data")
+    if (not isinstance(data, dict) or data.get("guest") is not True
+            or data.get("reason") != "guest-shutdown"):
+        raise ValueError("QEMU exit was not an explicit guest shutdown")
+    if not (replies[0][0] < resumes[0] < at and replies[1][0] < at):
+        raise ValueError("QMP shutdown did not follow acknowledged guest execution")
+    return data
+
+
+def collect_shutdown(monitor: QmpMonitor, process, deadline: float) -> dict:
+    while time.monotonic() < deadline:
+        try:
+            record = monitor.read(min(deadline, time.monotonic() + 0.1))
+        except TimeoutError:
+            record = {}  # Still connected; the overall deadline remains authoritative.
+        status = process.poll()
+        if record is None and status is None:
+            # EOF can precede process reaping. Allow only a short natural-exit
+            # grace period; disconnecting a still-running guest is not success.
+            try:
+                status = process.wait(timeout=min(2, max(0, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError("QMP disconnected while QEMU was still running") from error
+        if status is not None:
+            # SHUTDOWN can still be buffered when poll first observes exit 0.
+            drain_deadline = min(deadline, time.monotonic() + 2)
+            while record is not None:
+                record = monitor.read(drain_deadline)
+            shutdown = validate_qmp(monitor.messages)
+            if status != 0:
+                raise RuntimeError(f"QEMU exited abnormally after rejection: {status}")
+            return shutdown
+    raise TimeoutError("no completed loader rejection/shutdown before deadline")
 
 
 def mutate_elf(original: bytes, case: str) -> tuple[bytes, dict]:
@@ -85,31 +243,39 @@ def validate_log(log: str, case: str) -> None:
             raise ValueError(f"malformed image continued or faulted: {forbidden}")
 
 
-def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
+def boot(root: Path, evidence: Path, case: str, timeout: int) -> dict:
     serial = evidence / "serial.log"
+    # macOS sockaddr_un paths are short. Keep the owned socket in /tmp; all
+    # protocol bytes and commands still live in the permanent evidence folder.
+    with tempfile.TemporaryDirectory(prefix="genos-qmp-", dir="/tmp") as qmp_dir:
+        return boot_with_qmp(root, evidence, case, timeout, serial, Path(qmp_dir) / "monitor")
+
+
+def boot_with_qmp(root: Path, evidence: Path, case: str, timeout: int,
+                  serial: Path, qmp_path: Path) -> dict:
     args = qemu_args(root=root) + [
         "-drive", f"if=pflash,format=raw,readonly=on,file={firmware_path()}",
         "-drive", load_profile(root)["boot_drive"] + ",file=build/genos.img", "-net", "none",
-        "-display", "none", "-monitor", "none", "-serial", f"file:{serial}", "-no-reboot"]
+        "-display", "none", "-monitor", "none", "-serial", f"file:{serial}", "-no-reboot",
+        "-S", "-qmp", f"unix:{qmp_path},server=on,wait=off"]
     (evidence / "qemu-command.json").write_text(json.dumps(args, indent=2) + "\n")
-    with (evidence / "qemu.log").open("w") as output:
+    with ((evidence / "qemu.log").open("w") as output,
+          (evidence / "qmp.log").open("wb") as received,
+          (evidence / "qmp-commands.log").open("wb") as sent):
         process = subprocess.Popen(args, cwd=root, stdout=output, stderr=subprocess.STDOUT)
+        connection = None
         try:
             deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                log = serial.read_text(errors="replace") if serial.exists() else ""
-                status = process.poll()
-                if status is not None:
-                    # This loader path deliberately requests UEFI shutdown after
-                    # printing the error and stalling. A timeout/reset alone is
-                    # never sufficient: all ordered rejection records are needed.
-                    validate_log(log, case)
-                    if status != 0:
-                        raise RuntimeError(f"QEMU exited abnormally after rejection: {status}")
-                    return
-                time.sleep(0.05)
-            raise TimeoutError(f"no completed loader rejection/shutdown within {timeout}s")
+            connection = connect_qmp(qmp_path, process, deadline)
+            monitor = QmpMonitor(connection, received, sent)
+            monitor.start(deadline)
+            shutdown = collect_shutdown(monitor, process, deadline)
+            log = serial.read_text(errors="replace") if serial.exists() else ""
+            validate_log(log, case)
+            return shutdown
         finally:
+            if connection is not None:
+                connection.close()
             if process.poll() is None:
                 process.terminate()
             try:
@@ -162,13 +328,14 @@ def main() -> None:
                         subprocess.run(command, cwd=root, stdout=output, stderr=subprocess.STDOUT,
                                        check=True, timeout=30)
                     manifest["image_sha256"] = hashlib.sha256((root / "build/genos.img").read_bytes()).hexdigest()
-                    boot(root, evidence, case, options.timeout)
+                    manifest["qmp_shutdown"] = boot(root, evidence, case, options.timeout)
                     manifest["status"] = "passed"
                 except Exception as error:
                     manifest.update(status="failed", failure=f"{type(error).__name__}: {error}")
                     raise
                 finally:
-                    for name in ("serial.log", "qemu.log", "image.log", "mutation.json"):
+                    for name in ("serial.log", "qemu.log", "qmp.log", "qmp-commands.log",
+                                 "image.log", "mutation.json"):
                         path = evidence / name
                         if path.exists():
                             manifest[name + "_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()

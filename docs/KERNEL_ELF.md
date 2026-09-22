@@ -104,3 +104,13 @@ segments each. Real UEFI allocation/handoff and injected malformed kernel images
 still require the integrated VM campaign; host parsing alone does not supply
 that evidence. Broader mutation, coverage-guided fuzzing and other firmware
 implementations remain further qualification work.
+
+`python3 tools/test_kernel_elf.py` replaces the staged kernel in a disposable
+image with six malformed fixtures. Each case requires the exact ordered loader
+rejection, no kernel entry, exit status zero, and a QMP `SHUTDOWN` event with
+`guest: true` and `reason: guest-shutdown`. QEMU starts paused until QMP is
+subscribed, so early terminal events are observed. Reset, panic, host exit,
+missing events and expired deadlines fail the case. Raw QMP input and commands
+are retained and hashed alongside serial output, including failed cases. QMP
+connection, message sizes, message count and total input are bounded; a short
+owned socket path supports the macOS reference host.
