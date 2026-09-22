@@ -100,10 +100,10 @@ unchanged. The `check_kernel` example validates and simulates loading an existin
 kernel image; it does not build that image or execute firmware/CPU code.
 
 The actual local debug and release kernel images were accepted with four load
-segments each. Real UEFI allocation/handoff and injected malformed kernel images
-still require the integrated VM campaign; host parsing alone does not supply
-that evidence. Broader mutation, coverage-guided fuzzing and other firmware
-implementations remain further qualification work.
+segments each. The full boot/handoff suite and all six malformed-image VM cases
+passed locally; see [the exact verification record](VERIFICATION.md). Broader
+mutation, coverage-guided fuzzing and other firmware implementations remain
+further qualification work.
 
 `python3 tools/test_kernel_elf.py` replaces the staged kernel in a disposable
 image with six malformed fixtures. Each case requires the exact ordered loader

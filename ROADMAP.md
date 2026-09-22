@@ -72,9 +72,9 @@ own implementation decision and tests.
 
 | Area | What exists now | What the evidence does not establish |
 | --- | --- | --- |
-| Boot and exceptions | UEFI map/handoff admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages; protected IDT | Exhaustive firmware map/exit retries, stack high-water/nesting/return qualification or complete CPU-state qualification |
+| Boot and exceptions | UEFI map/handoff and kernel ELF admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages; protected IDT | Exhaustive firmware map/exit retries, stack high-water/nesting/return qualification or complete CPU-state qualification |
 | Page protection | NX/WP and supported SMEP/SMAP; user mapping and linked kernel section permissions | Physical-frame-wide W^X across aliases or every CPU feature combination |
-| Memory | Bitmap grants, rollback, zero-before-grant, scrub-before-release, scoped IRQ access, `mem` counters | Caller/owner tokens, shared/pinned-frame retirement or all shared-state synchronization |
+| Memory | Owner/generation grants, pinned user mappings, rollback, RAM hygiene, scoped IRQ access and per-open `mem` snapshots | General sharing/device pins, kernel alias retirement, quotas or complete synchronization |
 | Processes and authority | Ring 3, preemption, private eager x87/MMX/SSE state, typed handles, exact deferred request identity, lifecycle cleanup | General spawn/heap/streams, tailored namespaces, full CPU-state qualification or stable application compatibility |
 | Modules | Host-tested endpoint and pathname policy modules; lexical unsafe inventory | Complete decomposition, caller-invariant audit or automatic semantic safety proof |
 | Terminal | Quiet normal session; bounded `help`; working serial `clear`; file/job commands and `mem` | Working directories, full line editing, quoting, pipelines, general launch, foreground cancellation or guest shutdown |
@@ -92,8 +92,8 @@ must agree before an item can move to Integrated.
 Current bounds matter: 4 managed asynchronous process slots including the shell;
 20 unified handles per process including 4 file and 4 socket handles; 32 VFS nodes;
 512-byte files; 64-byte paths; 80-byte console writes; 128-byte socket queues;
-4 global passive slots with a 2-slot per-owner ceiling; up to 8 GiB of managed usable
-frames across 64 ranges. These are current limits, not the final product design.
+4 global passive slots with a 2-slot per-owner ceiling; 8192 live dynamic frame grants
+(32 MiB including tables), with bitmap address coverage of up to 8 GiB across 64 ranges. These are current limits, not the final product design.
 
 ## Immediate priority: foundation correctness gate
 
@@ -102,8 +102,8 @@ frames across 64 ranges. These are current limits, not the final product design.
 | Next work item | Why it comes next | Completion evidence |
 | --- | --- | --- |
 | **F0.1 — Publish verification** | The VM candidate is pinned locally; GitHub rejected workflow publication for missing OAuth `workflow` scope | Authorized publication, exact-head remote checks and independent reproduction |
-| **F1.2 — CPU state and stack containment** | General applications must not share register state or corrupt adjacent stacks | Adversarial XSTATE tests, guard faults and explicit nesting/return-fault policy |
-| **F3.1/F2.1 — Enforce frame and alias ownership** | A live bitmap bit is not proof that the caller may free or remap it | Wrong-owner/stale/pinned/alias cases denied; hardware access tests; retirement before reuse |
+| **F1.2/F1.3/F1.4 — Complete context and stack qualification** | Eager x87/MMX/SSE state and fourteen guards are implemented; other register state and nested/return faults remain | FS/GS/debug and FP exception contracts, stack usage measurements, nested/return-fault proofs |
+| **F3.1/F2.1 — Finish physical alias and sharing policy** | Owner grants protect user mappings; kernel writable aliases and device pins remain open | Physical W^X, explicit sharing/DMA retirement and stale-translation hardware tests |
 | **S1.2/S1.3 — Expand storage failure qualification** | S1.1 now quarantines uncertain commits; the host device model is bounded | Broader sector loss/reordering, device errors and independent recovery evidence |
 | **F4/F5 — Extract and guard remaining state** | Broader applications multiply the current raw-global assumptions | Executable ownership interfaces, context/lock assertions and delayed-interrupt tests |
 | **F6 — Coverage and sustained failures** | Mutation counts and short boots leave important state spaces unexplored | Coverage-guided targets, repeatable fault schedules, retained regressions and sustained-run accounting |
@@ -138,6 +138,8 @@ must not deepen a known ownership or isolation violation.
 - [x] Eight original user/kernel exception cases and six page-protection probes are reported as passing; BSP/reentry checks and the owned boot-stack fix are implemented.
 - [x] Checked UEFI byte decoding and kernel handoff admission reject descriptor truncation/capacity, overflow, overlap and unretained boot/kernel/initrd memory. See [MEMORY.md](docs/MEMORY.md) for the trusted-pointer boundary and rejection fixtures.
 - [x] The [bounded eager CPU-state policy](docs/CPU_STATE.md) preserves x87/MMX/XMM0–15/MXCSR, initializes fresh process state, disables OSXSAVE/PKE and enforces soft-float kernel compilation. A real Ring 3 fixture covers six processes, direct/yield syscalls, preemption, fault/reuse and exact frame reclamation.
+- [x] The [kernel ELF load plan](docs/KERNEL_ELF.md) validates the whole image before allocation/copy; six malformed-image VM cases prove rejection before kernel entry and explicit QMP guest shutdown.
+- [x] Seven kernel stacks have fourteen inaccessible guards with boot-time mapping readback; four selected CPU faults prove exact guard addresses and deliberate containment.
 - [ ] **F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.
   Map/handoff checks are implemented; the pinned UEFI helper supplies one stale-key retry. A [bounded kernel ELF load plan](docs/KERNEL_ELF.md) now validates the complete image before allocation/copy. Exhaustive map-growth/exit fault injection and firmware allocation-failure qualification remain open.
 - [ ] **F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.
@@ -167,6 +169,8 @@ these remaining CPU-state and hardware obligations.
 
 - [x] Lossless bitmap reclamation, fragmented-map tests, zero-before-grant, scrub-before-release and scoped IRQ allocator access exist.
 - [x] All ten reference process-construction allocation cutoffs restore the live-frame baseline; `mem` observes an increase for a running job and return after cleanup.
+- [x] Private-field owner/generation grants, exact user mapping pins, stale-root denial and unlink-before-release now use one production ledger; host and VM probes exercise denied authority and exact reclamation.
+- [x] `/MEMORY.STATUS` captures immutable bytes per open handle; Ring 3 interleaved reads retain the original report while a live process changes allocation, then close/reuse and kill/reap restore the baseline.
 - [ ] **F3.1:** make grants carry enforceable owner/allocation identity; define explicit sharing and pinned device buffers. A physical address alone must not authorize release.
   [Private-field frame grants](docs/FRAME_GRANTS.md) now enforce owner/allocation identity and reject stale reuse. Explicit sharing and device pins remain open; user aliases are denied.
 - [ ] **F3.2:** retire references, mappings, translations and device use before scrubbing/reuse. Wrong-owner, stale-generation, duplicate, aliased and pinned releases must leave state and bytes unchanged.
