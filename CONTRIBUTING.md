@@ -267,9 +267,10 @@ features, and the [parser stress harness](tools/parser-stress/README.md).
 Review unsafe source changes with `python3 tools/check_unsafe.py --diff`, then
 explicitly regenerate the baseline with `--write-baseline` and check it with
 `--check`. A baseline is retained context, not a safety approval. The full QEMU
-suite and `python3 tools/test_bsp.py` require committed source for exact evidence.
+suite and the exception, BSP and boot-memory harnesses require committed source
+for exact evidence.
 
 Rust 1.97 is the declared minimum supported version for all workspace packages
 and the standalone parser harness. CI uses the pinned 1.97.0 toolchain; older
 compilers are outside the supported contract. Python 3.12 or newer is required
-for the BSP archive harness.
+for the exception, BSP and boot-memory source-archive harnesses.

@@ -9,8 +9,9 @@ recovery, latency, resource use and maintainability for supported workloads; it 
 not a claim of universal superiority or absence of bugs.
 
 This refresh reconciles the code, retained local tests, older roadmap entries and
-[primary-source research](docs/research/README.md). It changes the plan, not the
-running kernel. Previous stage numbers remain for links and history. The
+[primary-source research](docs/research/README.md). The September 8 refresh changed
+the plan; the September 22 foundation work adds implementation and tests.
+Previous stage numbers remain for links and history. The
 [previous roadmap](docs/history/2026-09-08-roadmap-before-refresh.md) is archived.
 
 ## Status language
