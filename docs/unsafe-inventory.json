@@ -363,6 +363,11 @@
       "sha256": "2861005179ac6db9aae4e63119cf2d15b580da5ff09702b1b444d5883f77317e"
     },
     {
+      "lines": 276,
+      "path": "tools/ownership_model/src/main.rs",
+      "sha256": "ae9a287fc903bfa8c96565bd544b693c27bb28295e9a0f5bd5d523f66670be41"
+    },
+    {
       "lines": 567,
       "path": "tools/parser-stress/src/main.rs",
       "sha256": "044f0d47ee35aca9b36c49aac776b8495b3dea499c0f986470f9061ee0eb5f4e"

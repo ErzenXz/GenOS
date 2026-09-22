@@ -1,0 +1,13 @@
+[package]
+name = "genos-ownership-model"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT"
+
+# An independent host model, never linked into a kernel image.
+[workspace]
+
+[dependencies]
+kernel = { path = "../../kernel" }
+genos_abi = { path = "../../crates/abi" }
