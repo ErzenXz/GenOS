@@ -104,6 +104,10 @@ fn export(destination: &Path) -> Result<(), String> {
             include_str!("../../../crates/abi/src/lib.rs"),
         ),
         (
+            "sdk/abi/src/boot_memory.rs",
+            include_str!("../../../crates/abi/src/boot_memory.rs"),
+        ),
+        (
             "sdk/runtime/src/lib.rs",
             include_str!("../../../userspace/runtime/src/lib.rs"),
         ),
