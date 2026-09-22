@@ -72,7 +72,7 @@ own implementation decision and tests.
 
 | Area | What exists now | What the evidence does not establish |
 | --- | --- | --- |
-| Boot and exceptions | UEFI map/handoff admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; dedicated emergency stacks; protected IDT | Exhaustive firmware map/exit retries, stack-overflow guards, nested emergency recovery or complete CPU-state qualification |
+| Boot and exceptions | UEFI map/handoff admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages; protected IDT | Exhaustive firmware map/exit retries, stack high-water/nesting/return qualification or complete CPU-state qualification |
 | Page protection | NX/WP and supported SMEP/SMAP; user mapping and linked kernel section permissions | Physical-frame-wide W^X across aliases or every CPU feature combination |
 | Memory | Bitmap grants, rollback, zero-before-grant, scrub-before-release, scoped IRQ access, `mem` counters | Caller/owner tokens, shared/pinned-frame retirement or all shared-state synchronization |
 | Processes and authority | Ring 3, preemption, private eager x87/MMX/SSE state, typed handles, exact deferred request identity, lifecycle cleanup | General spawn/heap/streams, tailored namespaces, full CPU-state qualification or stable application compatibility |
@@ -139,10 +139,11 @@ must not deepen a known ownership or isolation violation.
 - [x] Checked UEFI byte decoding and kernel handoff admission reject descriptor truncation/capacity, overflow, overlap and unretained boot/kernel/initrd memory. See [MEMORY.md](docs/MEMORY.md) for the trusted-pointer boundary and rejection fixtures.
 - [x] The [bounded eager CPU-state policy](docs/CPU_STATE.md) preserves x87/MMX/XMM0–15/MXCSR, initializes fresh process state, disables OSXSAVE/PKE and enforces soft-float kernel compilation. A real Ring 3 fixture covers six processes, direct/yield syscalls, preemption, fault/reuse and exact frame reclamation.
 - [ ] **F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.
-  Map/handoff checks are implemented; the pinned UEFI helper supplies one stale-key retry. Exhaustive map-growth/exit fault injection and kernel ELF-loader review are still required.
+  Map/handoff checks are implemented; the pinned UEFI helper supplies one stale-key retry. A [bounded kernel ELF load plan](docs/KERNEL_ELF.md) now validates the complete image before allocation/copy. Exhaustive map-growth/exit fault injection and firmware allocation-failure qualification remain open.
 - [ ] **F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.
   The fixed 512-byte FXSAVE64 fallback is implemented and has scoped VM evidence. Broader CPU state (including FS/GS/debug contracts), unmasked FP exceptions and physical/feature-matrix qualification remain open; no complete F1.2 claim.
 - [ ] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
+  All seven stacks now have [fourteen page guards](docs/KERNEL_STACKS.md), installed/read back before IRQ enable. Selected real fault fixtures are provided; high-water measurements, nesting and guard-skipping qualification remain open.
 - [ ] **F1.4:** specify and test NMI/machine-check/same-IST nesting, fault-during-return and malformed return state. Recover only where a safe recovery contract is demonstrated; otherwise halt deliberately.
 - [ ] **F1.5:** test missing/mixed CPU features and unsupported ISA use before admitting general applications. Record exactly what the reference CPU contract permits.
 
@@ -162,18 +163,22 @@ these remaining CPU-state and hardware obligations.
 
 ### F3 — Transactional physical and virtual memory
 
-**Owner:** allocator/address-space modules. **Status:** bitmap, rollback and hygiene delivered; owner identity incomplete.
+**Owner:** allocator/address-space modules. **Status:** bounded owner/generation grants, mapping pins and rollback delivered; sharing/device policy incomplete.
 
 - [x] Lossless bitmap reclamation, fragmented-map tests, zero-before-grant, scrub-before-release and scoped IRQ allocator access exist.
 - [x] All ten reference process-construction allocation cutoffs restore the live-frame baseline; `mem` observes an increase for a running job and return after cleanup.
 - [ ] **F3.1:** make grants carry enforceable owner/allocation identity; define explicit sharing and pinned device buffers. A physical address alone must not authorize release.
+  [Private-field frame grants](docs/FRAME_GRANTS.md) now enforce owner/allocation identity and reject stale reuse. Explicit sharing and device pins remain open; user aliases are denied.
 - [ ] **F3.2:** retire references, mappings, translations and device use before scrubbing/reuse. Wrong-owner, stale-generation, duplicate, aliased and pinned releases must leave state and bytes unchanged.
+  User PTE pins, inactive-root construction/teardown, CR3 retirement with PCID/global retention disabled, and unlink-before-release are implemented. Raw kernel references/direct aliases, DMA and SMP still require broader lifetime policy.
 - [ ] **F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.
 - [ ] **F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.
-- [ ] **F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; the current shared `/MEMORY.STATUS` can change across concurrent opens.
+- [ ] **F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; `/MEMORY.STATUS` must stay coherent across partial reads.
+  Immutable per-open snapshots and kernel/user grant accounting now exist, with explicit 8192-live-grant capacity and failure reporting. Per-process quotas and pressure policy remain open.
 
 Contract and current limits: [MEMORY.md](docs/MEMORY.md). Scrubbing is RAM hygiene,
-not proof of cache erasure, physical remanence protection or caller ownership.
+not proof of cache erasure or physical remanence protection. Owner/grant enforcement
+and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 
 ### F4 — Kernel ownership and decomposition
 

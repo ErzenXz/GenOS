@@ -280,3 +280,18 @@ Rust 1.97 is the declared minimum supported version for all workspace packages
 and the standalone parser harness. CI uses the pinned 1.97.0 toolchain; older
 compilers are outside the supported contract. Python 3.12 or newer is required
 for the exception, BSP and boot-memory source-archive harnesses.
+
+Additional foundation hardware fixtures are independent of `cargo xtask test`:
+
+```sh
+python3 tools/test_stack_guards.py
+python3 tools/test_kernel_elf.py
+python3 tools/test_memory_snapshot.py
+```
+
+They require a clean committed checkout and Python 3.12+, preserve the production
+kernel/loader/runtime paths under test, and retain source/image identity, deliberate
+fixture changes, output and success/failure manifests. The dedicated foundation
+workflow assigns each guard/ELF case and the diagnostic snapshot its own job.
+Configured Linux jobs are portability checks; they do not claim the pinned macOS
+reference environment or successful remote execution before the workflow runs.

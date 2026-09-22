@@ -48,7 +48,8 @@ are not the current design.
 
 BootInfo/map admission now rejects oversized/truncated, overflowing, overlapping
 maps and unretained kernel/boot/initrd ranges; unknown/runtime memory stays reserved.
-It still trusts an accessible typed handoff and the kernel ELF loader. Exhaustive
+It still trusts an accessible typed handoff. The [kernel ELF loader](KERNEL_ELF.md)
+now validates a bounded immutable load plan before allocation/copy. Exhaustive
 firmware map-growth/stale-key retry failures remain untested.
 
 The reference now eagerly preserves x87/MMX/SSE state in a private 512-byte
@@ -58,7 +59,8 @@ preemption/syscall/fault/reuse evidence and its limits. It does not establish
 FS/GS/debug register virtualization, unmasked FP exception behavior or support
 for arbitrary physical CPUs/ISA combinations.
 
-Remaining gaps include stack overflow guards/high-water accounting, complete CPU
+Seven stacks now have fourteen inaccessible page guards; see [KERNEL_STACKS.md](KERNEL_STACKS.md).
+Remaining gaps include stack high-water accounting, complete CPU
 state and feature qualification, same-IST/NMI/fatal nesting and return-fault behavior,
 and a broader unsupported/mixed-feature matrix. Current explicit mappings reject W+X, but
 physical aliases still prevent a physical-frame-wide permission claim.
@@ -71,11 +73,19 @@ Current paths zero before granting, scrub before reuse, reject selected invalid 
 duplicate releases and roll back tested construction failures. Allocator accesses
 use scoped local IRQ masking. `mem` reports real managed-frame counters.
 
-A live allocation bit still does not identify its rightful caller. Per-owner and
-allocation-generation grants, shared/aliased/pinned-frame retirement, full early/runtime
-allocation policy and explicit contiguous allocation remain incomplete. The physical
-release API is unsafe and depends on caller ownership/retirement obligations.
-`/MEMORY.STATUS` is a shared diagnostic file, not a stable per-open snapshot.
+The [grant ledger](FRAME_GRANTS.md) now checks owner/allocation identity, rejects
+stale grants and duplicate user aliases, pins mapped user frames, and validates
+inactive-root teardown before unlink/scrub/reuse. It bounds live dynamic allocations
+to 8192 pages (32 MiB including tables), separately from the bitmap's 8-GiB address
+coverage. The ledger uses at most 328,000 bytes and bounded linear scans; worst-case
+IRQ latency and memory-pressure behavior are not qualified. Arbitrarily corrupted
+page-table topology is outside the safe construction contract.
+
+Sharing, device/DMA pins, kernel direct-map alias retirement, full early/runtime
+policy, contiguous allocation and per-process quotas remain incomplete. Physical
+release remains unsafe because callers must retire raw references and device uses.
+`/MEMORY.STATUS` now provides an immutable snapshot for each read-only open handle;
+partial reads and metadata retain that captured version until close/revocation.
 
 Other process, address-space, scheduler, runtime and device state still needs a full
 ownership/context audit. Local IRQ masking does not protect NMIs or other CPUs.
