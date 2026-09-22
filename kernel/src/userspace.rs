@@ -1934,9 +1934,9 @@ impl ProcessManager {
                             );
                             crate::serial::trace::println("USER_READ_ONLY_MUTATION_DENIED_OK");
                         }
-                        if text.as_str() == "session file written" {
+                        if text.as_str() == "storage unavailable mutations denied" {
                             crate::serial::trace::println(
-                                "USER_SESSION_WRITE_OK path=/USER/SHELL.TXT",
+                                "USER_STORAGE_UNAVAILABLE_MUTATION_DENIED_OK",
                             );
                         }
                         if text.as_str().starts_with("SHELL.ELF ready") {
