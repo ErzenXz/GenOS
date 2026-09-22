@@ -1,0 +1,81 @@
+name: Foundation containment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, docs/quality-first-roadmap]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-containment-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hardware-fixture:
+    name: Foundation ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: boot-stack-guard
+            script: test_stack_guards.py
+            args: --case boot-lower
+          - name: privilege-stack-guard
+            script: test_stack_guards.py
+            args: --case privilege-lower
+          - name: irq-stack-guard
+            script: test_stack_guards.py
+            args: --case irq-lower
+          - name: emergency-stack-guard
+            script: test_stack_guards.py
+            args: --case double-fault-upper
+          - name: elf-truncation
+            script: test_kernel_elf.py
+            args: --case truncated-header
+          - name: elf-program-range
+            script: test_kernel_elf.py
+            args: --case program-range
+          - name: elf-segment-overflow
+            script: test_kernel_elf.py
+            args: --case segment-overflow
+          - name: elf-overlap
+            script: test_kernel_elf.py
+            args: --case overlap
+          - name: elf-writable-code
+            script: test_kernel_elf.py
+            args: --case writable-code
+          - name: elf-entry-data
+            script: test_kernel_elf.py
+            args: --case entry-data
+          - name: memory-snapshot
+            script: test_memory_snapshot.py
+            args: ''
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Activate pinned compiler and verify Python
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-none x86_64-unknown-uefi
+          python3 -c 'import sys; assert sys.version_info >= (3, 12)'
+      - name: Run immutable source fixture
+        run: python3 tools/${{ matrix.script }} ${{ matrix.args }}
+      - name: Retain success and failure evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: foundation-${{ matrix.name }}
+          path: |
+            build/stack-guard-evidence/
+            build/kernel-elf-evidence/
+            build/memory-snapshot-evidence/
+          if-no-files-found: warn
+          retention-days: 14
