@@ -81,6 +81,10 @@ retained serial/stderr logs. Files live under
 `build/normal-evidence/<run-id>/<label>/`; the older flat paths remain copies for
 existing CI collection. Early interruption leaves `status=incomplete`, and
 observed boot failures record `status=failed` plus the reason. Neither is a pass.
+The validation/storage/memory/SDK/serial/network launchers now retain separate
+per-run artifacts under `build/validation-evidence/`; their complete record,
+phase, challenge and failure contracts are described in
+[VALIDATION_EVIDENCE.md](VALIDATION_EVIDENCE.md).
 Python CPU fixtures retain the same environment fields in their JSON manifests,
 plus their exact source patch and individual build/serial/QEMU log hashes.
 

@@ -7,6 +7,9 @@ pub const BOOT_SEQUENCE: &[&str] = &[
     "CPU_TLB_POLICY_READY pcid=off global=off",
     "KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx",
     "KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096",
+    "IDT_READONLY_READY",
+    "PHYSICAL_ALIAS_POLICY_READY identity=only user_alias=sealed direct=nx",
+    "IRQ_HARDWARE_ON",
 ];
 const PROBE: &str = "USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true";
 const PREEMPTIONS: &str = "USER_XSTATE_PREEMPTIONS count=";
