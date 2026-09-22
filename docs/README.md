@@ -21,6 +21,8 @@ These documents describe the exact bounded behavior demonstrated by the current 
 - [Runtime ownership and coordination](RUNTIME.md)
 - [Storage format and recovery](STORAGE.md)
 - [Managed-frame memory and diagnostics](MEMORY.md)
+- [Process CPU state and isolation](CPU_STATE.md)
+- [Versioned reference VM and qualification](REFERENCE_VM.md)
 - [Networking contracts](NETWORKING.md)
 - [Normal and validation boot policies](BOOT_MODES.md)
 - [Single-core admission and interrupt contract](SINGLE_CORE.md)

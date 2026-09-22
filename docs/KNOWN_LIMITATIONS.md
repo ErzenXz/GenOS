@@ -1,6 +1,6 @@
 # GenOS current limitations
 
-**Updated 2026-09-08 against code/evidence baseline `5599dc7`. Level: Experimental.**
+**Updated 2026-09-22; exact foundation source and evidence are recorded in [VERIFICATION.md](VERIFICATION.md). Level: Experimental.**
 This is the current register, not a cumulative historical audit. The
 [previous register](history/2026-09-08-limitations-before-refresh.md) preserves older
 wording that described already-replaced implementations. Research and planned fixes
@@ -24,9 +24,11 @@ security qualification. Do not infer them from local boot or plaintext test traf
 
 ## Evidence and integration
 
-The implementation record reports 169 Rust tests, 25 Python checks, parser CLI tests,
-retained mutation runs, selected storage/network/memory suites, eight original CPU
-fault cases, six protection cases and five BSP cases. Those are scoped local results.
+The implementation record reports host tests, Python evidence checks, parser CLI
+and mutation runs, and scoped storage/network/memory/CPU/BSP suites. Exact source,
+totals, failures and successful reruns belong in [VERIFICATION.md](VERIFICATION.md).
+Those are scoped local results. The VM candidate now has pinned arguments and an
+exact tool/firmware preflight; independent reproduction remains missing.
 New independent CI jobs and a weekly long-validation workflow are configured locally,
 but the branch push was rejected because the OAuth credential lacks `workflow` scope.
 No draft PR was created and these new jobs have not supplied remote evidence.
@@ -44,10 +46,21 @@ stacks, an IDT protected by the CPU, NX/WP, optional SMEP/SMAP and a kernel-owne
 stack are implemented. The former bare catch-all entry and firmware-stack overflow
 are not the current design.
 
-Remaining gaps include complete BootInfo/map validation without descriptor truncation,
-stack overflow guards/high-water accounting, complete process floating-point/vector
-state, kernel SIMD policy, same-IST/NMI/fatal nesting and return-fault behavior, and a
-broader unsupported/mixed-feature matrix. Current explicit mappings reject W+X, but
+BootInfo/map admission now rejects oversized/truncated, overflowing, overlapping
+maps and unretained kernel/boot/initrd ranges; unknown/runtime memory stays reserved.
+It still trusts an accessible typed handoff and the kernel ELF loader. Exhaustive
+firmware map-growth/stale-key retry failures remain untested.
+
+The reference now eagerly preserves x87/MMX/SSE state in a private 512-byte
+process image and initializes clean state on reuse. OSXSAVE/PKE are disabled;
+kernel Rust remains soft-float. The [CPU contract](CPU_STATE.md) records real
+preemption/syscall/fault/reuse evidence and its limits. It does not establish
+FS/GS/debug register virtualization, unmasked FP exception behavior or support
+for arbitrary physical CPUs/ISA combinations.
+
+Remaining gaps include stack overflow guards/high-water accounting, complete CPU
+state and feature qualification, same-IST/NMI/fatal nesting and return-fault behavior,
+and a broader unsupported/mixed-feature matrix. Current explicit mappings reject W+X, but
 physical aliases still prevent a physical-frame-wide permission claim.
 **Roadmap:** F1, F2.
 
@@ -74,8 +87,8 @@ not implemented; SMP remains disabled. **Roadmap:** F3, F5, H-SMP.
 Endpoint authority and pathname rules now have production modules with executable
 host tests. Much process/context/loader/syscall/lifecycle coordination remains in
 `kernel/src/userspace.rs`, and other shared globals and presentation dependencies
-need decomposition. The current lexical inventory records 376 unsafe/assembly sites
-across 65 source files at this baseline. It preserves review context; it is not a
+need decomposition. The generated [lexical inventory](unsafe-inventory.json)
+records the current unsafe/assembly sites and their source context. It is not a
 caller-invariant audit, Rust soundness proof or measure of relative OS safety.
 **Roadmap:** F4.
 
@@ -107,17 +120,18 @@ and 512-byte files. It has no general file-data allocator, scalable metadata mod
 atomic replacement/rename contract, production backup/migration policy or complete
 fault matrix at every mutation/recovery boundary.
 
-**Open audit inference:** a failed/timed-out final commit flush can have an unknown
-on-media result. `PersistentFs::commit` submits the commit header before the final
-flush returns; `RuntimeCoordinator::persist_change` restores RAM on reported failure.
-That does not prove the new generation was absent from disk. There is no explicit
-unknown-outcome quarantine/reconciliation state yet. A deterministic reproducer is
-still required. See [the source-grounded research](research/2026-09-console-platform.md)
-and [storage contract](STORAGE.md); proposed mitigations are not implemented.
+The uncertain final-commit outcome is now reproduced and contained: a device
+failure quarantines the volume, discards cached writes, restores the last
+acknowledged RAM view and requires remount before further writes. Remount may find
+the old or new complete generation after an unacknowledged write. There is no live
+reconciliation. Snapshot application is transactional even on a late invalid entry
+or full VFS. See the [storage contract](STORAGE.md).
 
 The test disk model must also distinguish QEMU termination from physical loss of
-volatile caches. Device flush semantics, torn/reordered/lost writes, recovery failing
-again, format growth, backup/export and interrupted migration require explicit tests.
+volatile caches. The host tests cover errors before/after all 44 commit operations
+in two cache models and selected torn writes/second failures. Arbitrary reordered
+or lost sectors, physical ATA flush/error behavior, format growth, backup/export
+and interrupted migration still require qualification.
 **Roadmap:** S1, S2, C4, C5.
 
 ## Networking and devices

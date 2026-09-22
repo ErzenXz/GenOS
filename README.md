@@ -116,7 +116,7 @@ GenOS now enables and verifies NX and CR0.WP, plus CPUID-supported SMEP/SMAP, af
 
 The allocator uses a bitmap for up to 8 GiB of usable memory across 64 ranges, with overlap/capacity refusal and lossless reclamation. Clone rollback is tested at every allocation in a host fixture; real process construction is tested at all ten allocation points. See [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md).
 
-The system remains single-core and experimental. Emergency-stack nesting/XSTATE, inherited physical aliases, larger-memory support, allocator owner tokens, coverage-guided fuzzing and long-run validation, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
+The system remains single-core and experimental. Full CPU-state/stack containment, inherited physical aliases, larger-memory support, allocator owner tokens, coverage-guided fuzzing and long-run validation, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
 
 ## Immediate engineering priority
 
@@ -125,8 +125,11 @@ VM. Graphics stays deferred. The [research-backed roadmap](ROADMAP.md) separates
 implemented local slices, missing contracts and release evidence, with three targets:
 verified kernel reference, useful console preview, then stable console reference.
 
+The latest foundation work adds checked boot memory admission, private eager
+x87/MMX/SSE process state, uncertain-commit write quarantine, transactional
+snapshot mounting and a [versioned VM candidate](docs/REFERENCE_VM.md).
 Next work: complete CPU context/stack containment, enforce frame/alias ownership,
-resolve uncertain storage commits, finish shared-state/module ownership, and extend
+broaden storage fault qualification, finish shared-state/module ownership, and extend
 coverage and sustained tests. General application launch and bounded streams come
 before pipelines; scalable recoverable storage comes before trusting editor saves.
 
