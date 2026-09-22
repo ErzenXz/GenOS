@@ -100,7 +100,12 @@ def validate_log(log: str, case: str) -> None:
         if any(lines.count(marker) != 1 for marker in required):
             raise ValueError("normal BSP boot must enter, initialize and launch exactly once")
         topology = TOPOLOGY.findall(log)
-        if len(topology) != 1 or int(topology[0][1]) != (4 if case == "quad" else 1):
+        # CPUID.1's package-capacity field is valid only when HTT is set.
+        # The pinned qemu64 single-vCPU model clears HTT, so the kernel reports
+        # zero (unavailable), not an active-CPU count. Four-vCPU evidence still
+        # requires the topology-capacity diagnostic and one admitted kernel CPU.
+        capacities = (4,) if case == "quad" else (0, 1)
+        if len(topology) != 1 or int(topology[0][1]) not in capacities:
             raise ValueError("missing, duplicate or incorrect BSP-only topology diagnostic")
         if any("BSP_PROBE_" in line for line in lines):
             raise ValueError("normal image contains validation probe output")
