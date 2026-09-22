@@ -18,6 +18,15 @@ class ReferenceProfileTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_profile(source + suffix)
 
+    def test_both_network_families_must_be_explicitly_enabled_once(self):
+        source = profile_path().read_text()
+        for family in ("ipv4", "ipv6"):
+            for changed in (source.replace(family + "=on,", ""),
+                            source.replace(family + "=on", family + "=off"),
+                            source.replace(family + "=on", family + "=on," + family + "=off")):
+                with self.subTest(family=family), self.assertRaises(ValueError):
+                    parse_profile(changed)
+
     def test_mismatched_tool_or_firmware_is_not_reference_evidence(self):
         profile = load_profile()
         rust = "rustc metadata\nrelease: " + profile["rust_release"]

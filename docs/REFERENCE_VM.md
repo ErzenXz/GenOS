@@ -1,7 +1,7 @@
 # Versioned reference VM
 
 [`tools/reference-vm.conf`](../tools/reference-vm.conf) defines the candidate
-`genos-q35-tcg-v2` environment. All xtask boot commands and the standalone
+`genos-q35-tcg-v3` environment. All xtask boot commands and the standalone
 exception/BSP harnesses consume its machine, CPU, accelerator, memory and topology
 settings. A pinned environment makes results comparable; it does not make GenOS
 stable or establish that all roadmap qualification workloads have passed.
@@ -33,6 +33,11 @@ identity and is not portable. Obtain the same firmware through a trusted QEMU
 package/source, retain its origin alongside release artifacts, and select it with
 `GENOS_OVMF_CODE=/path/to/firmware.fd`. The repository does not redistribute that
 binary or attest to its supply chain.
+
+Profile v3 additionally enables both `ipv4=on` and `ipv6=on` explicitly. QEMU
+otherwise disables IPv4 when only the IPv6 switch is supplied, rejecting the
+configured IPv4 subnet/host/DNS before guest startup. Both profile parsers reject
+missing, disabled or conflicting protocol switches.
 
 The profile spells out IPv4 subnet `10.0.2.0/24`, host `10.0.2.2`, DHCP start
 `10.0.2.15`, DNS `10.0.2.3`, IPv6 prefix `fec0::/64`, host `fec0::2` and DNS

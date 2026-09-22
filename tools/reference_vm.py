@@ -25,6 +25,12 @@ def parse_profile(text: str) -> dict[str, str]:
     digest = values["firmware_sha256"]
     if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
         raise ValueError("invalid reference firmware SHA256")
+    # Supplying one protocol switch disables the other unless it is explicit.
+    network = values["network_backend"].split(",")
+    for family in ("ipv4", "ipv6"):
+        switches = [part for part in network if part.startswith(family + "=")]
+        if switches != [family + "=on"]:
+            raise ValueError(f"reference network requires exactly one {family}=on")
     return values
 
 
