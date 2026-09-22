@@ -11,7 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod cpu_evidence;
 mod normal_boot;
+mod reference_vm;
 mod sdk;
 
 const BUILD_DIR: &str = "build";
@@ -33,8 +35,6 @@ const SLOT_BYTES: usize = SLOT_SECTORS * 512;
 const SLOT_OFFSETS: [usize; 2] = [1, 1 + SLOT_SECTORS];
 const SNAPSHOT_HEADER_BYTES: usize = 64;
 const SNAPSHOT_CHECKSUM_OFFSET: usize = 20;
-const MODERN_NETWORK_DEVICE: &str =
-    "virtio-net-pci,disable-legacy=on,netdev=net0,mac=52:54:00:12:34:56";
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -44,6 +44,8 @@ fn main() {
         "build-test" => build_validation(),
         "build-release" => build_mode(BuildMode::Release, None),
         "test-release" => test_normal_boots(),
+        "reference-check" => find_ovmf_code().and_then(|firmware| reference_vm::check(&firmware)),
+        "test-reference" => test_reference(),
         "test-repeat" => {
             let count = args.next();
             if args.next().is_some() {
@@ -177,30 +179,29 @@ fn build_mode(mode: BuildMode, fault: Option<&str>) -> Result<(), String> {
 fn run() -> Result<(), String> {
     build_mode(BuildMode::Release, None)?;
     let firmware = find_ovmf_code()?;
-    let status = Command::new("qemu-system-x86_64")
-        .arg("-machine")
-        .arg("q35")
-        .arg("-m")
-        .arg("512M")
+    let status = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
             firmware.display()
         ))
         .arg("-drive")
-        .arg(format!("format=raw,file={IMAGE}"))
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
         .arg("-device")
-        .arg("piix3-ide,id=genos-storage")
+        .arg(reference_vm::profile()?.get("storage_controller"))
         .arg("-drive")
         .arg(format!(
             "if=none,id=genos-data,format=raw,cache=writeback,file={DATA_IMAGE}"
         ))
         .arg("-device")
-        .arg("ide-hd,drive=genos-data,bus=genos-storage.0,unit=0")
+        .arg(reference_vm::profile()?.get("storage_device"))
         .arg("-netdev")
-        .arg("user,id=net0")
+        .arg(reference_vm::profile()?.get("network_backend"))
         .arg("-device")
-        .arg(MODERN_NETWORK_DEVICE)
+        .arg(reference_vm::profile()?.get("network_device"))
         .arg("-nographic")
         .arg("-no-reboot")
         .status()
@@ -246,6 +247,16 @@ fn verify_normal_binary(mode: BuildMode) -> Result<(), String> {
     Ok(())
 }
 
+fn test_reference() -> Result<(), String> {
+    reference_vm::check(&find_ovmf_code()?)?;
+    let commit = reference_vm::clean_source()?;
+    test_normal_boots()?;
+    if reference_vm::clean_source()? != commit {
+        return Err("source commit changed during reference acceptance".into());
+    }
+    Ok(())
+}
+
 fn test_normal_boots() -> Result<(), String> {
     for mode in [BuildMode::Normal, BuildMode::Release] {
         build_mode(mode, None)?;
@@ -276,6 +287,18 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
         || base_label.to_string(),
         |index| format!("repeat-{index:04}"),
     );
+    let run_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos()
+        .to_string();
+    let evidence = PathBuf::from(format!("build/normal-evidence/{run_id}/{label}"));
+    fs::create_dir_all(&evidence).map_err(|e| e.to_string())?;
+    let manifest_path = evidence.join("manifest.txt");
+    let latest_manifest = format!("build/normal-{label}-manifest.txt");
+    let mut manifest = format!("status=incomplete\nrun_id={run_id}\nmode={mode:?}\n");
+    fs::write(&manifest_path, &manifest).map_err(|e| e.to_string())?;
+    fs::write(&latest_manifest, &manifest).map_err(|e| e.to_string())?;
     // Reuse one disposable volume across repetitions and reinitialize it before
     // each boot. Retain logs/manifests, not a thousand 8-MiB volume copies.
     let data_label = if iteration.is_some() {
@@ -286,13 +309,9 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
     let data_image = PathBuf::from(format!("build/genos-data-{data_label}-test.img"));
     write_partitioned_image(&data_image, false)?;
     let firmware = find_ovmf_code()?;
-    let mut command = Command::new("qemu-system-x86_64");
+    let mut command = reference_vm::command()?;
     command
         .args([
-            "-machine",
-            "q35",
-            "-m",
-            "512M",
             "-display",
             "none",
             "-monitor",
@@ -307,47 +326,42 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
             firmware.display()
         ))
         .arg("-drive")
-        .arg(format!("format=raw,file={IMAGE}"))
-        .args(["-device", "piix3-ide,id=genos-storage", "-drive"])
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
+        .args([
+            "-device",
+            reference_vm::profile()?.get("storage_controller"),
+            "-drive",
+        ])
         .arg(format!(
             "if=none,id=genos-data,format=raw,cache=writeback,file={}",
             data_image.display()
         ))
-        .args([
-            "-device",
-            "ide-hd,drive=genos-data,bus=genos-storage.0,unit=0",
-        ]);
+        .args(["-device", reference_vm::profile()?.get("storage_device")]);
     if mode == BuildMode::Release {
-        command.args(["-netdev", "user,id=net0", "-device", MODERN_NETWORK_DEVICE]);
+        command.args([
+            "-netdev",
+            reference_vm::profile()?.get("network_backend"),
+            "-device",
+            reference_vm::profile()?.get("network_device"),
+        ]);
     } else {
         command.args(["-net", "none"]);
     }
-    let manifest_path = format!("build/normal-{label}-manifest.txt");
-    let describe = |program: &str, args: &[&str]| -> String {
-        Command::new(program)
-            .args(args)
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .unwrap_or_else(|| "unavailable".into())
-    };
-    let hash = describe(
-        "python3",
-        &[
-            "-c",
-            "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())",
-            IMAGE,
-        ],
-    );
-    let mut manifest = format!("status=incomplete\nmode={mode:?}\ncommit={}\nworking_tree_status={:?}\nrust={}\nqemu={}\nimage_sha256={hash}\ncommand={command:?}\n",
-        describe("git", &["rev-parse", "HEAD"]),
-        describe("git", &["status", "--porcelain"]),
-        describe("rustc", &["-Vv"]),
-        describe("qemu-system-x86_64", &["--version"]));
+    let environment = reference_vm::environment(&firmware)?;
+    manifest.push_str(&environment.report);
+    manifest.push_str(&format!(
+        "commit={}\nworking_tree_status={:?}\nimage_sha256={}\ndata_image_initial_sha256={}\ncommand={command:?}\n",
+        reference_vm::output("git", &["rev-parse", "HEAD"])?,
+        reference_vm::output("git", &["status", "--porcelain"] )?,
+        reference_vm::sha256(Path::new(IMAGE))?,
+        reference_vm::sha256(&data_image)?,
+    ));
     fs::write(&manifest_path, &manifest).map_err(|e| e.to_string())?;
-    let stderr =
-        File::create(format!("build/normal-{label}-qemu.log")).map_err(|e| e.to_string())?;
+    fs::write(&latest_manifest, &manifest).map_err(|e| e.to_string())?;
+    let stderr = File::create(evidence.join("qemu.log")).map_err(|e| e.to_string())?;
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -370,6 +384,9 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
         }
     });
     let mut transcript = normal_boot::Transcript::new(mode == BuildMode::Release);
+    let mut freshness = normal_boot::Freshness::new(&run_id)?;
+    let mut challenge_sent = false;
+    let mut settled_at = None;
     // Cross-architecture TCG and loaded CI hosts need the same 120-second
     // wall-clock budget as the other boot gates; evidence requirements are unchanged.
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -396,12 +413,38 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
                 }
                 Ok(None) => {}
             }
-            if transcript.complete() {
-                passed = true;
+            if let Err(error) = freshness.observe(&line) {
+                failure = Some(error);
                 break;
             }
+            if transcript.complete() && !challenge_sent {
+                let challenge = freshness.issue()?;
+                if let Err(error) = input
+                    .write_all(challenge.as_bytes())
+                    .and_then(|()| input.flush())
+                {
+                    failure = Some(format!("freshness challenge write failed: {error}"));
+                    break;
+                }
+                challenge_sent = true;
+            }
+            if freshness.complete() && settled_at.is_none() {
+                settled_at = Some(Instant::now() + Duration::from_millis(500));
+            }
         }
-        if child.try_wait().ok().flatten().is_some() {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                failure = Some(format!("QEMU exited before stable completion: {status}"));
+                break;
+            }
+            Err(error) => {
+                failure = Some(format!("cannot query QEMU status: {error}"));
+                break;
+            }
+            Ok(None) => {}
+        }
+        if settled_at.is_some_and(|deadline| Instant::now() >= deadline) {
+            passed = true;
             break;
         }
     }
@@ -409,16 +452,36 @@ fn smoke_normal_qemu(mode: BuildMode, iteration: Option<usize>) -> Result<(), St
     let _ = child.wait();
     drop(input);
     let _ = reader.join();
+    fs::write(evidence.join("serial.log"), &output).map_err(|e| e.to_string())?;
     fs::write(format!("build/serial-{label}.log"), &output).map_err(|e| e.to_string())?;
+    fs::copy(
+        evidence.join("qemu.log"),
+        format!("build/normal-{label}-qemu.log"),
+    )
+    .map_err(|e| e.to_string())?;
+    manifest.push_str(&format!(
+        "serial_sha256={}\nqemu_log_sha256={}\n",
+        reference_vm::sha256(&evidence.join("serial.log"))?,
+        reference_vm::sha256(&evidence.join("qemu.log"))?
+    ));
+    let outcome = if passed { "passed" } else { "failed" };
+    manifest = manifest.replacen("status=incomplete\n", &format!("status={outcome}\n"), 1);
     if !passed {
-        return Err(format!(
-            "{label} interactive boot failed at step {}: {}; serial:\n{output}",
-            transcript.step(),
-            failure.as_deref().unwrap_or("timeout or exited process")
+        manifest.push_str(&format!(
+            "failure={:?}\n",
+            failure.as_deref().unwrap_or("timeout")
         ));
     }
-    manifest = manifest.replacen("status=incomplete\n", "status=passed\n", 1);
-    fs::write(&manifest_path, manifest).map_err(|e| e.to_string())?;
+    fs::write(&manifest_path, &manifest).map_err(|e| e.to_string())?;
+    fs::write(&latest_manifest, &manifest).map_err(|e| e.to_string())?;
+    if !passed {
+        return Err(format!(
+            "{label} interactive boot failed at step {}: {}; evidence: {}; serial:\n{output}",
+            transcript.step(),
+            failure.as_deref().unwrap_or("timeout"),
+            evidence.display()
+        ));
+    }
     println!("{label} boot passed: no startup proofs; real uname, launch/status/kill/reap and persistent file I/O");
     Ok(())
 }
@@ -1025,24 +1088,23 @@ fn smoke_qemu_phase(
         data_drive.push_str(",readonly=on");
     }
 
-    let mut child = Command::new("qemu-system-x86_64")
-        .arg("-machine")
-        .arg("q35")
-        .arg("-m")
-        .arg("512M")
+    let mut child = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
             firmware.display()
         ))
         .arg("-drive")
-        .arg(format!("format=raw,file={IMAGE}"))
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
         .arg("-device")
-        .arg("piix3-ide,id=genos-storage")
+        .arg(reference_vm::profile()?.get("storage_controller"))
         .arg("-drive")
         .arg(data_drive)
         .arg("-device")
-        .arg("ide-hd,drive=genos-data,bus=genos-storage.0,unit=0")
+        .arg(reference_vm::profile()?.get("storage_device"))
         .arg("-vga")
         .arg("std")
         .arg("-display")
@@ -1106,26 +1168,25 @@ fn smoke_qemu_phase(
 
 fn smoke_serial_terminal_input() -> Result<(), String> {
     let firmware = find_ovmf_code()?;
-    let mut child = Command::new("qemu-system-x86_64")
-        .arg("-machine")
-        .arg("q35")
-        .arg("-m")
-        .arg("512M")
+    let mut child = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
             firmware.display()
         ))
         .arg("-drive")
-        .arg(format!("format=raw,file={IMAGE}"))
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
         .arg("-device")
-        .arg("piix3-ide,id=genos-storage")
+        .arg(reference_vm::profile()?.get("storage_controller"))
         .arg("-drive")
         .arg(format!(
             "if=none,id=genos-data,format=raw,cache=writeback,file={TEST_DATA_IMAGE}"
         ))
         .arg("-device")
-        .arg("ide-hd,drive=genos-data,bus=genos-storage.0,unit=0")
+        .arg(reference_vm::profile()?.get("storage_device"))
         .arg("-display")
         .arg("none")
         .arg("-monitor")
@@ -1264,32 +1325,32 @@ fn smoke_network_qemu() -> Result<(), String> {
     let firmware = find_ovmf_code()?;
     let serial_log = Path::new("build/serial-network.log");
     let _ = fs::remove_file(serial_log);
-    let mut child = Command::new("qemu-system-x86_64")
-        .arg("-machine")
-        .arg("q35")
-        .arg("-m")
-        .arg("512M")
+    let mut child = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
             firmware.display()
         ))
         .arg("-drive")
-        .arg(format!("format=raw,file={IMAGE}"))
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
         .arg("-device")
-        .arg("piix3-ide,id=genos-storage")
+        .arg(reference_vm::profile()?.get("storage_controller"))
         .arg("-drive")
         .arg(format!(
             "if=none,id=genos-data,format=raw,cache=writeback,file={TEST_DATA_IMAGE}"
         ))
         .arg("-device")
-        .arg("ide-hd,drive=genos-data,bus=genos-storage.0,unit=0")
+        .arg(reference_vm::profile()?.get("storage_device"))
         .arg("-netdev")
         .arg(format!(
-            "user,id=net0,hostfwd=tcp:127.0.0.1:{inbound_host_port}-:18081"
+            "{},hostfwd=tcp:127.0.0.1:{inbound_host_port}-:18081",
+            reference_vm::profile()?.get("network_backend")
         ))
         .arg("-device")
-        .arg(MODERN_NETWORK_DEVICE)
+        .arg(reference_vm::profile()?.get("network_device"))
         .arg("-display")
         .arg("none")
         .arg("-serial")
@@ -1518,30 +1579,29 @@ fn smoke_network_without_http_server() -> Result<(), String> {
     let firmware = find_ovmf_code()?;
     let serial_log = Path::new("build/serial-network-normal-run.log");
     let _ = fs::remove_file(serial_log);
-    let mut child = Command::new("qemu-system-x86_64")
-        .arg("-machine")
-        .arg("q35")
-        .arg("-m")
-        .arg("512M")
+    let mut child = reference_vm::command()?
         .arg("-drive")
         .arg(format!(
             "if=pflash,format=raw,readonly=on,file={}",
             firmware.display()
         ))
         .arg("-drive")
-        .arg(format!("format=raw,file={IMAGE}"))
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
         .arg("-device")
-        .arg("piix3-ide,id=genos-storage")
+        .arg(reference_vm::profile()?.get("storage_controller"))
         .arg("-drive")
         .arg(format!(
             "if=none,id=genos-data,format=raw,cache=writeback,file={TEST_DATA_IMAGE}"
         ))
         .arg("-device")
-        .arg("ide-hd,drive=genos-data,bus=genos-storage.0,unit=0")
+        .arg(reference_vm::profile()?.get("storage_device"))
         .arg("-netdev")
-        .arg("user,id=net0")
+        .arg(reference_vm::profile()?.get("network_backend"))
         .arg("-device")
-        .arg(MODERN_NETWORK_DEVICE)
+        .arg(reference_vm::profile()?.get("network_device"))
         .arg("-display")
         .arg("none")
         .arg("-serial")
@@ -1993,6 +2053,7 @@ fn smoke_markers_ready(output: &str) -> bool {
     .iter()
     .all(|marker| output.contains(marker));
     required
+        && cpu_evidence::validation_ready(output)
         && markers_in_order(
             output,
             &[
@@ -2105,8 +2166,8 @@ mod tests {
     #[test]
     fn smoke_requires_async_lifecycle_and_reclaim_markers() {
         assert!(smoke_markers_ready(concat!(
-            "RAMFS_TEMP_CLEAN_OK\nRAMFS_TEMP_READY\nRAMFS_TEMPORARY_READY\nPCI_STORAGE_CONTROLLER_READY\nPARTITION_DISCOVERED\nBLOCK_CACHE_READY\nBLOCK_CACHE_HIT_OK\nUSER_STORAGE_STATUS_VISIBLE_OK\nUSER_RAMFS_TEMP_APP_OK\nUSER_DURABLE_RESTORE_OK\n",
-            "IRQ_READY\nRECOVERY_BOUNDARY_OK\nVFS_READY\nTASKS_READY\nSCHED_READY\nRUNTIME_COORDINATOR_READY\nHEADLESS_RUNTIME_READY\nPROCESS_SNAPSHOT_READY\nUNIFIED_HANDLE_TABLE_READY\nASYNC_REQUEST_IDENTITY_READY\nSCHED_DISPATCH_BENCH_OK\nSCHED_CONTEXT_BENCH_OK\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_ASYNC_REQUEST_ID_OK\nUSER_ASYNC_CANCELLATION_OK\nUSER_ASYNC_ONE_SHOT_OK\nUSER_SUPERVISOR_CLEANUP_OK mode=exit\nUSER_SUPERVISOR_CLEANUP_OK mode=fault\nUSER_SUPERVISOR_CLEANUP_OK mode=kill\nUSER_SUPERVISOR_NO_STALE_TASKS_OK\nUSER_SUPERVISOR_NO_STALE_HANDLES_OK\nUSER_SUPERVISOR_PENDING_CANCEL_OK\nSUPERVISOR_CLEANUP_READY\nUSER_ROLLBACK_FULL_TABLE_OK\nUSER_ROLLBACK_LAUNCH_REFUSED_OK\nUSER_ROLLBACK_COPYOUT_OK\nUSER_ROLLBACK_CANCELLATION_OK\nRUNTIME_ROLLBACK_READY\nUSER_PROCESS_GENERATION_STRESS_OK launches=257\nUSER_PID_REUSE_SAFE_OK\nUSER_STALE_PROCESS_HANDLE_REJECTED_OK\nPROCESS_GENERATION_STRESS_READY\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_HANDLE_TRUNCATE_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_SOCKET_LISTENER_CAPABILITY_READY abi=18\nUSER_SOCKET_CAPABILITY_READY abi=18\nUSER_PROCESS_LAUNCHED\nUSER_PROCESS_STATUS\nUSER_PROCESS_KILLED\nUSER_PROCESS_REAPED\nUSER_SHELL_PROCESS_CONTROL_OK\nUSER_SHELL_NAMESPACE_OK\nUSER_SHELL_HISTORY_OK\nUSER_DIRECTORY_READ_OK\nUSER_SHELL_READY\nUSER_CONSOLE_TRANSCRIPT_OK commands=2\nUSER_CONSOLE_HEADLESS_OK\nCONSOLE_TRANSCRIPT_READY\nPERSISTENT_STORAGE_RESTORED\nPERSISTENT_STORAGE_READY\nUSER_ISOLATION_OK\nUSERMODE_READY\nSERVER_TERMINAL_READY\nSERIAL_TERMINAL_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nTERMINAL_IDLE_OK\n"
+            "BOOT_MEMORY_MAP_VALIDATED\nCPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float\nRAMFS_TEMP_CLEAN_OK\nRAMFS_TEMP_READY\nRAMFS_TEMPORARY_READY\nPCI_STORAGE_CONTROLLER_READY\nPARTITION_DISCOVERED\nBLOCK_CACHE_READY\nBLOCK_CACHE_HIT_OK\nUSER_STORAGE_STATUS_VISIBLE_OK\nUSER_RAMFS_TEMP_APP_OK\nUSER_DURABLE_RESTORE_OK\n",
+            "IRQ_READY\nRECOVERY_BOUNDARY_OK\nVFS_READY\nTASKS_READY\nSCHED_READY\nRUNTIME_COORDINATOR_READY\nHEADLESS_RUNTIME_READY\nPROCESS_SNAPSHOT_READY\nUNIFIED_HANDLE_TABLE_READY\nASYNC_REQUEST_IDENTITY_READY\nSCHED_DISPATCH_BENCH_OK\nSCHED_CONTEXT_BENCH_OK\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_ASYNC_REQUEST_ID_OK\nUSER_ASYNC_CANCELLATION_OK\nUSER_ASYNC_ONE_SHOT_OK\nUSER_SUPERVISOR_CLEANUP_OK mode=exit\nUSER_SUPERVISOR_CLEANUP_OK mode=fault\nUSER_SUPERVISOR_CLEANUP_OK mode=kill\nUSER_SUPERVISOR_NO_STALE_TASKS_OK\nUSER_SUPERVISOR_NO_STALE_HANDLES_OK\nUSER_SUPERVISOR_PENDING_CANCEL_OK\nSUPERVISOR_CLEANUP_READY\nUSER_ROLLBACK_FULL_TABLE_OK\nUSER_ROLLBACK_LAUNCH_REFUSED_OK\nUSER_ROLLBACK_COPYOUT_OK\nUSER_ROLLBACK_CANCELLATION_OK\nRUNTIME_ROLLBACK_READY\nUSER_PROCESS_GENERATION_STRESS_OK launches=257\nUSER_PID_REUSE_SAFE_OK\nUSER_STALE_PROCESS_HANDLE_REJECTED_OK\nPROCESS_GENERATION_STRESS_READY\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_HANDLE_TRUNCATE_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_SOCKET_LISTENER_CAPABILITY_READY abi=18\nUSER_SOCKET_CAPABILITY_READY abi=18\nUSER_PROCESS_LAUNCHED\nUSER_PROCESS_STATUS\nUSER_PROCESS_KILLED\nUSER_PROCESS_REAPED\nUSER_SHELL_PROCESS_CONTROL_OK\nUSER_SHELL_NAMESPACE_OK\nUSER_SHELL_HISTORY_OK\nUSER_DIRECTORY_READ_OK\nUSER_SHELL_READY\nUSER_CONSOLE_TRANSCRIPT_OK commands=2\nUSER_CONSOLE_HEADLESS_OK\nCONSOLE_TRANSCRIPT_READY\nPERSISTENT_STORAGE_RESTORED\nPERSISTENT_STORAGE_READY\nUSER_ISOLATION_OK\nUSERMODE_READY\nUSER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true\nUSER_XSTATE_PREEMPTIONS count=12\nSERVER_TERMINAL_READY\nSERIAL_TERMINAL_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nTERMINAL_IDLE_OK\n"
         )));
         assert!(!smoke_markers_ready("GENOS_READY\n"));
         assert!(!smoke_markers_ready(
@@ -2373,7 +2434,10 @@ mod tests {
         let shell = include_str!("../../../userspace/shell/src/main.rs");
         assert!(xtask.contains("virtio-net-pci"));
         assert!(xtask.contains("disable-legacy=on"));
-        assert!(!MODERN_NETWORK_DEVICE.contains("ne2k"));
+        assert!(!reference_vm::profile()
+            .unwrap()
+            .get("network_device")
+            .contains("ne2k"));
         assert!(xtask.contains("TcpListener::bind"));
         assert!(xtask.contains("hostfwd=tcp:127.0.0.1"));
         assert!(xtask.contains("TcpStream::connect_timeout"));

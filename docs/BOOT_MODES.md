@@ -11,7 +11,8 @@ serial initialization. Compiler optimization level does not select the policy.
 | `cargo xtask build-release` | Release | Normal |
 | `cargo xtask run` | Release | Normal |
 | `cargo xtask build-test` | Development | Validation |
-| `cargo xtask test-release` | Release | Normal boot acceptance |
+| `cargo xtask test-release` | Development and release | Normal boot acceptance |
+| `cargo xtask test-reference` | Development and release | Normal acceptance with exact reference environment and clean source |
 
 The image builder selects the matching shell feature for the policy. Building
 only one package with `validation-boot` does not create a supported validation
@@ -80,10 +81,21 @@ the release case uses modern VirtIO and requires `net` to report configured
 networking, while the no-NIC case requires `network unavailable`. The dedicated
 validation network suite retains the IPv6 echo proof. Logs, QEMU errors, image hashes, source status, tool versions and
 commands are retained in `build/serial-normal-debug.log`, `build/serial-release.log`
-and `build/normal-*-manifest.txt`. An incomplete manifest never proves a pass.
+and `build/normal-*-manifest.txt`. Each invocation also retains its own complete
+artifact directory under `build/normal-evidence/<run-id>/<label>/`, including
+failed runs, QEMU stderr, failure reasons and hashes of serial/stderr logs. An
+incomplete or failed manifest never proves a pass. The manifest records the
+[reference environment](REFERENCE_VM.md) identity and whether it matches;
+successful developer runs on other firmware/QEMU are not reference qualification.
 Host parser tests reject missing, duplicate, embedded and out-of-order evidence.
 Each response must follow its own command echo, so launch-time process status
 cannot satisfy a later `ps` command.
+After the fixed command transcript, the harness sends a unique per-run `echo`
+challenge and requires its exact command echo followed by its result. Replayed,
+embedded, repeated and premature challenge output fails. QEMU must remain alive
+for a further 500 ms without failure output. This detects stale evidence; it is
+not authentication against a malicious guest or host.
+
 Each interactive boot has a 120-second wall-clock limit for cross-architecture
 TCG and loaded hosts; passing still requires every ordered command response.
 
@@ -100,8 +112,9 @@ same ordered shell, process launch/status/kill/reap, file write/read and network
 diagnostics as `test-release`. It stops at the first failed iteration. A final
 `NORMAL_BOOT_REPETITION_OK completed=N requested=N` line appears only after all N
 iterations pass. Per-iteration logs and manifests use `repeat-0001` and subsequent
-indices. One disposable data file is reused, so disk usage does not grow by 8 MiB
-per boot. Copy evidence before starting another run, which reuses these names.
+indices in the compatibility paths. One disposable data file is reused, so disk
+usage does not grow by 8 MiB per boot. The compatibility names are replaced by
+a later run, while the unique `normal-evidence` directories retain each attempt.
 
 The separate `Long validation` workflow schedules 1000 boots weekly and supports
 a manually selected count. It also runs three million-input parser campaigns in
@@ -131,3 +144,18 @@ Help is split into ABI-bounded lines with a compile-time size check. The normal
 acceptance sequence also samples `mem` before launch, while the example job is
 live, and after kill/reap; usage must rise and return to the same baseline.
 See [terminal commands](TERMINAL.md) for the current interactive scope.
+
+
+## CPU proof harness boundaries
+
+Normal readiness requires exact, ordered boot-memory validation and bounded
+CPU-state-policy records before `GENOS_READY`. Aggregate validation additionally
+requires the six-process/two-round XSTATE proof and at least twelve preemptions;
+missing, duplicated, embedded and wrong-phase records fail the host parser.
+
+The standalone exception harness archives the exact committed source, patches
+its selected fault, and suppresses only the later XSTATE stress invocation in
+that disposable fixture. Its retained patch makes this scope explicit. That
+keeps its assertion of exactly one selected CPU fault meaningful. The aggregate
+validation suite runs the complete XSTATE probe separately. Both exception and
+BSP parsers require their exact proof records in their applicable lifecycle order.

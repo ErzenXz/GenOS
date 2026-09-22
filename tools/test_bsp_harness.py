@@ -14,7 +14,8 @@ def valid_log(case):
     if case != "non-bsp":
         lines += ["GenOS kernel entered"]
     if case in {"single", "quad", "repeat-init"}:
-        lines += [TOPOLOGY, "GDT/TSS initialized", "IDT initialized"]
+        topology = TOPOLOGY.replace("per_package=4", "per_package=1") if case == "single" else TOPOLOGY
+        lines += [topology, "GDT/TSS initialized", "IDT initialized"]
     if case in {"single", "quad"}:
         lines += ["GENOS_READY", "NORMAL_SHELL_READY"]
     else:
@@ -52,6 +53,11 @@ class BspEvidenceTests(unittest.TestCase):
                                                   "cpuid_max_logical_per_package=1")):
             with self.assertRaises(ValueError):
                 validate_log(changed, "quad")
+
+    def test_wrong_phase_evidence_cannot_pass(self):
+        for case in ("single", "quad", "repeat-entry", "repeat-init", "non-bsp"):
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                validate_log("\n".join(reversed(valid_log(case).splitlines())), case)
 
     def test_rejected_entry_cannot_initialize_or_continue(self):
         for case in ("repeat-entry", "repeat-init", "non-bsp"):

@@ -10,14 +10,17 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
+import tarfile
 import time
+
+from reference_vm import environment, load_profile, qemu_args
 
 VECTORS = {"de": 0, "ud": 6, "gp": 13, "pf": 14}
 PROTECTIONS = {"nx-data", "nx-stack", "wp", "kernel-text", "smep", "smap"}
@@ -82,10 +85,15 @@ def target_marker(expression: str) -> str:
 
 def patch_fixture(root: Path, mode: str, fault: str) -> str:
     vector = VECTORS[fault]
-    changes: dict[str, list[tuple[str, str]]] = {}
+    # Keep this fixture scoped to exactly one deliberate exception. The aggregate
+    # validation suite independently requires the XSTATE stress probe, whose
+    # two later faults would otherwise race this harness's settling interval.
+    changes: dict[str, list[tuple[str, str]]] = {
+        "kernel/src/userspace.rs": [("if !xstate_probe::run() {", "if false /* isolated exception fixture */ {")]
+    }
     if mode == "user" and fault != "pf":
         changes["userspace/init/src/main.rs"] = [(GUARD_WRITE, instruction(fault, mode))]
-        changes["kernel/src/userspace.rs"] = [
+        changes["kernel/src/userspace.rs"] += [
             ("const FAULT_EXIT_CODE: u8 = 128 + 14;", f"const FAULT_EXIT_CODE: u8 = 128 + {vector};"),
             ("faulting.fault_vector == 14", f"faulting.fault_vector == {vector}"),
             ("faulting.fault_error == 0x6", f"faulting.fault_error == {0x15 if fault.startswith('nx-') else 0}"),
@@ -134,37 +142,55 @@ def validate_log(log: str, mode: str, fault: str) -> None:
     if VECTORS[fault] == 14 and cr2 == 0:
         raise ValueError("page fault did not retain its nonzero fault address")
     lines = log.splitlines()
-    if "EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated" not in lines:
-        raise ValueError("normalized entry was not installed")
+    entry = "EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated"
+    frame_line = FRAME.search(log).group(0)
+    if lines.count(entry) != 1 or lines.index(entry) >= lines.index(frame_line):
+        raise ValueError("normalized entry must be installed exactly once before the fault")
     if fault in PROTECTIONS:
-        if "CPU_PROTECTIONS_READY nx=1 wp=1 smep=1 smap=1" not in lines or "IDT_READONLY_READY" not in lines:
-            raise ValueError("CPU protections were not enabled before the probe")
+        for marker in ("CPU_PROTECTIONS_READY nx=1 wp=1 smep=1 smap=1", "IDT_READONLY_READY"):
+            if lines.count(marker) != 1 or lines.index(marker) >= lines.index(frame_line):
+                raise ValueError("CPU protections must be enabled exactly once before the fault")
         if mode == "user":
             expected_address = {"nx-data": 0x400000002000, "nx-stack": 0x40000000c000}[fault]
         else:
             targets = re.findall(r"^CPU_PROTECTION_PROBE_TARGET address=0x([0-9a-fA-F]+)$", log, re.MULTILINE)
             if len(targets) != 1:
                 raise ValueError("missing or duplicate intended protection fault address")
+            target_line = "CPU_PROTECTION_PROBE_TARGET address=0x" + targets[0]
+            if lines.index(target_line) >= lines.index(frame_line):
+                raise ValueError("intended fault target was announced after the fault")
             expected_address = int(targets[0], 16)
             if fault in {"smep", "smap"} and expected_address != 0x400000001000:
                 raise ValueError("protection probe did not target its user mapping")
         if cr2 != expected_address:
             raise ValueError("protection fault came from a different address")
     if mode == "user":
-        if any(marker not in lines for marker in USER_READY) or "EXCEPTION_FATAL_HALT" in lines:
-            raise ValueError("fault isolation, healthy-peer progress or reclamation proof missing")
-        if not re.search(rf"^USER_FAULT_TERMINATED pid=1 vector={vector} ", log, re.MULTILINE):
-            raise ValueError("the deliberate fault did not terminate the exact probe process")
-    elif (lines.count("EXCEPTION_FATAL_HALT") != 1
-          or "KERNEL_EXCEPTION_PROBE_ARMED" not in lines
-          or "KERNEL_EXCEPTION_PROBE_RETURNED" in lines
-          or "GENOS_READY" in lines):
-        raise ValueError("kernel exception returned, continued boot, or failed to halt explicitly")
+        terminated = (f"USER_FAULT_TERMINATED pid=1 vector={vector} error=0x{error:x}"
+                      f" rip=0x{rip:x} cr2=0x{cr2:x}")
+        required = (frame_line, terminated, *USER_READY)
+        if (any(lines.count(marker) != 1 for marker in required)
+                or "EXCEPTION_FATAL_HALT" in lines
+                or sum(line.startswith("USER_FAULT_TERMINATED ") for line in lines) != 1):
+            raise ValueError("exact fault identity, isolation or reclamation proof missing or duplicated")
+        if [lines.index(marker) for marker in required] != sorted(lines.index(marker) for marker in required):
+            raise ValueError("fault termination and cleanup evidence is out of order")
+    else:
+        required = ("KERNEL_EXCEPTION_PROBE_ARMED", frame_line, "EXCEPTION_FATAL_HALT")
+        if (any(lines.count(marker) != 1 for marker in required)
+                or "KERNEL_EXCEPTION_PROBE_RETURNED" in lines or "GENOS_READY" in lines):
+            raise ValueError("kernel exception returned, continued boot, or failed to halt explicitly")
+        if [lines.index(marker) for marker in required] != sorted(lines.index(marker) for marker in required):
+            raise ValueError("kernel fault occurred before arming or after claimed halt")
 
 
 def firmware_path() -> Path:
-    override = os.environ.get("OVMF_CODE") or os.environ.get("GENOS_OVMF_CODE")
-    candidates = ([Path(override)] if override else []) + [
+    override = os.environ.get("GENOS_OVMF_CODE") or os.environ.get("OVMF_CODE")
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            raise FileNotFoundError("explicit firmware override does not name a readable file")
+        return path
+    candidates = [
         Path("/usr/share/OVMF/OVMF_CODE.fd"), Path("/usr/share/OVMF/OVMF_CODE_4M.fd"),
         Path("/usr/share/edk2/ovmf/OVMF_CODE.fd"),
         Path("/opt/homebrew/share/qemu/edk2-x86_64-code.fd"),
@@ -178,13 +204,12 @@ def firmware_path() -> Path:
 
 def boot(root: Path, evidence: Path, mode: str, fault: str, timeout: int) -> list[str]:
     log_path = evidence / "serial.log"
-    args = ["qemu-system-x86_64", "-machine", "q35", "-m", "512M", "-smp", "1",
+    profile = load_profile(root)
+    args = qemu_args(root=root) + [
             "-drive", f"if=pflash,format=raw,readonly=on,file={firmware_path()}",
-            "-drive", "format=raw,file=build/genos.img", "-net", "none",
+            "-drive", profile["boot_drive"] + ",file=build/genos.img", "-net", "none",
             "-display", "none", "-monitor", "none", "-serial", f"file:{log_path}",
             "-no-reboot"]
-    if fault in PROTECTIONS:
-        args += ["-cpu", "max"]
     (evidence / "qemu-command.json").write_text(json.dumps(args, indent=2) + "\n")
     with (evidence / "qemu.log").open("w") as output:
         process = subprocess.Popen(args, cwd=root, stdout=output, stderr=subprocess.STDOUT)
@@ -241,17 +266,21 @@ def main() -> None:
         parser.error("this protection probe is not defined for the selected privilege level")
     source = Path(__file__).resolve().parents[1]
     commit = require_clean_source(source)
+    archive = subprocess.run(["git", "archive", "--format=tar", commit], cwd=source,
+                             stdout=subprocess.PIPE, check=True, timeout=30).stdout
     evidence = source / "build" / "exception-evidence" / f"{options.mode}-{options.fault}" / (options.run_id or str(time.time_ns()))
     evidence.mkdir(parents=True, exist_ok=False)
     manifest = {"mode": options.mode, "fault": options.fault, "status": "incomplete"}
     try:
+        manifest.update(environment(firmware_path(), source))
         manifest.update({"commit": commit, "source_clean": True,
                          "rust": command_output(["rustc", "-Vv"], source),
                          "qemu": command_output(["qemu-system-x86_64", "--version"], source)})
         with tempfile.TemporaryDirectory(prefix="genos-exception-") as temporary:
             root = Path(temporary) / "source"
-            shutil.copytree(source, root, ignore=shutil.ignore_patterns(
-                ".git", "target", "build", "__pycache__"))
+            root.mkdir()
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source_archive:
+                source_archive.extractall(root, filter="data")
             patch = patch_fixture(root, options.mode, options.fault)
             (evidence / "fixture.patch").write_text(patch)
             manifest["fixture_sha256"] = hashlib.sha256(patch.encode()).hexdigest()
@@ -262,7 +291,14 @@ def main() -> None:
             manifest["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
             boot(root, evidence, options.mode, options.fault, options.timeout)
             manifest["status"] = "passed"
+    except Exception as error:
+        manifest.update(status="failed", failure=f"{type(error).__name__}: {error}")
+        raise
     finally:
+        for name in ("serial.log", "qemu.log", "build.log"):
+            artifact = evidence / name
+            if artifact.is_file():
+                manifest[name + "_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
         (evidence / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"EXCEPTION_PROBE_OK mode={options.mode} fault={options.fault}")
 

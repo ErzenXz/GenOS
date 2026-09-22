@@ -1,0 +1,91 @@
+# Versioned reference VM
+
+[`tools/reference-vm.conf`](../tools/reference-vm.conf) defines the candidate
+`genos-q35-tcg-v1` environment. All xtask boot commands and the standalone
+exception/BSP harnesses consume its machine, CPU, accelerator, memory and topology
+settings. A pinned environment makes results comparable; it does not make GenOS
+stable or establish that all roadmap qualification workloads have passed.
+
+| Component | Frozen value |
+| --- | --- |
+| Compiler | Rust 1.97.0; complete `rustc -Vv` retained in evidence |
+| QEMU reference version | 11.1.1 |
+| Machine | `pc-q35-8.2` (versioned machine contract, without the rolling `q35` alias) |
+| CPU | `qemu64-v1,smep=on,smap=on` |
+| Execution | TCG, one emulation thread; 512 MiB; one socket/core/thread |
+| UEFI firmware | SHA256 `33090cc07675baa5190d9f1e84bf5176b33bcbfa9bacac522961150cdb6dbb2a` |
+| Boot volume | Raw IDE disk, index 0, on q35's boot storage controller |
+| Data volume | Raw 8 MiB disk; separate `piix3-ide` controller and `ide-hd`, bus 0/unit 0; writeback cache |
+| Console | Serial; acceptance runs have no graphical display or QEMU monitor |
+| Normal debug network | No NIC |
+| Normal release network | Modern VirtIO PCI; fixed MAC `52:54:00:12:34:56`; QEMU user networking |
+
+The firmware digest identifies the EDK2 image supplied by the local QEMU 11.1.1
+installation at `/opt/homebrew/share/qemu/edk2-x86_64-code.fd`. The path is not the
+identity and is not portable. Obtain the same firmware through a trusted QEMU
+package/source, retain its origin alongside release artifacts, and select it with
+`GENOS_OVMF_CODE=/path/to/firmware.fd`. The repository does not redistribute that
+binary or attest to its supply chain.
+
+The profile spells out IPv4 subnet `10.0.2.0/24`, host `10.0.2.2`, DHCP start
+`10.0.2.15`, DNS `10.0.2.3`, IPv6 prefix `fec0::/64`, host `fec0::2` and DNS
+`fec0::3`. These freeze the virtual network layout. Responses from external DNS
+or Internet hosts are not deterministic fixtures. The dedicated network suite
+starts its own loopback service and records the dynamic forwarded port in its
+actual command. No-NIC console acceptance proves independence from that service.
+
+The CPU exposes the bounded x87/MMX/SSE/SSE2 policy; kernel initialization disables
+OSXSAVE and therefore does not admit AVX/AVX-512/AMX state. The bare-metal Rust
+target forbids compiler-generated SIMD in kernel code. More CPUs, ISA features,
+accelerators, physical devices and firmware variants need separate qualification.
+The four-vCPU BSP fixture changes only topology and still requires one admitted
+kernel CPU; it is a rejection/admission test, not SMP support.
+
+## Developer and reference commands
+
+```sh
+cargo xtask reference-check
+cargo xtask test-release
+cargo xtask test-reference
+```
+
+`reference-check` checks the installed Rust release, exact QEMU version line and
+firmware SHA256, and reports every mismatch. It does not boot an OS or qualify a
+release. `test-release` permits other installed tool/firmware versions and records
+`reference_environment_match=false` when they differ. An unavailable versioned
+machine/CPU fails explicitly instead of silently selecting another model.
+
+`test-reference` rejects an environment mismatch and uncommitted source, runs the
+normal debug/no-NIC and release/network acceptance cases, then checks that the
+source commit is still clean and unchanged. It proves only these acceptance
+cases. Repeated-boot, storage recovery, network faults, CPU faults, long-running
+workloads and independent reproduction remain their own gates.
+
+A successful boot manifest records source commit and working-tree state, build
+mode, run identity, profile hash, actual firmware hash/path, Rust/QEMU version
+output, image hash, fresh data-image hash and exact QEMU command. It also hashes
+retained serial/stderr logs. Files live under
+`build/normal-evidence/<run-id>/<label>/`; the older flat paths remain copies for
+existing CI collection. Early interruption leaves `status=incomplete`, and
+observed boot failures record `status=failed` plus the reason. Neither is a pass.
+Python CPU fixtures retain the same environment fields in their JSON manifests,
+plus their exact source patch and individual build/serial/QEMU log hashes.
+
+## Upgrading the profile
+
+1. Make a separate profile change with a new profile ID; explain the changed
+   tool, firmware, CPU, machine, device or network contract.
+2. Obtain firmware and tools from documented origins and record their complete
+   versions and the firmware digest. Do not update expected hashes merely to
+   silence an unexplained mismatch.
+3. Run the old and new environments against the same committed source. Retain
+   positive and negative CPU, storage, network, normal boot and cleanup evidence;
+   explain changed behavior and every unsupported feature combination.
+4. Run the roadmap qualification workloads and have another host/reviewer
+   reproduce them before promoting the candidate. Record the complete profile
+   and limitations with the resulting release artifacts.
+
+The existing Linux workflow uses distribution tools and remains a developer
+portability lane until its exact tool and firmware artifacts are pinned and its
+reference workloads run. The versioned 8.2 machine is intentionally available on
+those older hosts as well as QEMU 11.1.1; it does not disguise a version mismatch.
