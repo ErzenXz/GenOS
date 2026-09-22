@@ -1,6 +1,6 @@
 use core::arch::asm;
 
-use crate::memory;
+use crate::memory::{self, Grant, Kind, Owner};
 
 const ENTRY_COUNT: usize = 512;
 const PRESENT: u64 = 1 << 0;
@@ -28,6 +28,8 @@ static mut ACTIVE_ROOT: u64 = 0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpace {
     root: u64,
+    authority: Grant,
+    owner: Owner,
 }
 
 impl AddressSpace {
@@ -53,6 +55,25 @@ pub struct AddressSpaceSwitchBenchmark {
 }
 
 pub fn init_protected_address_space() -> Result<(), PagingError> {
+    // This bounded BSP implementation retires translations by CR3 reload. Do
+    // not inherit firmware PCIDs/global retention into the ownership contract.
+    let mut cr4: u64;
+    // SAFETY: CPL0 bootstrap owns the MMU with IF clear. If PCID was enabled,
+    // select PCID0 before clearing PCIDE; clearing PGE/PCIDE invalidates retained
+    // translations. The subsequent root switch flushes ordinary translations.
+    unsafe {
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
+        if cr4 & (1 << 17) != 0 {
+            write_cr3(read_cr3() & TABLE_ADDRESS_MASK);
+        }
+        cr4 &= !((1 << 7) | (1 << 17));
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
+    }
+    if cr4 & ((1 << 7) | (1 << 17)) != 0 {
+        return Err(PagingError::InvalidAddress);
+    }
+    crate::serial::println("CPU_TLB_POLICY_READY pcid=off global=off");
     let current = read_cr3() & TABLE_ADDRESS_MASK;
     if current == 0 {
         return Err(PagingError::MissingMapping);
@@ -84,32 +105,57 @@ pub fn create_user_address_space() -> Result<AddressSpace, PagingError> {
     if kernel_root == 0 {
         return Err(PagingError::MissingMapping);
     }
-    let root = unsafe { allocate_table()? };
+    let owner = memory::new_owner().ok_or(PagingError::OutOfMemory)?;
+    let authority = memory::alloc_frame(owner, Kind::Table).ok_or(PagingError::OutOfMemory)?;
+    let root = authority.address();
     unsafe {
         let source = table(kernel_root);
         let destination = table_mut(root);
         destination.copy_from_slice(source);
         if destination[USER_PML4_INDEX] & PRESENT != 0 {
-            let _ = memory::free_frame(root);
+            let _ = memory::free_frame(authority);
             return Err(PagingError::AddressInUse);
         }
     }
-    Ok(AddressSpace { root })
+    Ok(AddressSpace {
+        root,
+        authority,
+        owner,
+    })
 }
 
 pub fn map_user_page(
     space: AddressSpace,
     virtual_address: u64,
-    physical_address: u64,
+    grant: Grant,
     writable: bool,
     executable: bool,
 ) -> Result<(), PagingError> {
+    crate::arch::without_interrupts(|| {
+        map_user_page_inner(space, virtual_address, grant, writable, executable)
+    })
+}
+
+fn map_user_page_inner(
+    space: AddressSpace,
+    virtual_address: u64,
+    grant: Grant,
+    writable: bool,
+    executable: bool,
+) -> Result<(), PagingError> {
+    if active_root() == space.root {
+        return Err(PagingError::ActiveAddressSpace);
+    }
+    let physical_address = grant.address();
+    if !memory::is_live(space.authority) || !memory::can_map(grant, space.owner) {
+        return Err(PagingError::InvalidAddress);
+    }
     if virtual_address & (PAGE_SIZE - 1) != 0
         || physical_address & (PAGE_SIZE - 1) != 0
         || physical_address == 0
         || physical_address & !TABLE_ADDRESS_MASK != 0
         || (writable && executable)
-        || index(virtual_address, 39) != USER_PML4_INDEX
+        || !(USER_BASE..USER_BASE + (1 << 39)).contains(&virtual_address)
     {
         return Err(PagingError::InvalidAddress);
     }
@@ -134,7 +180,7 @@ pub fn map_user_page(
             for shift in [39, 30, 21] {
                 let entry = &mut table_mut(current)[index(virtual_address, shift)];
                 let empty = *entry & PRESENT == 0;
-                let child = ensure_user_table(entry)?;
+                let child = ensure_user_table(entry, space.owner)?;
                 if empty {
                     created[count] = (entry as *mut u64, child);
                     count += 1;
@@ -144,6 +190,9 @@ pub fn map_user_page(
             let pte = &mut table_mut(current)[index(virtual_address, 12)];
             if *pte & PRESENT != 0 {
                 return Err(PagingError::AddressInUse);
+            }
+            if !memory::pin_mapping(grant, space.owner, virtual_address) {
+                return Err(PagingError::InvalidAddress);
             }
             *pte = physical_address | flags;
             Ok(())
@@ -159,7 +208,7 @@ pub fn map_user_page(
             assert!(
                 // SAFETY: rollback removed this new parent edge; the unpublished
                 // child is exclusively owned by this mapping transaction.
-                unsafe { memory::free_frame(child) },
+                unsafe { release_owned_table(space.owner, child) },
                 "user-table rollback lost ownership"
             );
         }
@@ -293,6 +342,10 @@ pub fn protect_kernel_image() -> Result<(), PagingError> {
 }
 
 pub fn activate(space: AddressSpace) {
+    assert!(
+        memory::is_live(space.authority),
+        "stale address-space activation"
+    );
     unsafe {
         write_cr3(space.root);
         core::ptr::addr_of_mut!(ACTIVE_ROOT).write(space.root);
@@ -348,8 +401,15 @@ pub fn benchmark_address_space_switch(
 }
 
 pub fn translate(space: AddressSpace, virtual_address: u64) -> Option<u64> {
+    if !memory::is_live(space.authority) {
+        return None;
+    }
+    translate_root(space.root, virtual_address)
+}
+
+fn translate_root(root: u64, virtual_address: u64) -> Option<u64> {
     unsafe {
-        let pml4e = table(space.root)[index(virtual_address, 39)];
+        let pml4e = table(root)[index(virtual_address, 39)];
         if pml4e & PRESENT == 0 {
             return None;
         }
@@ -375,37 +435,59 @@ pub fn translate(space: AddressSpace, virtual_address: u64) -> Option<u64> {
     }
 }
 
-pub fn allocate_zeroed_frame() -> Result<u64, PagingError> {
-    unsafe { allocate_table() }
+pub fn allocate_zeroed_frame(space: AddressSpace) -> Result<Grant, PagingError> {
+    if !memory::is_live(space.authority) {
+        return Err(PagingError::InvalidAddress);
+    }
+    memory::alloc_frame(space.owner, Kind::User).ok_or(PagingError::OutOfMemory)
 }
 
 pub fn destroy_user_address_space(space: AddressSpace) -> Result<u64, PagingError> {
-    if space.root == 0 || active_root() == space.root {
-        return Err(PagingError::ActiveAddressSpace);
-    }
-    let mut released = 0u64;
-    unsafe {
-        let pml4 = table_mut(space.root);
-        let entry = pml4[USER_PML4_INDEX];
-        if entry & PRESENT != 0 {
-            if entry & HUGE_OR_PAT != 0 || entry & USER == 0 {
-                return Err(PagingError::InvalidAddress);
-            }
-            let user_root = entry & TABLE_ADDRESS_MASK;
-            released += release_user_table(user_root, 3)?;
-            if !memory::free_frame(user_root) {
-                return Err(PagingError::InvalidAddress);
-            }
-            released += 1;
-            pml4[USER_PML4_INDEX] = 0;
+    crate::arch::without_interrupts(|| {
+        if !memory::is_live(space.authority) {
+            return Err(PagingError::InvalidAddress);
         }
-    }
-    // SAFETY: the root was checked inactive and its private descendants have
-    // been retired. The process lifecycle owner releases this root exactly once.
-    if !unsafe { memory::free_frame(space.root) } {
-        return Err(PagingError::InvalidAddress);
-    }
-    Ok(released + 1)
+        if active_root() == space.root {
+            return Err(PagingError::ActiveAddressSpace);
+        }
+        // SAFETY: the live root token identifies this private owner. This BSP
+        // has switched away (CR3 flushes nonglobal user translations; PCID is
+        // not enabled). Validate the complete tree before any mutation, then
+        // unlink each edge before scrubbing/releasing its backing grant.
+        unsafe {
+            let entry = table(space.root)[USER_PML4_INDEX];
+            let mut released = 0;
+            if entry & PRESENT != 0 {
+                if entry & HUGE_OR_PAT != 0 || entry & USER == 0 {
+                    return Err(PagingError::InvalidAddress);
+                }
+                let user_root = entry & TABLE_ADDRESS_MASK;
+                let tree_frames = validate_user_table(space.owner, user_root, 3, USER_BASE)?;
+                if memory::owner_frames(space.owner) != tree_frames + 1 {
+                    return Err(PagingError::InvalidAddress);
+                }
+                table_mut(space.root)[USER_PML4_INDEX] = 0;
+                released += release_user_table(space.owner, user_root, 3, USER_BASE);
+                assert!(
+                    release_owned_table(space.owner, user_root),
+                    "validated user root ownership"
+                );
+                released += 1;
+            } else if memory::owner_frames(space.owner) != 1 {
+                return Err(PagingError::InvalidAddress);
+            }
+            assert!(
+                memory::free_frame(space.authority),
+                "validated address-space ownership"
+            );
+            assert_eq!(
+                memory::owner_frames(space.owner),
+                0,
+                "unpublished user grant leaked"
+            );
+            Ok(released + 1)
+        }
+    })
 }
 
 struct PhysicalTables;
@@ -427,7 +509,7 @@ unsafe impl kernel::page_table::TableMemory for PhysicalTables {
     fn release(&mut self, frame: u64) {
         assert!(
             // SAFETY: clone rollback passes only new, unpublished table grants.
-            unsafe { memory::free_frame(frame) },
+            unsafe { release_owned_table(Owner::KERNEL, frame) },
             "page-table rollback lost ownership"
         );
     }
@@ -438,9 +520,11 @@ unsafe fn clone_table(source_phys: u64, level: u8) -> Result<u64, PagingError> {
         .ok_or(PagingError::OutOfMemory)
 }
 
-unsafe fn ensure_user_table(entry: &mut u64) -> Result<u64, PagingError> {
+unsafe fn ensure_user_table(entry: &mut u64, owner: Owner) -> Result<u64, PagingError> {
     if *entry & PRESENT == 0 {
-        let table_phys = allocate_table()?;
+        let table_phys = memory::alloc_frame(owner, Kind::Table)
+            .ok_or(PagingError::OutOfMemory)?
+            .address();
         *entry = table_phys | PRESENT | WRITABLE | USER;
     } else if *entry & HUGE_OR_PAT != 0
         || *entry & USER == 0
@@ -449,39 +533,82 @@ unsafe fn ensure_user_table(entry: &mut u64) -> Result<u64, PagingError> {
     {
         return Err(PagingError::AddressInUse);
     }
-    Ok(*entry & TABLE_ADDRESS_MASK)
+    let child = *entry & TABLE_ADDRESS_MASK;
+    if memory::find_grant(owner, child, Kind::Table).is_none() {
+        return Err(PagingError::InvalidAddress);
+    }
+    Ok(child)
 }
 
 unsafe fn allocate_table() -> Result<u64, PagingError> {
-    memory::alloc_frame().ok_or(PagingError::OutOfMemory)
+    memory::alloc_frame(Owner::KERNEL, Kind::Table)
+        .map(Grant::address)
+        .ok_or(PagingError::OutOfMemory)
 }
 
-unsafe fn release_user_table(table_phys: u64, level: u8) -> Result<u64, PagingError> {
-    let entries = table_mut(table_phys);
-    let mut released = 0u64;
-    for entry in entries.iter_mut() {
-        if *entry & PRESENT == 0 {
+/// Caller owns the table identity and has removed every published parent edge.
+unsafe fn release_owned_table(owner: Owner, frame: u64) -> bool {
+    let Some(grant) = memory::find_grant(owner, frame, Kind::Table) else {
+        return false;
+    };
+    memory::free_frame(grant)
+}
+
+unsafe fn validate_user_table(
+    owner: Owner,
+    physical: u64,
+    level: u8,
+    base: u64,
+) -> Result<usize, PagingError> {
+    if memory::find_grant(owner, physical, Kind::Table).is_none() {
+        return Err(PagingError::InvalidAddress);
+    }
+    let mut frames = 1;
+    for (slot, &entry) in table(physical).iter().enumerate() {
+        if entry & PRESENT == 0 {
             continue;
         }
-        let frame = *entry & TABLE_ADDRESS_MASK;
-        if level == 1 {
-            if !memory::free_frame(frame) {
-                return Err(PagingError::InvalidAddress);
-            }
-            released += 1;
-        } else {
-            if *entry & HUGE_OR_PAT != 0 || *entry & USER == 0 {
-                return Err(PagingError::InvalidAddress);
-            }
-            released += release_user_table(frame, level - 1)?;
-            if !memory::free_frame(frame) {
-                return Err(PagingError::InvalidAddress);
-            }
-            released += 1;
+        if entry & USER == 0 || (level > 1 && entry & HUGE_OR_PAT != 0) {
+            return Err(PagingError::InvalidAddress);
         }
-        *entry = 0;
+        let frame = entry & TABLE_ADDRESS_MASK;
+        let address = base + ((slot as u64) << (12 + 9 * (level - 1)));
+        if level == 1 {
+            if !memory::mapping_matches(owner, frame, address) {
+                return Err(PagingError::InvalidAddress);
+            }
+            frames += 1;
+        } else {
+            frames += validate_user_table(owner, frame, level - 1, address)?;
+        }
     }
-    Ok(released)
+    Ok(frames)
+}
+
+unsafe fn release_user_table(owner: Owner, physical: u64, level: u8, base: u64) -> u64 {
+    let mut released = 0;
+    for slot in 0..ENTRY_COUNT {
+        let entry = table(physical)[slot];
+        if entry & PRESENT == 0 {
+            continue;
+        }
+        let frame = entry & TABLE_ADDRESS_MASK;
+        let address = base + ((slot as u64) << (12 + 9 * (level - 1)));
+        table_mut(physical)[slot] = 0;
+        if level == 1 {
+            let grant =
+                memory::retire_mapping(owner, frame, address).expect("validated mapping pin");
+            assert!(memory::free_frame(grant), "validated leaf ownership");
+        } else {
+            released += release_user_table(owner, frame, level - 1, address);
+            assert!(
+                release_owned_table(owner, frame),
+                "validated table ownership"
+            );
+        }
+        released += 1;
+    }
+    released
 }
 
 unsafe fn table(physical: u64) -> &'static [u64; ENTRY_COUNT] {
@@ -519,4 +646,89 @@ fn nx_enabled() -> bool {
 
 const fn index(address: u64, shift: u8) -> usize {
     ((address >> shift) & 0x1ff) as usize
+}
+
+/// Exercise the production allocator and mapper, including denial before any
+/// scrubbing, stale root reuse, active-root refusal and exact owner cleanup.
+#[cfg(feature = "memory-test-faults")]
+pub fn run_ownership_probe() -> bool {
+    crate::arch::without_interrupts(|| {
+        let baseline = memory::allocated_frames();
+        let Ok(first) = create_user_address_space() else {
+            return false;
+        };
+        let Ok(other) = create_user_address_space() else {
+            return false;
+        };
+        let Ok(grant) = allocate_zeroed_frame(first) else {
+            return false;
+        };
+        let frame = grant.address();
+        // SAFETY: this unpublished grant is owned solely by the probe; its
+        // identity map spans exactly one page, with local IRQs masked.
+        unsafe {
+            core::ptr::write_bytes(frame as *mut u8, 0xa5, PAGE_SIZE as usize);
+        }
+        let before_denial = memory::allocated_frames();
+        let pending_denied =
+            destroy_user_address_space(first).is_err() && memory::is_live(first.authority);
+        let foreign = map_user_page(other, USER_DATA, grant, true, false).is_err();
+        let noncanonical = map_user_page(first, USER_DATA | (1 << 63), grant, true, false).is_err();
+        if !pending_denied
+            || !foreign
+            || !noncanonical
+            || memory::allocated_frames() != before_denial
+        {
+            return false;
+        }
+        if map_user_page(first, USER_DATA, grant, true, false).is_err() {
+            return false;
+        }
+        let before_alias = memory::allocated_frames();
+        let alias = map_user_page(first, USER_DATA + PAGE_SIZE, grant, true, false).is_err();
+        // SAFETY: deliberately retrying a pinned token must fail before touching
+        // memory. The page remains mapped; no successful release is permitted.
+        let pinned = unsafe { !memory::free_frame(grant) };
+        // SAFETY: the validated identity grant is still live and held by this
+        // probe. Volatile reads verify a denied release did not erase its bytes.
+        let intact = unsafe {
+            (0..PAGE_SIZE)
+                .all(|offset| core::ptr::read_volatile((frame + offset) as *const u8) == 0xa5)
+        };
+        let mappings =
+            translate(first, USER_DATA) == Some(frame) && translate(other, USER_DATA).is_none();
+        activate(first);
+        let active_map_denied = map_user_page(first, USER_DATA + PAGE_SIZE, grant, true, false)
+            == Err(PagingError::ActiveAddressSpace);
+        let active_denied =
+            destroy_user_address_space(first) == Err(PagingError::ActiveAddressSpace);
+        activate_kernel();
+        if !alias
+            || !pinned
+            || !intact
+            || !mappings
+            || !active_denied
+            || !active_map_denied
+            || memory::allocated_frames() != before_alias
+        {
+            return false;
+        }
+        if destroy_user_address_space(first).is_err() || destroy_user_address_space(other).is_err()
+        {
+            return false;
+        }
+        let Ok(reused) = create_user_address_space() else {
+            return false;
+        };
+        let stale = allocate_zeroed_frame(first).is_err()
+            && translate(first, USER_DATA).is_none()
+            && destroy_user_address_space(first).is_err()
+            // SAFETY: a retired generation cannot authorize access even when
+            // the physical allocator has reused the root/leaf address.
+            && unsafe { !memory::free_frame(grant) };
+        if destroy_user_address_space(reused).is_err() {
+            return false;
+        }
+        stale && memory::allocated_frames() == baseline && memory::snapshot().1
+    })
 }

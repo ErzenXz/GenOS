@@ -57,8 +57,8 @@ def instruction(fault: str, mode: str) -> str:
                   if fault == "smep" else
                   'core::arch::asm!("mov rax, [{target}]", target = in(reg) paging::USER_CODE, out("rax") _, options(nostack));')
         return ('let space = paging::create_user_address_space().expect("probe root"); '
-                'let frame = memory::alloc_frame().expect("probe frame"); '
-                'core::ptr::write_bytes(frame as *mut u8, 0xc3, 4096); '
+                'let frame = paging::allocate_zeroed_frame(space).expect("probe frame"); '
+                'core::ptr::write_bytes(frame.address() as *mut u8, 0xc3, 4096); '
                 'paging::map_user_page(space, paging::USER_CODE, frame, false, true).expect("probe map"); '
                 'paging::activate(space); ' + target_marker('paging::USER_CODE') + access)
     if fault == "de":

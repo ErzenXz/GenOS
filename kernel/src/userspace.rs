@@ -6151,7 +6151,8 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
             }
             mapped_pages |= 1 << image_page;
 
-            let frame = paging::allocate_zeroed_frame().map_err(|_| ProcessBuildError::Paging)?;
+            let frame =
+                paging::allocate_zeroed_frame(space).map_err(|_| ProcessBuildError::Paging)?;
             let file_offset = (page * paging::PAGE_SIZE) as usize;
             if file_offset < segment.file_data.len() {
                 let copy_len =
@@ -6159,7 +6160,7 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         segment.file_data.as_ptr().add(file_offset),
-                        frame as *mut u8,
+                        frame.address() as *mut u8,
                         copy_len,
                     );
                 }
@@ -6175,7 +6176,7 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
                 && segment.memory_size >= 16
                 && segment.file_data.len() >= 16
             {
-                data_frame = frame;
+                data_frame = frame.address();
             }
             page_count = page_count
                 .checked_add(1)
@@ -6212,7 +6213,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         }
     };
     for index in 0..paging::USER_STACK_PAGES {
-        let stack_frame = match paging::allocate_zeroed_frame() {
+        let stack_frame = match paging::allocate_zeroed_frame(space) {
             Ok(frame) => frame,
             Err(_) => {
                 let _ = paging::destroy_user_address_space(space);

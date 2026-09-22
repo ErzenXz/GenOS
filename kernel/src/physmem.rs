@@ -226,6 +226,10 @@ impl<const WORDS: usize> FrameAllocator<WORDS> {
         true
     }
 
+    pub fn contains_live(&self, frame: u64) -> bool {
+        self.live_index(frame).is_some()
+    }
+
     fn live_index(&self, frame: u64) -> Option<usize> {
         if frame == 0 || !frame.is_multiple_of(PAGE_SIZE) {
             return None;
