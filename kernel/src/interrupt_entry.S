@@ -42,6 +42,23 @@
     pop rax
 .endm
 
+// Only a Ring 3 frame owns the published process xstate pointer. The caller
+// saved every GPR first; these assembly helpers clobber RAX only. Capture before
+// entering Rust, and restore before a direct IRET. Kernel entry uses soft-float.
+.macro genos_save_xstate cs_offset
+    test byte ptr [rsp + \cs_offset], 3
+    jz 1f
+    call genos_save_user_xstate
+1:
+.endm
+
+.macro genos_restore_xstate cs_offset
+    test byte ptr [rsp + \cs_offset], 3
+    jz 1f
+    call genos_restore_user_xstate
+1:
+.endm
+
 .macro genos_call_aligned handler
     mov rax, rsp
     and rsp, -16
@@ -57,10 +74,12 @@
 genos_irq0_stub:
     cld
     genos_push_regs
+    genos_save_xstate {user_cs}
     mov rdi, rsp
     genos_call_aligned genos_irq0_rust
     test rax, rax
     jnz genos_leave_userspace
+    genos_restore_xstate {user_cs}
     genos_pop_regs
     iretq
 
@@ -68,7 +87,9 @@ genos_irq0_stub:
 genos_irq1_stub:
     cld
     genos_push_regs
+    genos_save_xstate {user_cs}
     genos_call_aligned genos_irq1_rust
+    genos_restore_xstate {user_cs}
     genos_pop_regs
     iretq
 
@@ -76,7 +97,9 @@ genos_irq1_stub:
 genos_irq12_stub:
     cld
     genos_push_regs
+    genos_save_xstate {user_cs}
     genos_call_aligned genos_irq12_rust
+    genos_restore_xstate {user_cs}
     genos_pop_regs
     iretq
 
@@ -85,7 +108,9 @@ genos_irq12_stub:
 genos_irq48_stub:
     cld
     genos_push_regs
+    genos_save_xstate {user_cs}
     genos_call_aligned genos_irq48_rust
+    genos_restore_xstate {user_cs}
     genos_pop_regs
     iretq
 
@@ -113,12 +138,14 @@ genos_vector_\number:
 genos_vector_common:
     cld
     genos_push_regs
+    genos_save_xstate {exception_cs}
     mov rdi, rsp
     // Sample CR2 before calling Rust. It is meaningful only for vector 14.
     mov rsi, cr2
     genos_call_aligned genos_vector_rust
     test rax, rax
     jnz genos_leave_userspace
+    genos_restore_xstate {exception_cs}
     genos_pop_regs
     // Remove both normalized words, including any CPU-supplied error word.
     add rsp, 16

@@ -32,6 +32,8 @@ pub struct InterruptStats {
 global_asm!(
     include_str!("interrupt_entry.S"),
     error_code_mask = const kernel::exception::ERROR_CODE_MASK,
+    user_cs = const userspace::USER_CONTEXT_CS_OFFSET,
+    exception_cs = const core::mem::offset_of!(ExceptionFrame, cs),
 );
 
 extern "C" {

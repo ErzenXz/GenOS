@@ -1,6 +1,10 @@
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
+#[cfg(feature = "validation-boot")]
+#[path = "xstate_probe.rs"]
+mod xstate_probe;
+
 use genos_abi::{
     UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
     UserProcessHeader, UserProcessStatus, UserSocketStatus, UserSystemInfo, USER_ABI_VERSION,
@@ -122,6 +126,8 @@ pub(crate) struct UserContext {
     rsp: u64,
     ss: u64,
 }
+
+pub(crate) const USER_CONTEXT_CS_OFFSET: usize = core::mem::offset_of!(UserContext, cs);
 
 impl UserContext {
     const fn initial(token: u64, entry: u64) -> Self {
@@ -294,6 +300,7 @@ struct UserProcess {
     pid: u8,
     space: paging::AddressSpace,
     context: UserContext,
+    xstate: kernel::xstate::State,
     data_frame: u64,
     token: u64,
     event: ProcessEvent,
@@ -4610,6 +4617,11 @@ genos_enter_user_context:
     lea rax, [rip + genos_user_return]
     mov [rip + genos_user_return_rip], rax
 
+    // RSI is the current process's private aligned 512-byte image. The BSP
+    // owns it until the return trampoline, with IF clear outside Ring 3.
+    mov [rip + genos_user_xstate], rsi
+    fxrstor64 [rsi]
+
     mov rbx, rdi
     push qword ptr [rbx + {ctx_ss}]
     push qword ptr [rbx + {ctx_rsp}]
@@ -4664,6 +4676,7 @@ genos_syscall_stub:
     pushfq
     and qword ptr [rsp], -262145
     popfq
+    call genos_save_user_xstate
     mov rdi, rsp
     and rsp, -16
     sub rsp, 16
@@ -4672,6 +4685,7 @@ genos_syscall_stub:
     mov rsp, [rsp]
     test rax, rax
     jnz genos_leave_userspace
+    call genos_restore_user_xstate
     pop r15
     pop r14
     pop r13
@@ -4691,14 +4705,35 @@ genos_syscall_stub:
 
     .global genos_leave_userspace
 genos_leave_userspace:
+    // Every Ring 3 entry saved xstate before calling Rust. Do not save again:
+    // only the entry capture is authoritative for the interrupted process.
+    mov qword ptr [rip + genos_user_xstate], 0
     mov rsp, [rip + genos_user_return_rsp]
     jmp [rip + genos_user_return_rip]
+
+    // Assembly-only helpers: caller already saved RAX, and the linked kernel
+    // target forbids compiler-generated floating-point/SIMD instructions.
+    // They preserve all other GPRs and flags, and use only the current BSP's
+    // kernel-owned aligned image. Kernel-origin IRQs never call these helpers.
+    .global genos_save_user_xstate
+genos_save_user_xstate:
+    mov rax, [rip + genos_user_xstate]
+    fxsave64 [rax]
+    ret
+
+    .global genos_restore_user_xstate
+genos_restore_user_xstate:
+    mov rax, [rip + genos_user_xstate]
+    fxrstor64 [rax]
+    ret
 
     .section .bss
     .balign 8
 genos_user_return_rsp:
     .quad 0
 genos_user_return_rip:
+    .quad 0
+genos_user_xstate:
     .quad 0
 
     .section .text
@@ -4726,7 +4761,7 @@ genos_user_return_rip:
 );
 
 unsafe extern "C" {
-    fn genos_enter_user_context(context: *const UserContext);
+    fn genos_enter_user_context(context: *const UserContext, xstate: *mut kernel::xstate::State);
     fn genos_syscall_stub();
 }
 
@@ -4861,6 +4896,10 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
     crate::serial::trace::println("USER_FAULT_ISOLATED");
     crate::serial::trace::println("USER_ISOLATION_OK");
     crate::serial::trace::println("USERMODE_READY");
+    #[cfg(feature = "validation-boot")]
+    if !xstate_probe::run() {
+        fail("USER_XSTATE_FAILED");
+    }
 }
 
 pub fn register_shell_elf(elf_bytes: &'static [u8]) {
@@ -6210,6 +6249,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         pid,
         space,
         context: UserContext::initial(token, loaded.entry),
+        xstate: kernel::xstate::State::initial(),
         data_frame: loaded.data_frame,
         token,
         event: ProcessEvent::None,
@@ -6263,7 +6303,16 @@ fn run_slice(process: &mut UserProcess) {
         core::ptr::addr_of_mut!(CURRENT_PROCESS).write(process as *mut UserProcess);
     }
     paging::activate(process.space);
-    unsafe { genos_enter_user_context(core::ptr::addr_of!(context)) };
+    // SAFETY: IF is clear on the admitted BSP, the process and its aligned
+    // xstate image cannot move until the trampoline returns, and its private
+    // supervisor mapping is live in both address spaces. Assembly preserves
+    // the kernel's SysV callee-saved GPRs and uses the validated IRET frame.
+    unsafe {
+        genos_enter_user_context(
+            core::ptr::addr_of!(context),
+            core::ptr::addr_of_mut!(process.xstate),
+        )
+    };
     paging::activate_kernel();
     unsafe {
         core::ptr::addr_of_mut!(CURRENT_PROCESS).write(core::ptr::null_mut());
