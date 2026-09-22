@@ -343,9 +343,9 @@
       "sha256": "487d85eb218d78d2ad5b2c042e485a3d7100cd963575eda45389b962ec3ec1bc"
     },
     {
-      "lines": 174,
+      "lines": 178,
       "path": "tools/xtask/src/sdk.rs",
-      "sha256": "ec5da2e8634a06f19d4bb8997548e6275fdec882dc9ea0845ce27e02d81ed602"
+      "sha256": "f05a1c9bf287d1009bc11273ee0738a9e6dbbf00ab147f4c534d96ceb1297e48"
     },
     {
       "lines": 6,
