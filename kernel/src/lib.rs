@@ -22,6 +22,7 @@ pub mod recovery;
 pub mod request;
 pub mod serial_transport;
 pub mod socket;
+pub mod stack;
 pub mod syscall;
 pub mod tasks;
 pub mod vfs;

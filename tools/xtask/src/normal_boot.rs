@@ -90,8 +90,7 @@ pub fn repetition_count(value: Option<&str>) -> Result<usize, String> {
 #[derive(Default)]
 pub struct Transcript {
     policy: bool,
-    boot_memory_validated: bool,
-    cpu_state_ready: bool,
+    startup_step: usize,
     kernel_ready: bool,
     shell_ready: bool,
     step: usize,
@@ -145,20 +144,19 @@ impl Transcript {
                 }
                 self.policy = true;
             }
-            "BOOT_MEMORY_MAP_VALIDATED" => {
-                if !self.policy || self.boot_memory_validated || self.kernel_ready {
-                    return Err("invalid boot memory validation order".into());
+            marker if crate::cpu_evidence::BOOT_SEQUENCE.contains(&marker) => {
+                if !self.policy
+                    || self.kernel_ready
+                    || crate::cpu_evidence::BOOT_SEQUENCE.get(self.startup_step) != Some(&marker)
+                {
+                    return Err("missing, duplicate or out-of-order startup evidence".into());
                 }
-                self.boot_memory_validated = true;
-            }
-            crate::cpu_evidence::POLICY => {
-                if !self.boot_memory_validated || self.cpu_state_ready || self.kernel_ready {
-                    return Err("invalid CPU state policy order".into());
-                }
-                self.cpu_state_ready = true;
+                self.startup_step += 1;
             }
             "GENOS_READY" => {
-                if !self.cpu_state_ready || self.kernel_ready {
+                if self.startup_step != crate::cpu_evidence::BOOT_SEQUENCE.len()
+                    || self.kernel_ready
+                {
                     return Err("invalid kernel readiness order".into());
                 }
                 self.kernel_ready = true;
@@ -243,8 +241,9 @@ mod tests {
     fn ready(network: bool) -> Transcript {
         let mut proof = Transcript::new(network);
         proof.observe("BOOT_MODE normal").unwrap();
-        proof.observe("BOOT_MEMORY_MAP_VALIDATED").unwrap();
-        proof.observe(crate::cpu_evidence::POLICY).unwrap();
+        for marker in crate::cpu_evidence::BOOT_SEQUENCE {
+            proof.observe(marker).unwrap();
+        }
         proof.observe("GENOS_READY").unwrap();
         assert_eq!(
             proof.observe("NORMAL_SHELL_READY").unwrap(),
@@ -346,6 +345,35 @@ mod tests {
         assert!(Transcript::default()
             .observe("BOOT_MEMORY_MAP_VALIDATED")
             .is_err());
+    }
+
+    #[test]
+    fn every_architecture_marker_is_required_once_in_startup_order() {
+        let sequence = crate::cpu_evidence::BOOT_SEQUENCE;
+        let rejected = |records: Vec<&str>| {
+            let mut proof = Transcript::default();
+            proof.observe("BOOT_MODE normal").unwrap();
+            records
+                .into_iter()
+                .chain(["GENOS_READY"])
+                .any(|line| proof.observe(line).is_err())
+        };
+        for index in 0..sequence.len() {
+            let mut missing = sequence.to_vec();
+            missing.remove(index);
+            assert!(rejected(missing));
+            let mut duplicate = sequence.to_vec();
+            duplicate.insert(index, sequence[index]);
+            assert!(rejected(duplicate));
+            let mut embedded = sequence.to_vec();
+            embedded[index] = "noise boot marker";
+            assert!(rejected(embedded));
+            if index + 1 < sequence.len() {
+                let mut swapped = sequence.to_vec();
+                swapped.swap(index, index + 1);
+                assert!(rejected(swapped));
+            }
+        }
     }
 
     #[test]
