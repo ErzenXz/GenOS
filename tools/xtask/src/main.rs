@@ -12,9 +12,11 @@ use std::{
 };
 
 mod cpu_evidence;
+mod evidence_contract;
 mod normal_boot;
 mod reference_vm;
 mod sdk;
+mod validation_run;
 
 const BUILD_DIR: &str = "build";
 const IMAGE: &str = "build/genos.img";
@@ -569,6 +571,9 @@ fn test_memory() -> Result<(), String> {
                 "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
                 "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
                 "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
+                "MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true",
+                "USER_COPY_READY bounded=true permissions=true atomic=true stale=denied",
+                "TLB_RETIREMENT_READY switched=true reused=true reclaimed=true",
                 "IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored",
                 "USER_SHELL_READY",
                 "GENOS_READY",
@@ -1075,6 +1080,36 @@ fn smoke_qemu() -> Result<(), String> {
     test_network()
 }
 
+fn validation_command(
+    firmware: &Path,
+    data_image: &Path,
+    read_only: bool,
+) -> Result<Command, String> {
+    let mut command = reference_vm::command()?;
+    command
+        .arg("-drive")
+        .arg(format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            firmware.display()
+        ))
+        .arg("-drive")
+        .arg(format!(
+            "{},file={IMAGE}",
+            reference_vm::profile()?.get("boot_drive")
+        ))
+        .arg("-device")
+        .arg(reference_vm::profile()?.get("storage_controller"))
+        .arg("-drive")
+        .arg(format!(
+            "if=none,id=genos-data,format=raw,cache=writeback,file={}{}",
+            data_image.display(),
+            if read_only { ",readonly=on" } else { "" }
+        ))
+        .arg("-device")
+        .arg(reference_vm::profile()?.get("storage_device"));
+    Ok(command)
+}
+
 fn smoke_qemu_phase(
     serial_log: &Path,
     data_image: &Path,
@@ -1082,613 +1117,306 @@ fn smoke_qemu_phase(
     required_markers: &[&str],
     require_full_smoke: bool,
 ) -> Result<(), String> {
-    let firmware = find_ovmf_code()?;
-    let _ = fs::remove_file(serial_log);
-
-    let mut data_drive = format!(
-        "if=none,id=genos-data,format=raw,cache=writeback,file={}",
-        data_image.display()
-    );
-    if read_only {
-        data_drive.push_str(",readonly=on");
-    }
-
-    let mut child = reference_vm::command()?
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            firmware.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "{},file={IMAGE}",
-            reference_vm::profile()?.get("boot_drive")
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_controller"))
-        .arg("-drive")
-        .arg(data_drive)
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_device"))
-        .arg("-vga")
-        .arg("std")
-        .arg("-display")
-        .arg("none")
-        .arg("-serial")
-        .arg(format!("file:{}", serial_log.display()))
-        .arg("-no-reboot")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("failed to launch qemu smoke test: {e}"))?;
-
-    // Firmware alone took about 20 seconds on a loaded cross-architecture
-    // host. Every phase gets the existing full-smoke deadline, including cold
-    // firmware startup; this timeout is a liveness bound, not a latency target.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut output = String::new();
-    let mut ready_at = None;
-    while Instant::now() < deadline {
-        output.clear();
-        if let Ok(mut file) = File::open(serial_log) {
-            let _ = file.read_to_string(&mut output);
-            if output.contains("GENOS_READY") && ready_at.is_none() {
-                ready_at = Some(Instant::now());
-            }
-            if output.contains("KERNEL PANIC") || output.contains("_FAILED") {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("GenOS reported a boot failure; serial:\n{output}"));
-            }
-            let phase_ready = required_markers
-                .iter()
-                .all(|marker| output.contains(marker));
-            if phase_ready && !require_full_smoke {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(());
-            }
-            if phase_ready
-                && smoke_markers_ready(&output)
-                && ready_at
-                    .map(|instant| instant.elapsed() >= Duration::from_secs(12))
-                    .unwrap_or(false)
-            {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(());
-            }
-        }
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "qemu exited early with {status}; serial:\n{output}"
-            ));
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
-    Err(format!(
-        "timed out waiting for long-lived GenOS smoke markers; serial:\n{output}"
-    ))
+    let label = serial_log
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("invalid serial log label")?;
+    let mut evidence = validation_run::Evidence::new(label, Some(serial_log))?;
+    let result = (|| {
+        let firmware = find_ovmf_code()?;
+        let mut command = validation_command(&firmware, data_image, read_only)?;
+        command.args(["-net", "none"]);
+        evidence.run(
+            &mut command,
+            &firmware,
+            data_image,
+            evidence_contract::Contract::phase(required_markers, require_full_smoke),
+            validation_run::RunPolicy::boot(60, if require_full_smoke { 12 } else { 0 }),
+            |_| Ok(()),
+        )
+    })();
+    evidence.finish(result)
 }
 
 fn smoke_serial_terminal_input() -> Result<(), String> {
-    let firmware = find_ovmf_code()?;
-    let mut child = reference_vm::command()?
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            firmware.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "{},file={IMAGE}",
-            reference_vm::profile()?.get("boot_drive")
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_controller"))
-        .arg("-drive")
-        .arg(format!(
-            "if=none,id=genos-data,format=raw,cache=writeback,file={TEST_DATA_IMAGE}"
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_device"))
-        .arg("-display")
-        .arg("none")
-        .arg("-monitor")
-        .arg("none")
-        .arg("-serial")
-        .arg("stdio")
-        .arg("-no-reboot")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("failed to launch serial input smoke test: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("serial stdout pipe unavailable")?;
-    let mut stdin = child.stdin.take().ok_or("serial stdin pipe unavailable")?;
-    let (sender, receiver) = mpsc::channel();
-    let reader = thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            match line {
-                Ok(line) => {
-                    if sender.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut output = String::new();
-    let mut command_sent = false;
-    let mut passed = false;
-    while Instant::now() < deadline {
-        if let Ok(line) = receiver.recv_timeout(Duration::from_millis(200)) {
-            output.push_str(&line);
-            output.push('\n');
-            if (output.contains("KERNEL PANIC") || output.contains("_FAILED")) && !passed {
-                break;
-            }
-            if output.contains("GENOS_READY") && !command_sent {
-                stdin
-                    .write_all(b"uname\r")
-                    .and_then(|_| stdin.flush())
-                    .map_err(|error| format!("failed to write serial command: {error}"))?;
-                command_sent = true;
-                output.clear();
-            }
-            if command_sent
-                && output.contains("SERIAL_RX_OK")
-                && output.contains("GenOS v0.56 ring3-shell x86_64 ABI 18")
-            {
-                passed = true;
-                break;
-            }
-        }
-        if child.try_wait().ok().flatten().is_some() {
-            break;
-        }
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(stdin);
-    let _ = reader.join();
-    if passed {
-        println!("serial terminal input smoke passed: host command reached Ring 3");
-        Ok(())
-    } else {
-        Err(format!(
-            "serial terminal input smoke failed; transcript:\n{output}"
-        ))
-    }
+    let mut evidence =
+        validation_run::Evidence::new("serial-input", Some(Path::new("build/serial-input.log")))?;
+    let result = (|| {
+        let firmware = find_ovmf_code()?;
+        let mut command = validation_command(&firmware, Path::new(TEST_DATA_IMAGE), false)?;
+        command.args(["-net", "none"]);
+        evidence.run(
+            &mut command,
+            &firmware,
+            Path::new(TEST_DATA_IMAGE),
+            evidence_contract::Contract::phase(&[], false),
+            validation_run::RunPolicy::serial(),
+            |_| Ok(()),
+        )
+    })();
+    evidence.finish(result)
 }
 
 fn smoke_network_qemu() -> Result<(), String> {
-    let inbound_reservation = TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| format!("failed to reserve inbound TCP probe port: {error}"))?;
-    let inbound_host_port = inbound_reservation
-        .local_addr()
-        .map_err(|error| error.to_string())?
-        .port();
-    drop(inbound_reservation);
-    let listener = TcpListener::bind("0.0.0.0:18080")
-        .map_err(|error| format!("failed to bind network smoke server: {error}"))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| error.to_string())?;
-    let (server_sender, server_receiver) = mpsc::channel();
-    let (server_stop_sender, server_stop_receiver) = mpsc::channel();
-    let server = thread::spawn(move || {
-        // Cross-architecture TCG and loaded CI hosts need the same 120-second
-        // wall-clock budget as the other boot gates; evidence requirements are unchanged.
-        let deadline = Instant::now() + Duration::from_secs(120);
-        let mut accepted = 0usize;
-        while Instant::now() < deadline {
-            match server_stop_receiver.try_recv() {
-                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                    let mut request = [0u8; 512];
-                    let mut read = 0usize;
-                    while read < request.len() {
-                        match stream.read(&mut request[read..]) {
-                            Ok(0) => break,
-                            Ok(bytes) => {
-                                read += bytes;
-                                if request[..read].windows(4).any(|end| end == b"\r\n\r\n") {
-                                    break;
+    let mut evidence =
+        validation_run::Evidence::new("network", Some(Path::new("build/serial-network.log")))?;
+    let result = (|| {
+        let inbound_reservation = TcpListener::bind("127.0.0.1:0")
+            .map_err(|error| format!("failed to reserve inbound TCP probe port: {error}"))?;
+        let inbound_host_port = inbound_reservation
+            .local_addr()
+            .map_err(|error| error.to_string())?
+            .port();
+        drop(inbound_reservation);
+        let listener = TcpListener::bind("0.0.0.0:18080")
+            .map_err(|error| format!("failed to bind network smoke server: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| error.to_string())?;
+        let (server_sender, server_receiver) = mpsc::channel();
+        let (server_stop_sender, server_stop_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            // Cross-architecture TCG and loaded CI hosts need the same 120-second
+            // wall-clock budget as the other boot gates; evidence requirements are unchanged.
+            let deadline = Instant::now() + Duration::from_secs(120);
+            let mut accepted = 0usize;
+            while Instant::now() < deadline {
+                match server_stop_receiver.try_recv() {
+                    Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut request = [0u8; 512];
+                        let mut read = 0usize;
+                        while read < request.len() {
+                            match stream.read(&mut request[read..]) {
+                                Ok(0) => break,
+                                Ok(bytes) => {
+                                    read += bytes;
+                                    if request[..read].windows(4).any(|end| end == b"\r\n\r\n") {
+                                        break;
+                                    }
                                 }
+                                Err(_) => break,
                             }
-                            Err(_) => break,
+                        }
+                        if &request[..read]
+                            != b"GET / HTTP/1.1\r\nHost: genos.test\r\nConnection: close\r\n\r\n"
+                        {
+                            let _ = server_sender.send(false);
+                            return;
+                        }
+                        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nGENOS_OK";
+                        let _ = stream.write_all(response);
+                        let _ = stream.flush();
+                        accepted += 1;
+                        if accepted == 2 {
+                            // The guest's independent HTTP markers prove that both
+                            // responses arrived. Do not fail this host helper when
+                            // the bounded guest closes immediately after reading
+                            // and the host observes that close during flush.
+                            let _ = server_sender.send(true);
+                            return;
                         }
                     }
-                    let response = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nGENOS_OK";
-                    let _ = stream.write_all(response);
-                    let _ = stream.flush();
-                    accepted += 1;
-                    if accepted == 2 {
-                        // The guest's independent HTTP markers prove that both
-                        // responses arrived. Do not fail this host helper when
-                        // the bounded guest closes immediately after reading
-                        // and the host observes that close during flush.
-                        let _ = server_sender.send(true);
-                        return;
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(20));
                     }
+                    Err(_) => break,
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(_) => break,
             }
-        }
-        let _ = server_sender.send(false);
-    });
+            let _ = server_sender.send(false);
+        });
 
-    let firmware = find_ovmf_code()?;
-    let serial_log = Path::new("build/serial-network.log");
-    let _ = fs::remove_file(serial_log);
-    let qemu_log = Path::new("build/serial-network-qemu.log");
-    let stderr = File::create(qemu_log).map_err(|error| error.to_string())?;
-    let mut child = reference_vm::command()?
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            firmware.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "{},file={IMAGE}",
-            reference_vm::profile()?.get("boot_drive")
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_controller"))
-        .arg("-drive")
-        .arg(format!(
-            "if=none,id=genos-data,format=raw,cache=writeback,file={TEST_DATA_IMAGE}"
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_device"))
-        .arg("-netdev")
-        .arg(format!(
-            "{},hostfwd=tcp:127.0.0.1:{inbound_host_port}-:18081",
-            reference_vm::profile()?.get("network_backend")
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("network_device"))
-        .arg("-display")
-        .arg("none")
-        .arg("-serial")
-        .arg(format!("file:{}", serial_log.display()))
-        .arg("-no-reboot")
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|error| format!("failed to launch network QEMU smoke test: {error}"))?;
-    let (inbound_trigger_sender, inbound_trigger_receiver) = mpsc::channel();
-    let (inbound_sender, inbound_receiver) = mpsc::channel();
-    let inbound_client = thread::spawn(move || {
-        if inbound_trigger_receiver
-            .recv_timeout(Duration::from_secs(45))
-            .is_err()
-        {
-            let _ = inbound_sender.send(false);
-            return;
-        }
-        let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, inbound_host_port));
-        // Two concurrent clients: both must be connected before either sends,
-        // so the guest serves two established passive streams at once.
-        let connect_barrier = Arc::new(Barrier::new(2));
-        let send_barrier = Arc::new(Barrier::new(2));
-        let mut workers = Vec::new();
-        for scenario in 0..2 {
-            let connect_barrier = Arc::clone(&connect_barrier);
-            let send_barrier = Arc::clone(&send_barrier);
-            workers.push(thread::spawn(move || -> bool {
-                let exchanges = if scenario == 0 {
-                    (0..3)
-                        .map(|index| {
-                            (
-                                format!("GENOS_PING_LOSS_{index}").into_bytes(),
-                                format!("GENOS_PONG_LOSS_{index}").into_bytes(),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    let mut first = vec![b'a'; 128];
-                    let mut second = vec![b'b'; 128];
-                    first[..b"GENOS_PING_REORDER_A".len()].copy_from_slice(b"GENOS_PING_REORDER_A");
-                    second[..b"GENOS_PING_REORDER_B".len()]
-                        .copy_from_slice(b"GENOS_PING_REORDER_B");
-                    let mut expected_first = first.clone();
-                    let mut expected_second = second.clone();
-                    expected_first[..b"GENOS_PONG_REORDER_A".len()]
-                        .copy_from_slice(b"GENOS_PONG_REORDER_A");
-                    expected_second[..b"GENOS_PONG_REORDER_B".len()]
-                        .copy_from_slice(b"GENOS_PONG_REORDER_B");
-                    first.extend_from_slice(&second);
-                    expected_first.extend_from_slice(&expected_second);
-                    let mut exchanges = vec![(first, expected_first)];
-                    for index in 2..8 {
-                        let mut request = vec![b'a' + index as u8; 128];
-                        let prefix = format!("GENOS_PING_STREAM_{index}");
-                        request[..prefix.len()].copy_from_slice(prefix.as_bytes());
-                        let mut response = request.clone();
-                        let prefix = format!("GENOS_PONG_STREAM_{index}");
-                        response[..prefix.len()].copy_from_slice(prefix.as_bytes());
-                        exchanges.push((request, response));
-                    }
-                    exchanges
-                };
-                connect_barrier.wait();
-                let deadline = Instant::now() + Duration::from_secs(20);
-                let mut first_attempt = true;
-                while Instant::now() < deadline {
-                    let connection =
-                        TcpStream::connect_timeout(&address, Duration::from_millis(200));
-                    let Ok(mut stream) = connection else {
+        let firmware = find_ovmf_code()?;
+        let mut command = validation_command(&firmware, Path::new(TEST_DATA_IMAGE), false)?;
+        command
+            .arg("-netdev")
+            .arg(format!(
+                "{},hostfwd=tcp:127.0.0.1:{inbound_host_port}-:18081",
+                reference_vm::profile()?.get("network_backend")
+            ))
+            .arg("-device")
+            .arg(reference_vm::profile()?.get("network_device"));
+        let (inbound_trigger_sender, inbound_trigger_receiver) = mpsc::channel();
+        let (inbound_sender, inbound_receiver) = mpsc::channel();
+        let inbound_client = thread::spawn(move || {
+            if inbound_trigger_receiver
+                .recv_timeout(Duration::from_secs(45))
+                .is_err()
+            {
+                let _ = inbound_sender.send(false);
+                return;
+            }
+            let address = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, inbound_host_port));
+            // Two concurrent clients: both must be connected before either sends,
+            // so the guest serves two established passive streams at once.
+            let connect_barrier = Arc::new(Barrier::new(2));
+            let send_barrier = Arc::new(Barrier::new(2));
+            let mut workers = Vec::new();
+            for scenario in 0..2 {
+                let connect_barrier = Arc::clone(&connect_barrier);
+                let send_barrier = Arc::clone(&send_barrier);
+                workers.push(thread::spawn(move || -> bool {
+                    let exchanges = if scenario == 0 {
+                        (0..3)
+                            .map(|index| {
+                                (
+                                    format!("GENOS_PING_LOSS_{index}").into_bytes(),
+                                    format!("GENOS_PONG_LOSS_{index}").into_bytes(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        let mut first = vec![b'a'; 128];
+                        let mut second = vec![b'b'; 128];
+                        first[..b"GENOS_PING_REORDER_A".len()]
+                            .copy_from_slice(b"GENOS_PING_REORDER_A");
+                        second[..b"GENOS_PING_REORDER_B".len()]
+                            .copy_from_slice(b"GENOS_PING_REORDER_B");
+                        let mut expected_first = first.clone();
+                        let mut expected_second = second.clone();
+                        expected_first[..b"GENOS_PONG_REORDER_A".len()]
+                            .copy_from_slice(b"GENOS_PONG_REORDER_A");
+                        expected_second[..b"GENOS_PONG_REORDER_B".len()]
+                            .copy_from_slice(b"GENOS_PONG_REORDER_B");
+                        first.extend_from_slice(&second);
+                        expected_first.extend_from_slice(&expected_second);
+                        let mut exchanges = vec![(first, expected_first)];
+                        for index in 2..8 {
+                            let mut request = vec![b'a' + index as u8; 128];
+                            let prefix = format!("GENOS_PING_STREAM_{index}");
+                            request[..prefix.len()].copy_from_slice(prefix.as_bytes());
+                            let mut response = request.clone();
+                            let prefix = format!("GENOS_PONG_STREAM_{index}");
+                            response[..prefix.len()].copy_from_slice(prefix.as_bytes());
+                            exchanges.push((request, response));
+                        }
+                        exchanges
+                    };
+                    connect_barrier.wait();
+                    let deadline = Instant::now() + Duration::from_secs(20);
+                    let mut first_attempt = true;
+                    while Instant::now() < deadline {
+                        let connection =
+                            TcpStream::connect_timeout(&address, Duration::from_millis(200));
+                        let Ok(mut stream) = connection else {
+                            if first_attempt {
+                                send_barrier.wait();
+                                first_attempt = false;
+                            }
+                            thread::sleep(Duration::from_millis(100));
+                            continue;
+                        };
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                        let _ = stream.set_nodelay(true);
                         if first_attempt {
                             send_barrier.wait();
                             first_attempt = false;
                         }
-                        thread::sleep(Duration::from_millis(100));
-                        continue;
-                    };
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-                    let _ = stream.set_nodelay(true);
-                    if first_attempt {
-                        send_barrier.wait();
-                        first_attempt = false;
-                    }
-                    // Give Ring 3 time to claim both completed handshakes. This
-                    // keeps the fault proof on accepted streams rather than the
-                    // separate one-segment early-handshake buffer.
-                    thread::sleep(Duration::from_millis(250));
-                    // Half-close only after the response arrives: slirp aborts
-                    // a forwarded connection whose host side reaches EOF while
-                    // the guest-side connection is still being established.
-                    let mut exchanged = true;
-                    for (request, expected) in &exchanges {
-                        if stream.write_all(request).is_err() || stream.flush().is_err() {
-                            exchanged = false;
-                            break;
-                        }
-                        let mut response = vec![0u8; expected.len()];
-                        if stream.read_exact(&mut response).is_err() || response != *expected {
-                            exchanged = false;
-                            break;
-                        }
-                    }
-                    if !exchanged {
+                        // Give Ring 3 time to claim both completed handshakes. This
+                        // keeps the fault proof on accepted streams rather than the
+                        // separate one-segment early-handshake buffer.
                         thread::sleep(Duration::from_millis(250));
-                        continue;
+                        // Half-close only after the response arrives: slirp aborts
+                        // a forwarded connection whose host side reaches EOF while
+                        // the guest-side connection is still being established.
+                        let mut exchanged = true;
+                        for (request, expected) in &exchanges {
+                            if stream.write_all(request).is_err() || stream.flush().is_err() {
+                                exchanged = false;
+                                break;
+                            }
+                            let mut response = vec![0u8; expected.len()];
+                            if stream.read_exact(&mut response).is_err() || response != *expected {
+                                exchanged = false;
+                                break;
+                            }
+                        }
+                        if !exchanged {
+                            thread::sleep(Duration::from_millis(250));
+                            continue;
+                        }
+                        let half_closed = stream.shutdown(Shutdown::Write).is_ok();
+                        let mut trailing = [0u8; 1];
+                        let closed = matches!(stream.read(&mut trailing), Ok(0));
+                        if half_closed && closed {
+                            return true;
+                        }
+                        thread::sleep(Duration::from_millis(250));
                     }
-                    let half_closed = stream.shutdown(Shutdown::Write).is_ok();
-                    let mut trailing = [0u8; 1];
-                    let closed = matches!(stream.read(&mut trailing), Ok(0));
-                    if half_closed && closed {
-                        return true;
-                    }
-                    thread::sleep(Duration::from_millis(250));
+                    false
+                }));
+            }
+            let mut all_ok = true;
+            for worker in workers {
+                all_ok &= worker.join().unwrap_or(false);
+            }
+            let _ = inbound_sender.send(all_ok);
+        });
+        let mut inbound_triggered = false;
+        let guest_result = evidence.run(
+            &mut command,
+            &firmware,
+            Path::new(TEST_DATA_IMAGE),
+            evidence_contract::Contract::network(false),
+            validation_run::RunPolicy::boot(120, 0),
+            |line| {
+                if !inbound_triggered && line == "USER_SOCKET_PASSIVE_LISTENER_READY" {
+                    inbound_trigger_sender.send(()).map_err(|e| e.to_string())?;
+                    inbound_triggered = true;
                 }
-                false
-            }));
-        }
-        let all_ok = workers
-            .into_iter()
-            .all(|worker| worker.join().unwrap_or(false));
-        let _ = inbound_sender.send(all_ok);
-    });
-    let required = [
-        "NETWORK_DEVICE_READY driver=virtio-net-pci transport=modern-pci",
-        "VIRTIO_NET_MSIX_READY vector=48 queues=rx,tx",
-        "PACKET_OWNERSHIP_READY",
-        "NETWORK_DHCP_READY",
-        "ETHERNET_ARP_IPV4_UDP_READY",
-        "NETWORK_ICMP_ECHO_OK",
-        "IPV6_SLAAC_READY prefix=ra dad=passed",
-        "IPV6_ICMP_ECHO_OK",
-        "USER_DNS_RESOLVE_OK",
-        "USER_HTTP_REQUEST_OK",
-        "USER_SOCKET_API_READY",
-        "USER_SOCKET_CAPABILITY_READY abi=18",
-        "USER_SOCKET_LISTENER_CAPABILITY_READY abi=18",
-        "USER_SOCKET_PASSIVE_LISTEN_READY port=18081",
-        "USER_SOCKET_PASSIVE_LISTENER_READY",
-        "TCP_PASSIVE_SYN_ACCEPTED",
-        "TCP_PASSIVE_HANDSHAKE_OK",
-        "USER_SOCKET_PASSIVE_ACCEPT_READY",
-        "TCP_PASSIVE_STREAM_RX_OK",
-        "TCP_PASSIVE_STREAM_TX_OK",
-        "TCP_PASSIVE_STREAM_PEER_FIN_OK",
-        "TCP_PASSIVE_STREAM_FIN_OK",
-        "USER_SOCKET_PASSIVE_STREAM_READY",
-        "USER_SOCKET_PASSIVE_CONCURRENT_READY streams=2",
-        "TCP_FAULT_DATA_DROP_INJECTED",
-        "TCP_FAULT_REORDER_HELD",
-        "TCP_FAULT_REORDER_RELEASED",
-        "TCP_STREAM_LARGE_READY bytes=1024 bounded_window=256",
-        "TCP_CONGESTION_CONTROL_READY algorithm=aimd max_cwnd=1024",
-        "USER_SOCKET_READINESS_WAIT_READY abi=18 wake_budget=2",
-        "USER_SOCKET_WAIT_BLOCK",
-        "USER_SOCKET_WAIT_WAKE",
-        "USER_SOCKET_WAIT_IMMEDIATE",
-        "USER_SOCKET_WAIT_TIMEOUT",
-        "NETWORK_REGRESSION_BUDGET_OK",
-        "USER_SOCKET_TRANSPORT_STARTED protocol=udp",
-        "USER_SOCKET_TRANSPORT_COMPLETE protocol=udp",
-        "USER_SOCKET_UDP_ASYNC_READY",
-        "USER_SOCKET_UDP_TIMEOUT",
-        "USER_SOCKET_STALE_REQUEST_DROPPED",
-        "USER_SOCKET_TRANSPORT_STARTED protocol=tcp",
-        "USER_SOCKET_TRANSPORT_COMPLETE protocol=tcp",
-        "USER_SOCKET_TCP_ASYNC_READY",
-        "TCP_ASYNC_RESET",
-        "USER_SOCKET_STALE_REQUEST_DROPPED protocol=tcp",
-        "USER_NETWORK_TIMEOUT_OK",
-        "USER_NETWORK_DIAGNOSTICS_READY",
-        "USER_SHELL_READY",
-        "GENOS_READY",
-    ];
-    // Cross-architecture TCG and loaded CI hosts need the same 120-second
-    // wall-clock budget as the other boot gates; evidence requirements are unchanged.
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let mut output = String::new();
-    let mut passed = false;
-    let mut inbound_triggered = false;
-    while Instant::now() < deadline {
-        output.clear();
-        if let Ok(mut file) = File::open(serial_log) {
-            let _ = file.read_to_string(&mut output);
-            if output.contains("KERNEL PANIC") || output.contains("_FAILED") {
-                break;
-            }
-            if !inbound_triggered && output.contains("USER_SOCKET_PASSIVE_LISTENER_READY") {
-                let _ = inbound_trigger_sender.send(());
-                inbound_triggered = true;
-            }
-            if required.iter().all(|marker| output.contains(marker)) {
-                passed = true;
-                break;
-            }
-        }
-        if child.try_wait().ok().flatten().is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    let _ = server_stop_sender.send(());
-    drop(inbound_trigger_sender);
-    let server_ok = server_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap_or(false);
-    let inbound_ok = inbound_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .unwrap_or(false);
-    let _ = server.join();
-    let _ = inbound_client.join();
-    if passed && server_ok && inbound_ok {
-        println!(
-            "network smoke passed: DHCP, ICMP, DNS, TCP/HTTP, concurrent passive streams, and timeout policy"
+                Ok(())
+            },
         );
+        let _ = server_stop_sender.send(());
+        drop(inbound_trigger_sender);
+        let server_ok = server_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or(false);
+        let inbound_ok = inbound_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap_or(false);
+        let _ = server.join();
+        let _ = inbound_client.join();
+        guest_result?;
+        if !server_ok || !inbound_ok {
+            return Err(format!(
+                "network host protocol witnesses failed: HTTP={server_ok} inbound={inbound_ok}"
+            ));
+        }
+        println!("network smoke passed: DHCP, ICMP, DNS, TCP/HTTP, concurrent passive streams, and timeout policy");
         Ok(())
-    } else {
-        Err(format!(
-            "network smoke failed (markers={passed} http_server={server_ok} inbound_clients={inbound_ok}); QEMU stderr ({}):\n{}\nserial:\n{output}",
-            qemu_log.display(), fs::read_to_string(qemu_log).unwrap_or_default()
-        ))
-    }
+    })();
+    evidence.finish(result)
 }
 
 fn smoke_network_without_http_server() -> Result<(), String> {
-    let firmware = find_ovmf_code()?;
-    let serial_log = Path::new("build/serial-network-normal-run.log");
-    let _ = fs::remove_file(serial_log);
-    let qemu_log = Path::new("build/serial-network-normal-run-qemu.log");
-    let stderr = File::create(qemu_log).map_err(|error| error.to_string())?;
-    let mut child = reference_vm::command()?
-        .arg("-drive")
-        .arg(format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            firmware.display()
-        ))
-        .arg("-drive")
-        .arg(format!(
-            "{},file={IMAGE}",
-            reference_vm::profile()?.get("boot_drive")
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_controller"))
-        .arg("-drive")
-        .arg(format!(
-            "if=none,id=genos-data,format=raw,cache=writeback,file={TEST_DATA_IMAGE}"
-        ))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("storage_device"))
-        .arg("-netdev")
-        .arg(reference_vm::profile()?.get("network_backend"))
-        .arg("-device")
-        .arg(reference_vm::profile()?.get("network_device"))
-        .arg("-display")
-        .arg("none")
-        .arg("-serial")
-        .arg(format!("file:{}", serial_log.display()))
-        .arg("-no-reboot")
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|error| format!("failed to launch normal network boot test: {error}"))?;
-    let required = [
-        "NETWORK_DEVICE_READY driver=virtio-net-pci transport=modern-pci",
-        "NETWORK_DHCP_READY",
-        "IPV6_SLAAC_READY prefix=ra dad=passed",
-        "IPV6_ICMP_ECHO_OK",
-        "USER_DNS_RESOLVE_OK",
-        "USER_SOCKET_CAPABILITY_READY abi=18",
-        "USER_SOCKET_LISTENER_CAPABILITY_READY abi=18",
-        "USER_SOCKET_TRANSPORT_STARTED protocol=udp",
-        "USER_SOCKET_TRANSPORT_COMPLETE protocol=udp",
-        "USER_SOCKET_UDP_ASYNC_READY",
-        "USER_SOCKET_UDP_TIMEOUT",
-        "USER_SOCKET_STALE_REQUEST_DROPPED",
-        "USER_SOCKET_TRANSPORT_STARTED protocol=tcp",
-        "TCP_ASYNC_RESET",
-        "USER_SOCKET_TCP_ERROR",
-        "USER_SOCKET_STALE_REQUEST_DROPPED protocol=tcp",
-        "USER_SHELL_READY",
-        "GENOS_READY",
-    ];
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut output = String::new();
-    let mut passed = false;
-    while Instant::now() < deadline {
-        output.clear();
-        if let Ok(mut file) = File::open(serial_log) {
-            let _ = file.read_to_string(&mut output);
-            if output.contains("KERNEL PANIC") || output.contains("_FAILED") {
-                break;
-            }
-            if required.iter().all(|marker| output.contains(marker)) {
-                passed = true;
-                break;
-            }
-        }
-        if child.try_wait().ok().flatten().is_some() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    if passed
-        && !output.contains("USER_HTTP_REQUEST_OK")
-        && !output.contains("USER_SOCKET_TCP_ASYNC_READY")
-        && !output.contains("USER_SOCKET_PASSIVE_ACCEPT_READY")
-        && !output.contains("USER_SOCKET_PASSIVE_STREAM_READY")
-        && !output.contains("USER_SOCKET_PASSIVE_CONCURRENT_READY")
-    {
-        println!("normal network boot passed without the test-only HTTP server");
-        Ok(())
-    } else {
-        Err(format!(
-            "normal network boot did not degrade safely; QEMU stderr ({}):\n{}\nserial:\n{output}",
-            qemu_log.display(),
-            fs::read_to_string(qemu_log).unwrap_or_default()
-        ))
-    }
+    let mut evidence = validation_run::Evidence::new(
+        "network-without-http",
+        Some(Path::new("build/serial-network-normal-run.log")),
+    )?;
+    let result = (|| {
+        let firmware = find_ovmf_code()?;
+        let mut command = validation_command(&firmware, Path::new(TEST_DATA_IMAGE), false)?;
+        command
+            .arg("-netdev")
+            .arg(reference_vm::profile()?.get("network_backend"))
+            .arg("-device")
+            .arg(reference_vm::profile()?.get("network_device"));
+        evidence.run(
+            &mut command,
+            &firmware,
+            Path::new(TEST_DATA_IMAGE),
+            evidence_contract::Contract::network(true),
+            validation_run::RunPolicy::boot(30, 0),
+            |_| Ok(()),
+        )
+    })();
+    evidence.finish(result)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -2111,149 +1839,6 @@ fn snapshot_checksum(bytes: &[u8]) -> u32 {
     checksum
 }
 
-fn smoke_markers_ready(output: &str) -> bool {
-    let required = [
-        "IRQ_READY",
-        "RECOVERY_BOUNDARY_OK",
-        "VFS_READY",
-        "RAMFS_TEMP_CLEAN_OK",
-        "RAMFS_TEMP_READY",
-        "RAMFS_TEMPORARY_READY",
-        "PARTITION_DISCOVERED",
-        "PCI_STORAGE_CONTROLLER_READY",
-        "BLOCK_CACHE_READY",
-        "BLOCK_CACHE_HIT_OK",
-        "PERSISTENT_STORAGE_RESTORED",
-        "PERSISTENT_STORAGE_READY",
-        "TASKS_READY",
-        "SCHED_READY",
-        "RUNTIME_COORDINATOR_READY",
-        "HEADLESS_RUNTIME_READY",
-        "PROCESS_SNAPSHOT_READY",
-        "UNIFIED_HANDLE_TABLE_READY",
-        "ASYNC_REQUEST_IDENTITY_READY",
-        "USER_ASYNC_REQUEST_ID_OK",
-        "USER_ASYNC_CANCELLATION_OK",
-        "USER_ASYNC_ONE_SHOT_OK",
-        "USER_SUPERVISOR_CLEANUP_OK mode=exit",
-        "USER_SUPERVISOR_CLEANUP_OK mode=fault",
-        "USER_SUPERVISOR_CLEANUP_OK mode=kill",
-        "USER_SUPERVISOR_NO_STALE_TASKS_OK",
-        "USER_SUPERVISOR_NO_STALE_HANDLES_OK",
-        "USER_SUPERVISOR_PENDING_CANCEL_OK",
-        "SUPERVISOR_CLEANUP_READY",
-        "USER_ROLLBACK_FULL_TABLE_OK",
-        "USER_ROLLBACK_LAUNCH_REFUSED_OK",
-        "USER_ROLLBACK_COPYOUT_OK",
-        "USER_ROLLBACK_CANCELLATION_OK",
-        "RUNTIME_ROLLBACK_READY",
-        "USER_PROCESS_GENERATION_STRESS_OK launches=257",
-        "USER_PID_REUSE_SAFE_OK",
-        "USER_STALE_PROCESS_HANDLE_REJECTED_OK",
-        "PROCESS_GENERATION_STRESS_READY",
-        "SCHED_DISPATCH_BENCH_OK",
-        "SCHED_CONTEXT_BENCH_OK",
-        "PAGING_READY",
-        "ADDRESS_SPACES_READY",
-        "USER_ELF_VALIDATED",
-        "USER_ELF_LOADED",
-        "USER_ELF_LAUNCH_OK",
-        "USER_CONTEXT_OK",
-        "USER_CONTEXT_RESUME_OK",
-        "USER_PREEMPT_OK",
-        "USER_FAULT_TERMINATED",
-        "USER_FAULT_ISOLATED",
-        "USER_SYSCALL_OK",
-        "USER_COPY_OK",
-        "USER_OUTPUT_OK",
-        "USER_RECLAIM_OK",
-        "USER_ASYNC_EXIT_OK",
-        "USER_OUTPUT_ASYNC_OK",
-        "USER_KILL_OK",
-        "USER_WAIT_OK",
-        "USER_SLEEP_OK",
-        "USER_CHILD_WAIT_OK",
-        "USER_MESSAGE_OK",
-        "USER_COORDINATION_OK",
-        "USER_ENDPOINT_CAPABILITY_OK",
-        "USER_CHANNEL_FAIRNESS_OK",
-        "USER_ENDPOINT_WAKE_OK",
-        "USER_FANIN_OK",
-        "USER_COPY_OUT_OK",
-        "USER_STRUCT_COPY_OK",
-        "USER_VFS_BLOCKING_OK",
-        "USER_FILE_CAPABILITY_OK",
-        "USER_FILE_OFFSET_OK",
-        "USER_FILE_CLOSE_OK",
-        "USER_FILE_WRITE_OK",
-        "USER_FILE_WRITE_POLICY_OK",
-        "USER_FILE_WRITE_READBACK_OK",
-        "USER_HANDLE_TRUNCATE_OK",
-        "USER_INPUT_BLOCK_OK",
-        "USER_INPUT_FILTER_OK",
-        "USER_INPUT_OWNERSHIP_OK",
-        "USER_INPUT_WAKE_OK",
-        "USER_ASYNC_LIFECYCLE_OK",
-        "USER_PROCESS_LAUNCHED",
-        "USER_PROCESS_STATUS",
-        "USER_PROCESS_KILLED",
-        "USER_PROCESS_REAPED",
-        "USER_SHELL_PROCESS_CONTROL_OK",
-        "USER_SHELL_NAMESPACE_OK",
-        "USER_SHELL_HISTORY_OK",
-        "USER_SOCKET_CAPABILITY_READY abi=18",
-        "USER_SOCKET_LISTENER_CAPABILITY_READY abi=18",
-        "USER_SHELL_READY",
-        "USER_STORAGE_STATUS_VISIBLE_OK",
-        "USER_RAMFS_TEMP_APP_OK",
-        "USER_DURABLE_RESTORE_OK",
-        "USER_CONSOLE_TRANSCRIPT_OK commands=2",
-        "USER_CONSOLE_HEADLESS_OK",
-        "CONSOLE_TRANSCRIPT_READY",
-        "PERSISTENT_STORAGE_RESTORED",
-        "PERSISTENT_STORAGE_READY",
-        "USER_DIRECTORY_READ_OK",
-        "USER_ISOLATION_OK",
-        "USERMODE_READY",
-        "SERVER_TERMINAL_READY",
-        "SERIAL_TERMINAL_READY",
-        "GENOS_READY",
-        "IRQ_HARDWARE_ON",
-        "IRQ_TICK_OK",
-        "TERMINAL_IDLE_OK",
-    ]
-    .iter()
-    .all(|marker| output.contains(marker));
-    required
-        && cpu_evidence::validation_ready(output)
-        && markers_in_order(
-            output,
-            &[
-                "USER_SOCKET_LISTENER_CAPABILITY_READY abi=18",
-                "USER_SOCKET_CAPABILITY_READY abi=18",
-                "USER_PROCESS_LAUNCHED",
-                "USER_PROCESS_STATUS",
-                "USER_PROCESS_KILLED",
-                "USER_PROCESS_REAPED",
-                "USER_SHELL_PROCESS_CONTROL_OK",
-                "USER_SHELL_NAMESPACE_OK",
-                "USER_SHELL_HISTORY_OK",
-                "USER_SHELL_READY",
-            ],
-        )
-}
-
-fn markers_in_order(output: &str, markers: &[&str]) -> bool {
-    let mut cursor = 0usize;
-    for marker in markers {
-        let Some(offset) = output[cursor..].find(marker) else {
-            return false;
-        };
-        cursor += offset + marker.len();
-    }
-    true
-}
-
 fn find_ovmf_code() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("GENOS_OVMF_CODE") {
         let path = PathBuf::from(path);
@@ -2333,18 +1918,6 @@ mod tests {
             Some(existing)
         );
         assert_eq!(select_ovmf_code([]), None);
-    }
-
-    #[test]
-    fn smoke_requires_async_lifecycle_and_reclaim_markers() {
-        assert!(smoke_markers_ready(concat!(
-            "BOOT_MEMORY_MAP_VALIDATED\nCPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float\nCPU_TLB_POLICY_READY pcid=off global=off\nKERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx\nKERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096\nRAMFS_TEMP_CLEAN_OK\nRAMFS_TEMP_READY\nRAMFS_TEMPORARY_READY\nPCI_STORAGE_CONTROLLER_READY\nPARTITION_DISCOVERED\nBLOCK_CACHE_READY\nBLOCK_CACHE_HIT_OK\nUSER_STORAGE_STATUS_VISIBLE_OK\nUSER_RAMFS_TEMP_APP_OK\nUSER_DURABLE_RESTORE_OK\n",
-            "IRQ_READY\nRECOVERY_BOUNDARY_OK\nVFS_READY\nTASKS_READY\nSCHED_READY\nRUNTIME_COORDINATOR_READY\nHEADLESS_RUNTIME_READY\nPROCESS_SNAPSHOT_READY\nUNIFIED_HANDLE_TABLE_READY\nASYNC_REQUEST_IDENTITY_READY\nSCHED_DISPATCH_BENCH_OK\nSCHED_CONTEXT_BENCH_OK\nPAGING_READY\nADDRESS_SPACES_READY\nUSER_ELF_VALIDATED\nUSER_ELF_LOADED\nUSER_ELF_LAUNCH_OK\nUSER_CONTEXT_OK\nUSER_CONTEXT_RESUME_OK\nUSER_PREEMPT_OK\nUSER_FAULT_TERMINATED\nUSER_FAULT_ISOLATED\nUSER_SYSCALL_OK\nUSER_COPY_OK\nUSER_OUTPUT_OK\nUSER_RECLAIM_OK\nUSER_ASYNC_EXIT_OK\nUSER_OUTPUT_ASYNC_OK\nUSER_KILL_OK\nUSER_WAIT_OK\nUSER_SLEEP_OK\nUSER_CHILD_WAIT_OK\nUSER_MESSAGE_OK\nUSER_COORDINATION_OK\nUSER_ENDPOINT_CAPABILITY_OK\nUSER_CHANNEL_FAIRNESS_OK\nUSER_ENDPOINT_WAKE_OK\nUSER_FANIN_OK\nUSER_COPY_OUT_OK\nUSER_STRUCT_COPY_OK\nUSER_VFS_BLOCKING_OK\nUSER_FILE_CAPABILITY_OK\nUSER_FILE_OFFSET_OK\nUSER_FILE_CLOSE_OK\nUSER_ASYNC_REQUEST_ID_OK\nUSER_ASYNC_CANCELLATION_OK\nUSER_ASYNC_ONE_SHOT_OK\nUSER_SUPERVISOR_CLEANUP_OK mode=exit\nUSER_SUPERVISOR_CLEANUP_OK mode=fault\nUSER_SUPERVISOR_CLEANUP_OK mode=kill\nUSER_SUPERVISOR_NO_STALE_TASKS_OK\nUSER_SUPERVISOR_NO_STALE_HANDLES_OK\nUSER_SUPERVISOR_PENDING_CANCEL_OK\nSUPERVISOR_CLEANUP_READY\nUSER_ROLLBACK_FULL_TABLE_OK\nUSER_ROLLBACK_LAUNCH_REFUSED_OK\nUSER_ROLLBACK_COPYOUT_OK\nUSER_ROLLBACK_CANCELLATION_OK\nRUNTIME_ROLLBACK_READY\nUSER_PROCESS_GENERATION_STRESS_OK launches=257\nUSER_PID_REUSE_SAFE_OK\nUSER_STALE_PROCESS_HANDLE_REJECTED_OK\nPROCESS_GENERATION_STRESS_READY\nUSER_FILE_WRITE_OK\nUSER_FILE_WRITE_POLICY_OK\nUSER_FILE_WRITE_READBACK_OK\nUSER_HANDLE_TRUNCATE_OK\nUSER_INPUT_BLOCK_OK\nUSER_INPUT_FILTER_OK\nUSER_INPUT_OWNERSHIP_OK\nUSER_INPUT_WAKE_OK\nUSER_ASYNC_LIFECYCLE_OK\nUSER_SOCKET_LISTENER_CAPABILITY_READY abi=18\nUSER_SOCKET_CAPABILITY_READY abi=18\nUSER_PROCESS_LAUNCHED\nUSER_PROCESS_STATUS\nUSER_PROCESS_KILLED\nUSER_PROCESS_REAPED\nUSER_SHELL_PROCESS_CONTROL_OK\nUSER_SHELL_NAMESPACE_OK\nUSER_SHELL_HISTORY_OK\nUSER_DIRECTORY_READ_OK\nUSER_SHELL_READY\nUSER_CONSOLE_TRANSCRIPT_OK commands=2\nUSER_CONSOLE_HEADLESS_OK\nCONSOLE_TRANSCRIPT_READY\nPERSISTENT_STORAGE_RESTORED\nPERSISTENT_STORAGE_READY\nUSER_ISOLATION_OK\nUSERMODE_READY\nUSER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true\nUSER_XSTATE_PREEMPTIONS count=12\nSERVER_TERMINAL_READY\nSERIAL_TERMINAL_READY\nGENOS_READY\nIRQ_HARDWARE_ON\nIRQ_TICK_OK\nTERMINAL_IDLE_OK\n"
-        )));
-        assert!(!smoke_markers_ready("GENOS_READY\n"));
-        assert!(!smoke_markers_ready(
-            "USER_SHELL_READY\nUSER_SHELL_PROCESS_CONTROL_OK\nUSER_PROCESS_REAPED\nUSER_PROCESS_KILLED\nUSER_PROCESS_STATUS\nUSER_PROCESS_LAUNCHED\n"
-        ));
     }
 
     #[test]
@@ -2648,7 +2221,10 @@ mod tests {
 
     #[test]
     fn storage_harness_covers_recovery_failure_and_ramfs_separation() {
-        let xtask = include_str!("main.rs");
+        let xtask = concat!(
+            include_str!("main.rs"),
+            include_str!("evidence_contract.rs")
+        );
         let storage = include_str!("../../../kernel/src/storage.rs");
         assert!(xtask.contains("simulate_torn_write"));
         assert!(xtask.contains("inspect_filesystem_image"));
@@ -2665,7 +2241,10 @@ mod tests {
 
     #[test]
     fn network_harness_covers_real_protocols_and_bounded_failure() {
-        let xtask = include_str!("main.rs");
+        let xtask = concat!(
+            include_str!("main.rs"),
+            include_str!("evidence_contract.rs")
+        );
         let driver = include_str!("../../../kernel/src/network.rs");
         let device = include_str!("../../../kernel/src/network_device.rs");
         let protocol = include_str!("../../../kernel/src/net.rs");

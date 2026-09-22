@@ -1937,9 +1937,6 @@ impl ProcessManager {
                         if text.as_str() == "passive TCP listener ready" {
                             crate::serial::trace::println("USER_SOCKET_PASSIVE_LISTENER_READY");
                         }
-                        if text.as_str() == "passive TCP listener ready" {
-                            crate::serial::trace::println("USER_SOCKET_PASSIVE_LISTENER_READY");
-                        }
                         if text.as_str() == "passive TCP accept ready" {
                             crate::serial::trace::println("USER_SOCKET_PASSIVE_ACCEPT_READY");
                         }
