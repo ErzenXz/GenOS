@@ -132,3 +132,67 @@ Publishing the series was attempted, but GitHub rejected the branch push because
 the connected OAuth app lacks the `workflow` scope required to update
 `.github/workflows/ci.yml`. No draft PR was created, and the new CI jobs have not
 run remotely. The tested commits remain on `update/normal-boot-hardening` locally.
+
+## September 22 foundation implementation and verification
+
+The complete `cargo xtask test` run passed on **`a3c5349`** using the frozen
+`genos-q35-tcg-v3` candidate: Rust 1.97.0, QEMU 11.1.1, recorded EDK2 digest,
+versioned machine/CPU, explicit boot devices and dual-stack network settings.
+All six boot-memory rejection cases passed on that commit. The later
+**`a7ab1d4`** changes only the BSP evidence parser/regression: CPUID's HTT-gated
+package-capacity field may be unavailable on the single-vCPU model; it is not
+an active-CPU count. All five BSP cases, eight original exception cases,
+strict reference acceptance and ten repeated release boots passed on `a7ab1d4`.
+
+Implemented contracts and scoped evidence:
+
+- **F1.1, partial:** checked map decoding and retained boot/kernel/initrd coverage.
+  Nine host tests and six actual VM rejection fixtures cover descriptor version,
+  count, overlap, unretained initrd/kernel and command-line failure paths.
+- **F1.2, partial:** eager private x87/MMX/XMM0–15/MXCSR state, clean construction,
+  feature/control-register admission and soft-float kernel policy. A real Ring 3
+  fixture passes two reuse rounds, six fresh snapshots, direct/yield syscalls,
+  two faults, at least twelve timer preemptions and exact frame reclamation.
+- **S1.1 implemented; S1.2/S1.3 partial:** uncertain outcomes, sticky quarantine,
+  discarded dirty cache, last-acknowledged RAM reads and transactional mounting.
+  Eight host tests include 176 before/after operation failures and 25 torn/recovery
+  cases. The corrupt-storage guest proves mutation denial and preserved temporary
+  data; it cannot acknowledge volatile `/USER` writes as durable.
+- **F0.2/F0.4, partial:** versioned environment identity, explicit boot order,
+  isolated firmware writes, fresh serial challenges, ordered/unique CPU evidence,
+  retained failure output and independent malformed-handoff CI configuration.
+  Remote enforcement and independent reproduction remain absent.
+
+Validation totals: **197 Rust host tests**, **34 Python tests**, **2 parser CLI
+tests**, and **100,000 parser mutations** with seed `20260922` passed. The full
+QEMU suite includes storage create/restore/read-only/corruption/recovery, serial
+input, DHCP/ICMP/DNS/HTTP/concurrent TCP and injected packet failures, the external
+SDK application, memory hygiene and all ten construction rollback points, six
+page-protection probes, and normal debug/no-NIC and release/network shell flows.
+The additional eight exception cases cover user/kernel divide error, undefined
+instruction, general protection and page fault. Strict Clippy, formatting,
+Markdown links, whitespace and unsafe inventory checks pass. The inventory's
+403 lexical sites in 72 files are review context, not a safety score.
+
+Each of the ten final release boots requires real command echoes/results,
+persistent file operations, launch/status/kill/reap, a live-frame increase and
+return to baseline, and a fresh serial challenge. This does not satisfy the
+proposed 1000-boot gate or sustained single-boot soak. No R1/R2/R3 promotion occurs.
+
+The campaign retained and corrected failures: an MMX oracle compared reserved
+high bits; duplicated validation helpers exceeded the shell text budget; the
+exported SDK omitted its new ABI module; and VM profile assumptions hid firmware
+boot selection and disabled IPv4. The corrected VM snapshots boot-image writes
+and explicitly enables both network families. Measured loaded-host firmware
+startup near twenty seconds justified using the existing sixty-second storage
+watchdog; that watchdog is not a performance target. The BSP parser correction
+does not relax the one-admitted-CPU requirement. Original failure logs remain local.
+
+Evidence is indexed in `build/roadmap-foundation-evidence/summary.json`. Main logs
+under `build/` are `roadmap-foundation-complete.log`, `roadmap-boot-memory.log`,
+`roadmap-bsp-verified.log`, `roadmap-exceptions.log`,
+`roadmap-reference-qualification.log` and `roadmap-repeat-boots.log`. Per-case
+patches, source/image/firmware identities and serial logs remain in
+`build/boot-memory-evidence/`, `build/bsp-evidence/`, `build/exception-evidence/`
+and `build/normal-evidence/`. These are local results; the new CI configuration
+has not run remotely. GenOS test VMs were stopped after verification.
