@@ -101,7 +101,7 @@ mod tests {
             for apic in [false, true] {
                 let features = Features::from_cpuid(
                     0,
-                    u32::from(msr) * CPUID_MSR | u32::from(apic) * CPUID_APIC,
+                    (u32::from(msr) * CPUID_MSR) | (u32::from(apic) * CPUID_APIC),
                 );
                 assert_eq!(features.can_read_apic_base(), msr && apic);
                 assert_eq!(features.is_bsp(Some(APIC_BASE_BSP)), msr && apic);
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn hardware_bsp_role_is_required_even_if_apic_id_is_zero() {
-        for base in [0, 0xfee0_0800, u64::MAX & !APIC_BASE_BSP] {
+        for base in [0, 0xfee0_0800, !APIC_BASE_BSP] {
             assert!(!supported().is_bsp(Some(base)));
         }
         // BSP identity comes from the MSR, never from assuming APIC ID zero.

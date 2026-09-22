@@ -8,6 +8,7 @@ pub const CR0_REQUIRED: u64 = (1 << 1) | (1 << 5); // MP, NE
 pub const CR0_FORBIDDEN: u64 = (1 << 2) | (1 << 3); // EM, TS
 pub const CR4_REQUIRED: u64 = (1 << 9) | (1 << 10); // OSFXSR, OSXMMEXCPT
 pub const CR4_OSXSAVE: u64 = 1 << 18;
+pub const CR4_PKE: u64 = 1 << 22;
 pub const EFER_FFXSR: u64 = 1 << 14;
 const REQUIRED_CPUID_EDX: u32 = (1 << 0) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26);
 
@@ -19,7 +20,7 @@ pub const fn configured(cr0: u64, cr4: u64, efer: u64) -> bool {
     cr0 & CR0_REQUIRED == CR0_REQUIRED
         && cr0 & CR0_FORBIDDEN == 0
         && cr4 & CR4_REQUIRED == CR4_REQUIRED
-        && cr4 & CR4_OSXSAVE == 0
+        && cr4 & (CR4_OSXSAVE | CR4_PKE) == 0
         && efer & EFER_FFXSR == 0
 }
 
@@ -68,10 +69,12 @@ impl State {
     #[cfg(feature = "validation-boot")]
     pub fn probe_mmx_pattern(seed: u64) -> Self {
         let mut image = Self::probe_pattern(seed);
-        // MOVQ to each MMX register sets its aliased x87 exponent to all ones.
+        // Distinct integer values prove the MMX phase was captured, instead
+        // of accidentally restoring the preceding x87 mantissas unchanged.
         for slot in 0..8 {
             let start = 32 + slot * 16;
-            image.0[start + 8..start + 10].copy_from_slice(&0xffffu16.to_le_bytes());
+            let value = 0xa55a_0000_0000_0000 | (seed << 8) | slot as u64;
+            image.0[start..start + 8].copy_from_slice(&value.to_le_bytes());
         }
         image
     }
@@ -80,12 +83,24 @@ impl State {
     /// state. Compare every defined restorable field, including empty payloads.
     #[cfg(any(test, feature = "validation-boot"))]
     pub fn matches_saved(&self, saved: &[u8]) -> bool {
+        self.matches_saved_slots(saved, 10)
+    }
+
+    /// Intel SDM's FXSAVE format reserves the high sixteen bits of a slot
+    /// when it contains MMX data; x87 comparisons above still cover all 80.
+    #[cfg(any(test, feature = "validation-boot"))]
+    pub fn matches_saved_mmx(&self, saved: &[u8]) -> bool {
+        self.matches_saved_slots(saved, 8)
+    }
+
+    #[cfg(any(test, feature = "validation-boot"))]
+    fn matches_saved_slots(&self, saved: &[u8], payload_bytes: usize) -> bool {
         saved.len() == STATE_BYTES
             && self.0[..5] == saved[..5]
             && self.0[6..28] == saved[6..28]
             && (0..8).all(|slot| {
                 let start = 32 + slot * 16;
-                self.0[start..start + 10] == saved[start..start + 10]
+                self.0[start..start + payload_bytes] == saved[start..start + payload_bytes]
             })
             && self.0[160..416] == saved[160..416]
     }
@@ -110,6 +125,7 @@ mod tests {
             assert!(!configured(CR0_REQUIRED | bit, CR4_REQUIRED, 0));
         }
         assert!(!configured(CR0_REQUIRED, CR4_REQUIRED | CR4_OSXSAVE, 0));
+        assert!(!configured(CR0_REQUIRED, CR4_REQUIRED | CR4_PKE, 0));
         assert!(!configured(CR0_REQUIRED, CR4_REQUIRED, EFER_FFXSR));
     }
 
@@ -135,6 +151,21 @@ mod tests {
                 || (32..160).contains(&index) && (index - 32) % 16 < 10
                 || (160..416).contains(&index);
             assert_eq!(state.matches_saved(&saved), !is_state, "byte {index}");
+        }
+    }
+
+    #[test]
+    fn mmx_comparison_ignores_only_the_reserved_high_sixteen_bits() {
+        let state = State::initial();
+        for slot in 0..8 {
+            let start = 32 + slot * 16;
+            let mut saved = *state.bytes();
+            saved[start + 8] = 0xff;
+            saved[start + 9] = 0x3f;
+            assert!(state.matches_saved_mmx(&saved));
+            assert!(!state.matches_saved(&saved));
+            saved[start + 7] ^= 1;
+            assert!(!state.matches_saved_mmx(&saved));
         }
     }
 }
