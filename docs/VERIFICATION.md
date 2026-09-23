@@ -445,3 +445,41 @@ negative check. Network and storage use host mock devices only at the driver
 boundary while compiling the production protocol/commit modules. This
 evidence closes the local F4.5 documentation/wiring item, not an unsafe-site,
 shared-global, whole-kernel, remote-CI or independent reviewer audit.
+
+## September 23 construction and teardown audit
+
+Commit `ed8574f` and [CONSTRUCTION_FAILURES.md](CONSTRUCTION_FAILURES.md)
+cover the current BSP supervisor split, user-root/page mapping, partial ELF and
+stack construction, process reaping, file/process/socket handles and RAM VFS
+node construction. A one-page supervisor split now restores its original parent
+entries, retires translations, and releases new child tables before returning
+an error. Failed process and handle rollback no longer discards teardown
+results. Completed supervised children are reclaimed before their slots are
+removed. An oversized RAM VFS create/overwrite/append preserves the prior
+namespace and bytes; its new host test passed with the 192 kernel library
+tests. `SDK.ELF` is loaded directly from the initrd and excluded from the
+512-byte RAM VFS seed path.
+
+On this source, `cargo xtask test-memory` passed all ten production process
+allocation cutoffs with `leaked_frames=0` in
+`build/fifty-construction-memory.log` and `build/serial-memory.log`.
+`cargo xtask test-protections` passed six exact-address CPU fault probes on
+clean `ed8574f` (`build/fifty-construction-protections-ed8574f.log`).
+`cargo xtask test-reference` passed the clean pinned reference check and both
+normal debug/release boots
+(`build/fifty-construction-reference-ed8574f.log`). The standalone SDK boot
+passed (`build/fifty-construction-sdk.log`), and the isolated network lane
+passed, including the no-HTTP-server boot at 27,504 ms against its 30,000 ms
+budget (`build/fifty-construction-network-retry.log`, retained manifest
+`build/validation-evidence/1790159262951016000/network-without-http/manifest.txt`).
+
+The combined `cargo xtask test` command did **not** pass end to end during
+this audit. An earlier candidate exposed an SDK boot-seed panic, which was
+fixed and verified. The final code's retry timed out in the no-HTTP-server
+validation boot at 30,000 ms after
+entering its passive listener wait loop. Its failed manifest remains at
+`build/validation-evidence/1790159034059994000/network-without-http/manifest.txt`.
+The subsequent isolated network rerun passed without changing code or the
+budget. This variability remains open under F6/F7 reliability and timing work;
+it is not a clean whole-suite claim. F3.4 covers the audited existing
+constructor/teardown boundaries, not future C1 mapping/heap growth or DMA/SMP.
