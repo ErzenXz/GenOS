@@ -33,6 +33,10 @@ identity and is not portable. Obtain the same firmware through a trusted QEMU
 package/source, retain its origin alongside release artifacts, and select it with
 `GENOS_OVMF_CODE=/path/to/firmware.fd`. The repository does not redistribute that
 binary or attest to its supply chain.
+The demonstrated macOS host has Homebrew `qemu 11.1.1`; `rust-toolchain.toml`
+requests Rust 1.97.0 and both freestanding x86_64 targets. A reproducer must
+record its own package/source receipt, complete `rustc -Vv`, exact QEMU version
+line and firmware digest. A matching path or package name alone is insufficient.
 
 Profile v3 additionally enables both `ipv4=on` and `ipv6=on` explicitly. QEMU
 otherwise disables IPv4 when only the IPv6 switch is supplied, rejecting the
@@ -53,6 +57,29 @@ target forbids compiler-generated SIMD in kernel code. More CPUs, ISA features,
 accelerators, physical devices and firmware variants need separate qualification.
 The four-vCPU BSP fixture changes only topology and still requires one admitted
 kernel CPU; it is a rejection/admission test, not SMP support.
+
+## Supported feature matrix for this candidate
+
+"Supported" below means admitted by the named local profile and the cited
+scoped evidence, not a product support promise. A variant never silently takes
+the reference name: each change in machine, CPU, firmware, devices, network or
+accelerator gets a new profile ID and its own evidence.
+
+| Dimension | Admitted reference behavior | Explicitly outside this profile |
+| --- | --- | --- |
+| Boot and execution | x86_64 UEFI, pinned EDK2 digest, q35-8.2, TCG, 512 MiB, one BSP | Other firmware/physical machines, KVM/HVF, running application work on another CPU |
+| CPU state | NX/WP, x87/MMX/SSE/SSE2, eager legacy save/restore; SMEP/SMAP both on | AVX/AVX-512/AMX, user OSXSAVE/PKE/FSGSBASE, arbitrary CPUID combinations; the feature-variant probes are tests, not alternate qualified profiles |
+| Memory and faults | Bounded bitmap/grant ledger, user/kernel PTE separation, selected guard/protection faults | DMA/IOMMU isolation, SMP page retirement, arbitrary firmware aliases and complete NMI/machine-check nesting |
+| Boot and persistent disks | Snapshot-backed boot IDE disk plus separately owned 8 MiB GFS2 data IDE disk | NVMe/AHCI/USB/physical power-loss guarantee, littlefs integration or automatic migration |
+| Network | One modern VirtIO PCI NIC, fixed MAC, QEMU dual-stack user network; IPv4/IPv6 selected local proofs | General Internet/TLS/server support, additional NICs, offloads, physical link or arbitrary topology |
+| Local console | Ring 3 serial shell, the commands and limits in [TERMINAL.md](TERMINAL.md) | GUI, POSIX shell, guest shutdown, multiuser identity, general ELF launch or full streams |
+
+Normal debug acceptance deliberately removes the NIC; the startup-dependency
+matrix also removes the data controller, leaves an empty controller, and attaches
+the NIC without any host test server. These are **failure/independence probes**,
+not newly supported reference layouts. They must still reach a usable local
+terminal inside their stated deadline. The network suite's loopback service is
+only a test fixture; its absence cannot be a precondition for local input.
 
 ## Developer and reference commands
 
