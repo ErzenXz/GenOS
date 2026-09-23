@@ -8,6 +8,7 @@ GenOS recommendations and numerical targets are labeled separately.
 - [Kernel ownership, CPU context, firmware and verification](2026-09-kernel-foundations.md)
 - [Storage recovery, applications, terminal and trusted distribution](2026-09-console-platform.md)
 - [Networking, VirtIO and reference hardware](2026-09-network-hardware.md)
+- [Pinned littlefs storage-format decision check](2026-09-littlefs-format-decision.md)
 
 The method was to compare official specifications and first-party engineering
 practice with the existing code and retained verification record. Sources include
