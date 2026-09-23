@@ -1,0 +1,21 @@
+BOOT_MODE validation
+BOOT_MEMORY_MAP_VALIDATED
+CPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float
+CPU_TLB_POLICY_READY pcid=off global=off
+KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx
+KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096
+IDT_READONLY_READY
+PHYSICAL_ALIAS_POLICY_READY identity=only user_alias=sealed direct=nx
+IRQ_HARDWARE_ON
+USERMODE_READY
+USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true
+USER_XSTATE_PREEMPTIONS count=12
+USER_PROCESS_LAUNCHED owner=29 pid=32 handle=0xd100000000000a01 mode=hold
+USER_PROCESS_KILLED owner=29 pid=32 code=137
+USER_PROCESS_REAPED owner=29 pid=32
+USER_PROCESS_LAUNCHED owner=29 pid=32 handle=0xd100000000010801 mode=hold
+USER_PROCESS_KILLED owner=29 pid=32 code=137
+USER_PROCESS_REAPED owner=29 pid=32
+USER_SOCKET_LISTENER_CAPABILITY_READY abi=18
+USER_SOCKET_CAPABILITY_READY abi=18
+USER_PROCESS_LAUNCHED owner=33 pid=34 handle=0xd100000000010901 mode=hold
