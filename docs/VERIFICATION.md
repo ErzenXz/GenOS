@@ -355,17 +355,16 @@ and normal image builds on clean `3e55272`. Its reference log is
 imports and mutable authority borrows in presentation. This closes the scoped
 F4.3 direction rule, not the shared-global or unsafe-boundary audits.
 
-Normal release startup dependency probes on `a42386c` used the exact
+Normal release startup dependency probes on `1be308b` used the exact
 `genos-q35-tcg-v3` environment, a snapshot-backed boot image, no persistent
-data image and no host test service. Both no-controller and empty-controller
-cases passed with clean source: manifests are
-`build/startup-dependency-evidence/1790153859111060000/no-controller/manifest.json`
-and
-`build/startup-dependency-evidence/1790153862955639000/empty-controller/manifest.json`.
-Both reached the Ring 3 prompt in about two seconds and completed fresh
-`echo`/`net`/`mem` exchanges within 3.5 seconds under the declared 60-second
-deadline. The NIC-present/no-server case passed in an exploratory run and must
-be repeated on clean committed source before counting the complete F6.1 matrix.
+data image and no host test service. Both missing-storage cases and the
+NIC-present/no-server case passed with clean source: manifests are
+`build/startup-dependency-evidence/1790154609065598000/no-controller/manifest.json`,
+`build/startup-dependency-evidence/1790154613151646000/empty-controller/manifest.json`
+and `build/startup-dependency-evidence/1790154616967327000/nic-no-server/manifest.json`.
+They reached the Ring 3 prompt in about two seconds and completed fresh
+`echo`/`net`/`mem` exchanges within four seconds under the declared 60-second
+deadline. No host network service or data volume was attached.
 The first no-controller exploratory manifest is explicitly `invalid`: the old
 harness closed its serial log before its reader thread stopped. The corrected
 harness joins the reader before closing logs, records reader failures, and has
@@ -378,3 +377,19 @@ The [primary-source review](research/2026-09-littlefs-format-decision.md) verifi
 the tag, static-buffer API, format behavior and important GenOS-side quota and
 device-sync obligations. Its status remains Proposed; no C code or new media
 format has been integrated. S2.2 and S2.3 remain open.
+
+On clean `1be308b`, 187 kernel library tests, 80 Python regressions, normal
+release acceptance and strict debug/release reference acceptance passed after
+the serial data guard and prompt state change. The exact strict run is
+`build/fifty-reference-1be308b.log`; the unsafe inventory still has 434 lexical
+constructs, now across 87 source files after adding a pure prompt-state module.
+The output sink accepts printable ASCII data only; terminal controls are sent
+only by explicit UI operations. A separate clean `ae143d8` VM fixture changes
+only delayed INIT hold output, not the production presenter. It emitted
+`BACKGROUND\x1b[2J\rATTACK` while `echo PENDING` was partly typed; the serial
+transcript displayed `BACKGROUND?[2J?ATTACK`, restored `genos> echo PENDING`, and
+showed one `PENDING` result only after Enter. Its source patch, build/image/
+firmware identities, exact QEMU command and serial hash are retained at
+`build/terminal-safety-evidence/1790154885972713000/manifest.json`. This closes
+the scoped C2 display/encoding item; cursor editing, pasted escape decoding,
+shell syntax and general background job ownership remain separate C2/C3 work.
