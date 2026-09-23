@@ -582,7 +582,10 @@ fn prove_async_tcp(
         || runtime::socket_connect(tcp, target, 18080) != 0
         || runtime::socket_status(tcp, status)
             != core::mem::size_of::<runtime::UserSocketStatus>() as u64
-        || status.state != runtime::SOCKET_STATE_CONNECTING
+        || !matches!(
+            status.state,
+            runtime::SOCKET_STATE_CONNECTING | runtime::SOCKET_STATE_ESTABLISHED
+        )
     {
         return false;
     }

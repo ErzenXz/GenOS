@@ -1157,6 +1157,35 @@ fn smoke_serial_terminal_input() -> Result<(), String> {
     evidence.finish(result)
 }
 
+const NETWORK_SMOKE_HTTP_REQUEST: &[u8] =
+    b"GET / HTTP/1.1\r\nHost: genos.test\r\nConnection: close\r\n\r\n";
+
+fn read_network_smoke_http_request(stream: &mut TcpStream) -> Result<bool, String> {
+    // A nonblocking listener's accepted sockets can inherit O_NONBLOCK. An
+    // immediate WouldBlock is not an empty guest request, even when a later
+    // read timeout is configured on that socket.
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    let mut request = [0u8; 512];
+    let mut read = 0usize;
+    while read < request.len() {
+        match stream.read(&mut request[read..]) {
+            Ok(0) => break,
+            Ok(bytes) => {
+                read += bytes;
+                if request[..read].windows(4).any(|end| end == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("HTTP request read failed: {error}")),
+        }
+    }
+    Ok(&request[..read] == NETWORK_SMOKE_HTTP_REQUEST)
+}
+
 fn smoke_network_qemu() -> Result<(), String> {
     let mut evidence =
         validation_run::Evidence::new("network", Some(Path::new("build/serial-network.log")))?;
@@ -1187,24 +1216,14 @@ fn smoke_network_qemu() -> Result<(), String> {
                 }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                        let mut request = [0u8; 512];
-                        let mut read = 0usize;
-                        while read < request.len() {
-                            match stream.read(&mut request[read..]) {
-                                Ok(0) => break,
-                                Ok(bytes) => {
-                                    read += bytes;
-                                    if request[..read].windows(4).any(|end| end == b"\r\n\r\n") {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
+                        let request_valid = match read_network_smoke_http_request(&mut stream) {
+                            Ok(valid) => valid,
+                            Err(error) => {
+                                eprintln!("network smoke HTTP host request failed: {error}");
+                                false
                             }
-                        }
-                        if &request[..read]
-                            != b"GET / HTTP/1.1\r\nHost: genos.test\r\nConnection: close\r\n\r\n"
-                        {
+                        };
+                        if !request_valid {
                             let _ = server_sender.send(false);
                             return;
                         }
@@ -1868,6 +1887,33 @@ fn select_ovmf_code(candidates: impl IntoIterator<Item = PathBuf>) -> Option<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_smoke_waits_for_request_on_an_accepted_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let sender = thread::spawn(move || {
+            let mut client = TcpStream::connect(address).unwrap();
+            thread::sleep(Duration::from_millis(75));
+            client.write_all(NETWORK_SMOKE_HTTP_REQUEST).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut accepted = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        };
+        assert!(read_network_smoke_http_request(&mut accepted).unwrap());
+        sender.join().unwrap();
+    }
 
     #[test]
     fn corrupt_user_volume_is_never_silently_reformatted() {
