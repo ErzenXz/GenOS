@@ -93,8 +93,8 @@ The original kernel-and-console checklist has **100 criteria**, with **26 checke
 at `98c8b38`**. Run `python3 tools/console_progress.py` for the audited count;
 its frozen baseline rejects renamed, inserted or removed criteria. This is a
 count of scoped checklist results, not work effort, product completeness or a
-stable-release percentage. On 2026-09-23 the count is **49/100 (49%)**:
-38/60 kernel foundations, 6/8 bounded-storage criteria, 5/19 application and
+stable-release percentage. On 2026-09-23 the count is **50/100 (50%)**:
+39/60 kernel foundations, 6/8 bounded-storage criteria, 5/19 application and
 terminal criteria, and 0/13 console-qualification criteria.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
@@ -235,7 +235,8 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
   Pinned nightly Miri ran 53 production-selected pure Rust tests. The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. Kernel hardware/unsafe code and unbounded executions are not covered.
 - [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
-- [ ] **F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.
+- [x] **F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.
+  `cargo xtask test-repeat 1000` passed all 1000 fresh normal release boots on clean source `7b8caa9` and profile `genos-q35-tcg-v3`, with one unchanged image SHA-256 `806f6095d7586020a3455547b4e7c23e90a44eaa89d9210e255a0a66f48c1b59`; there was no first failure. Every boot exercised real `uname`, process launch/status/kill/reap and persistent file I/O. All manifests and 2000 serial/QEMU logs were retained under `build/fifty-repeat-evidence/7b8caa9/`; the independent audit rejects missing/duplicate/out-of-order boots and checked every log hash. This is a fresh-boot lane, not F6.6's single-boot 24-hour pressure or C5's 72-hour console workload.
 - [ ] **F6.6:** qualify the existing kernel fixtures with at least 10000 lifecycle cycles and a proposed 24-hour single-boot memory/IPC/I/O pressure run. Record bounded caches, resource baselines, deadlines and coverage gaps. C5 later repeats and extends this with general applications and the complete console workflow; R1 does not depend on those later features.
 
 ### F7 — Reviewable delivery process

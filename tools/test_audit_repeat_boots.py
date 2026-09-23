@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,8 @@ class RepeatAuditTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.evidence = self.root / "normal-evidence"
+        self.artifacts = self.root / "artifacts"
+        self.artifacts.mkdir()
         self.log = self.root / "repeat.log"
         for ordinal in range(1, 4):
             self.manifest(ordinal)
@@ -31,6 +34,10 @@ class RepeatAuditTests(unittest.TestCase):
         run_id = run_id or str(1000 + ordinal)
         path = self.evidence / run_id / f"repeat-{ordinal:04d}" / "manifest.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
+        serial = f"boot {ordinal}\n".encode()
+        qemu = b""
+        (self.artifacts / f"serial-repeat-{ordinal:04d}.log").write_bytes(serial)
+        (self.artifacts / f"normal-repeat-{ordinal:04d}-qemu.log").write_bytes(qemu)
         path.write_text(
             "\n".join(
                 (
@@ -46,8 +53,8 @@ class RepeatAuditTests(unittest.TestCase):
                     "qemu=qemu-test",
                     f"commit={COMMIT}",
                     'working_tree_status=""',
-                    "serial_sha256=" + "e" * 64,
-                    "qemu_log_sha256=" + "f" * 64,
+                    "serial_sha256=" + hashlib.sha256(serial).hexdigest(),
+                    "qemu_log_sha256=" + hashlib.sha256(qemu).hexdigest(),
                 )
             )
             + "\n",
@@ -56,7 +63,7 @@ class RepeatAuditTests(unittest.TestCase):
         return path
 
     def check(self):
-        return audit(self.evidence, self.log, COMMIT, 3)
+        return audit(self.evidence, self.log, COMMIT, 3, self.artifacts)
 
     def test_complete_clean_lane(self):
         self.assertEqual(self.check()["count"], "3")
@@ -90,6 +97,11 @@ class RepeatAuditTests(unittest.TestCase):
     def test_partial_log_cannot_pass_complete_manifests(self):
         self.log.write_text(self.log.read_text().replace("NORMAL_BOOT_REPETITION_OK completed=3 requested=3\n", ""))
         with self.assertRaisesRegex(AuditError, "completion marker missing"):
+            self.check()
+
+    def test_changed_serial_bytes_are_rejected(self):
+        (self.artifacts / "serial-repeat-0002.log").write_bytes(b"forged\n")
+        with self.assertRaisesRegex(AuditError, "boot-output hash mismatch at boot 2"):
             self.check()
 
 

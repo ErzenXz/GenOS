@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 from pathlib import Path
 
@@ -22,7 +23,13 @@ def read_manifest(path: Path) -> dict[str, str]:
     return fields
 
 
-def audit(evidence_dir: Path, log_path: Path, commit: str, count: int = 1000) -> dict[str, str]:
+def audit(
+    evidence_dir: Path,
+    log_path: Path,
+    commit: str,
+    count: int = 1000,
+    artifacts_dir: Path | None = None,
+) -> dict[str, str]:
     if not re.fullmatch(r"[0-9a-f]{40}", commit) or not 1 <= count <= 1000:
         raise AuditError("expected a full 40-character commit and a count from 1 to 1000")
 
@@ -66,6 +73,15 @@ def audit(evidence_dir: Path, log_path: Path, commit: str, count: int = 1000) ->
             raise AuditError(f"source/profile/image identity changed at boot {ordinal}: {path}")
         if not all(re.fullmatch(r"[0-9a-f]{64}", fields.get(key, "")) for key in ("serial_sha256", "qemu_log_sha256")):
             raise AuditError(f"missing boot-output hashes at boot {ordinal}: {path}")
+        if artifacts_dir is not None:
+            for filename, field in (
+                (f"serial-repeat-{ordinal:04d}.log", "serial_sha256"),
+                (f"normal-repeat-{ordinal:04d}-qemu.log", "qemu_log_sha256"),
+            ):
+                artifact = artifacts_dir / filename
+                actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                if actual != fields[field]:
+                    raise AuditError(f"boot-output hash mismatch at boot {ordinal}: {artifact}")
 
     lines = log_path.read_text(encoding="utf-8").splitlines()
     successes = [int(match.group(1)) for line in lines if (match := re.fullmatch(r"repeat-(\d{4}) boot passed: .+", line))]
@@ -75,7 +91,12 @@ def audit(evidence_dir: Path, log_path: Path, commit: str, count: int = 1000) ->
     if lines.count(f"NORMAL_BOOT_REPETITION_OK completed={count} requested={count}") != 1:
         raise AuditError("final repeat completion marker missing or duplicated")
 
-    return {"commit": commit, "count": str(count), **identity}
+    return {
+        "commit": commit,
+        "count": str(count),
+        "log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest(),
+        **identity,
+    }
 
 
 def main() -> None:
@@ -84,9 +105,10 @@ def main() -> None:
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--count", type=int, default=1000)
+    parser.add_argument("--artifacts-dir", type=Path, help="also hash every retained serial/QEMU log")
     args = parser.parse_args()
     try:
-        result = audit(args.evidence_dir, args.log, args.commit, args.count)
+        result = audit(args.evidence_dir, args.log, args.commit, args.count, args.artifacts_dir)
     except (AuditError, OSError) as error:
         parser.exit(1, f"repeat audit failed: {error}\n")
     print("repeat audit passed: " + " ".join(f"{key}={value}" for key, value in result.items()))
