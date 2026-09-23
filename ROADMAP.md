@@ -1,6 +1,6 @@
 # GenOS roadmap
 
-**Updated: 2026-09-22. Foundation series after `eb55347`; exact tested commits are in [VERIFICATION.md](docs/VERIFICATION.md). Current level: Experimental.**
+**Updated: 2026-09-23. Foundation series after `98c8b38`; exact tested commits are in [VERIFICATION.md](docs/VERIFICATION.md). Current level: Experimental.**
 
 GenOS is an independent Rust operating system. The immediate product goal is a
 reliable kernel and useful terminal on a precisely defined reference machine.
@@ -10,7 +10,7 @@ not a claim of universal superiority or absence of bugs.
 
 This refresh reconciles the code, retained local tests, older roadmap entries and
 [primary-source research](docs/research/README.md). The September 8 refresh changed
-the plan; the September 22 foundation work adds implementation and tests.
+the plan; the September 22–23 foundation work adds implementation and tests.
 Previous stage numbers remain for links and history. The
 [previous roadmap](docs/history/2026-09-08-roadmap-before-refresh.md) is archived.
 
@@ -72,13 +72,13 @@ own implementation decision and tests.
 
 | Area | What exists now | What the evidence does not establish |
 | --- | --- | --- |
-| Boot and exceptions | UEFI map/handoff and kernel ELF admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages; protected IDT | Exhaustive firmware map/exit retries, stack high-water/nesting/return qualification or complete CPU-state qualification |
-| Page protection | NX/WP and supported SMEP/SMAP; user mapping and linked kernel section permissions | Physical-frame-wide W^X across aliases or every CPU feature combination |
-| Memory | Owner/generation grants, pinned user mappings, rollback, RAM hygiene, scoped IRQ access and per-open `mem` snapshots | General sharing/device pins, kernel alias retirement, quotas or complete synchronization |
+| Boot and exceptions | UEFI map/handoff and kernel ELF admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages and measured usage; protected IDT | Exhaustive firmware map/exit retries, nested/return-fault qualification or complete CPU-state qualification |
+| Page protection | NX/WP and supported SMEP/SMAP; user mapping and linked kernel section permissions; reference-profile physical alias sealing | Every mapping/device profile, DMA lifetime or arbitrary firmware topology |
+| Memory | Owner/generation grants, pinned user mappings, rollback, RAM hygiene, local translation retirement, bounded owner quotas, scoped IRQ access and per-open `mem` snapshots | General sharing/device pins, raw kernel-reference retirement or complete synchronization |
 | Processes and authority | Ring 3, preemption, private eager x87/MMX/SSE state, typed handles, exact deferred request identity, lifecycle cleanup | General spawn/heap/streams, tailored namespaces, full CPU-state qualification or stable application compatibility |
 | Modules | Host-tested endpoint and pathname policy modules; lexical unsafe inventory | Complete decomposition, caller-invariant audit or automatic semantic safety proof |
 | Terminal | Quiet normal session; bounded `help`; working serial `clear`; file/job commands and `mem` | Working directories, full line editing, quoting, pipelines, general launch, foreground cancellation or guest shutdown |
-| Storage | Bounded GFS2 snapshots, ATA/PCI discovery, host inspection/repair, uncertain-commit write quarantine and atomic RAM mount | General filesystem capacity, live reconciliation, exhaustive device fault models or production data safety |
+| Storage | Bounded GFS2 snapshots, ATA/PCI discovery, host inspection/repair, uncertain-commit write quarantine, atomic RAM mount and a 606-image fault corpus | General filesystem capacity, live reconciliation, physical power-loss qualification or production data safety |
 | Network | Modern VirtIO/MSI-X, IPv4, bounded concurrent TCP, socket waits and fault tests | General Internet TCP behavior, multi-process fairness at scale, arbitrary streams or secure traffic |
 | IPv6 | SLAAC, DAD, neighbor/control parsing and router echo in the reference network | IPv6 application sockets, AAAA, IPv6-only boot or complete host conformance |
 | SDK | A separately built native ELF executes and is reclaimed; ABI mismatch handling exists | General named launch, packages or a maintained ABI/SDK compatibility promise |
@@ -88,6 +88,14 @@ Evidence, test totals and exact commits: [VERIFICATION.md](docs/VERIFICATION.md)
 The September 8 research refresh was documentation-only; September 22 records
 implementation and its separate verification. Current source, limitations and evidence
 must agree before an item can move to Integrated.
+
+The original kernel-and-console checklist has **100 criteria**, with **26 checked
+at `98c8b38`**. Run `python3 tools/console_progress.py` for the audited count;
+its frozen baseline rejects renamed, inserted or removed criteria. This is a
+count of scoped checklist results, not work effort, product completeness or a
+stable-release percentage. On 2026-09-23 the count is **40/100 (40%)**:
+33/60 kernel foundations, 5/8 bounded-storage criteria, 2/19 application and
+terminal criteria, and 0/13 console-qualification criteria.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
 20 unified handles per process including 4 file and 4 socket handles; 32 VFS nodes;
@@ -102,9 +110,9 @@ Current bounds matter: 4 managed asynchronous process slots including the shell;
 | Next work item | Why it comes next | Completion evidence |
 | --- | --- | --- |
 | **F0.1 — Publish verification** | The VM candidate is pinned locally; GitHub rejected workflow publication for missing OAuth `workflow` scope | Authorized publication, exact-head remote checks and independent reproduction |
-| **F1.2/F1.3/F1.4 — Complete context and stack qualification** | Eager x87/MMX/SSE state and fourteen guards are implemented; other register state and nested/return faults remain | FS/GS/debug and FP exception contracts, stack usage measurements, nested/return-fault proofs |
-| **F3.1/F2.1 — Finish physical alias and sharing policy** | Owner grants protect user mappings; kernel writable aliases and device pins remain open | Physical W^X, explicit sharing/DMA retirement and stale-translation hardware tests |
-| **S1.2/S1.3 — Expand storage failure qualification** | S1.1 now quarantines uncertain commits; the host device model is bounded | Broader sector loss/reordering, device errors and independent recovery evidence |
+| **F1.2/F1.4 — Complete context and fault qualification** | Eager x87/MMX/SSE state, fourteen guards and scoped high-water/overflow proofs exist | FS/GS/debug and FP exception contracts, nested/return-fault proofs |
+| **F3.1/F3.2/F2.3 — Finish sharing, device and profile policy** | Reference-profile aliases, user copies, local retirement and quotas have bounded proofs | Explicit sharing/DMA retirement, raw-reference audit and additional hardware/feature profiles |
+| **S2 — Grow recoverable storage** | S1 failure semantics and the 606-image host model are qualified within stated device assumptions | Scalable file format, backup/migration and physical-device qualification |
 | **F4/F5 — Extract and guard remaining state** | Broader applications multiply the current raw-global assumptions | Executable ownership interfaces, context/lock assertions and delayed-interrupt tests |
 | **F6 — Coverage and sustained failures** | Mutation counts and short boots leave important state spaces unexplored | Coverage-guided targets, repeatable fault schedules, retained regressions and sustained-run accounting |
 | **C1 → C2/C3 → C4 → C5** | Build application/stream/storage contracts before shell syntax depends on them | Complete visible console workflows, then stability qualification |
@@ -126,8 +134,8 @@ must not deepen a known ownership or isolation violation.
 - [ ] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
   The candidate settings and upgrade procedure are implemented in [REFERENCE_VM.md](docs/REFERENCE_VM.md). Broader feature-matrix qualification and reproducible artifact acquisition remain open.
 - [ ] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
-- [ ] **F0.4:** test the harness itself: omitted, duplicated, forged, wrong-phase and stale success evidence must fail. Retain incomplete/failing manifests and stderr, not just successful runs.
-  Normal boot, CPU-state, boot-map, exception and BSP parsers have focused negative tests. Remaining legacy validation/network substring checks still need conversion.
+- [x] **F0.4:** test the harness itself: omitted, duplicated, forged, wrong-phase and stale success evidence must fail. Retain incomplete/failing manifests and stderr, not just successful runs.
+  Normal, validation, network, memory, CPU and fault evidence now use exact, ordered contracts with negative and live-prefix tests. Deliberately failed reruns and their manifests remain retained; these markers are test evidence, not authenticated remote attestations.
 - [ ] **F0.5:** reproduce clean builds on the supported host lanes, publish artifact hashes/provenance and make another reviewer reproduce the documented reference run.
 
 ### F1 — Complete exception and interrupt entry
@@ -144,10 +152,11 @@ must not deepen a known ownership or isolation violation.
   Map/handoff checks are implemented; the pinned UEFI helper supplies one stale-key retry. A [bounded kernel ELF load plan](docs/KERNEL_ELF.md) now validates the complete image before allocation/copy. Exhaustive map-growth/exit fault injection and firmware allocation-failure qualification remain open.
 - [ ] **F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.
   The fixed 512-byte FXSAVE64 fallback is implemented and has scoped VM evidence. Broader CPU state (including FS/GS/debug contracts), unmasked FP exceptions and physical/feature-matrix qualification remain open; no complete F1.2 claim.
-- [ ] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
-  All seven stacks now have [fourteen page guards](docs/KERNEL_STACKS.md), installed/read back before IRQ enable. Selected real fault fixtures are provided; high-water measurements, nesting and guard-skipping qualification remain open.
+- [x] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
+  [All seven stacks](docs/KERNEL_STACKS.md) have fourteen guards, high-water readings and sixteen real CPU cases, including every guard and a compiler-generated 12-KiB frame probe. Same-IST/NMI nesting and return faults remain F1.4.
 - [ ] **F1.4:** specify and test NMI/machine-check/same-IST nesting, fault-during-return and malformed return state. Recover only where a safe recovery contract is demonstrated; otherwise halt deliberately.
-- [ ] **F1.5:** test missing/mixed CPU features and unsupported ISA use before admitting general applications. Record exactly what the reference CPU contract permits.
+- [x] **F1.5:** test missing/mixed CPU features and unsupported ISA use before admitting general applications. Record exactly what the reference CPU contract permits.
+  [The admitted reference contract](docs/CPU_FEATURES.md) has eighteen passing kernel-lane CPU cases. Two actual FXSR/SSE-disabled variants fail in firmware before GenOS entry and remain explicit unsupported platform cases; injected CPUID samples test kernel rejection without relabeling those failures.
 
 Research basis: [kernel foundations](docs/research/2026-09-kernel-foundations.md).
 F1's earlier checked entries described the delivered entry slice; they did not close
@@ -159,8 +168,10 @@ these remaining CPU-state and hardware obligations.
 
 - [x] Required NX/WP and supported SMEP/SMAP are enabled/read back; linked sections, IDT, user data and stacks receive explicit permissions.
 - [x] Current explicit mapping APIs reject W+X; real faults test the selected protections.
-- [ ] **F2.1:** enforce a physical-frame permission/alias policy across the kernel direct map, temporary loader mappings, user aliases, remapping and protection changes. A writable alias must not silently defeat executable/read-only authority.
-- [ ] **F2.2:** centralize user-copy lifetime/range validation and mapping updates behind reviewed interfaces; retire translations before backing storage can be reused.
+- [x] **F2.1:** enforce a physical-frame permission/alias policy across the kernel direct map, temporary loader mappings, user aliases, remapping and protection changes. A writable alias must not silently defeat executable/read-only authority.
+  The admitted identity-mapped firmware topology is frozen, retained direct-map leaves are NX except text, published RX/RO user frames seal writable supervisor aliases, and dynamic aliases/reprotection are refused. Three hardware fault probes exercise the permission boundary; arbitrary firmware/device mapping profiles remain unqualified.
+- [x] **F2.2:** centralize user-copy lifetime/range validation and mapping updates behind reviewed interfaces; retire translations before backing storage can be reused.
+  A single bounded paging copy interface validates the whole range, owner, root, tables and pins before transfer. Mapping construction requires an inactive root; local retirement precedes unpin/scrub/reuse. DMA/raw-reference lifetime remains F3.2.
 - [ ] **F2.3:** extend actual CPU access tests across every mapping family and feature profile, including stale translations, cross-process aliases and failed protection changes.
 
 ### F3 — Transactional physical and virtual memory
@@ -175,10 +186,11 @@ these remaining CPU-state and hardware obligations.
   [Private-field frame grants](docs/FRAME_GRANTS.md) now enforce owner/allocation identity and reject stale reuse. Explicit sharing and device pins remain open; user aliases are denied.
 - [ ] **F3.2:** retire references, mappings, translations and device use before scrubbing/reuse. Wrong-owner, stale-generation, duplicate, aliased and pinned releases must leave state and bytes unchanged.
   User PTE pins, inactive-root construction/teardown, CR3 retirement with PCID/global retention disabled, and unlink-before-release are implemented. Raw kernel references/direct aliases, DMA and SMP still require broader lifetime policy.
-- [ ] **F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.
+- [x] **F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.
+  Runtime grants are order-0 only, with no adjacency promise; firmware boot allocations and admitted runtime regions have separate owners. Metadata measures 591,504 bytes; usable coverage is bounded to 8 GiB/64 regions and live grants to 8192. Contiguous DMA allocation is not advertised.
 - [ ] **F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.
-- [ ] **F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; `/MEMORY.STATUS` must stay coherent across partial reads.
-  Immutable per-open snapshots and kernel/user grant accounting now exist, with explicit 8192-live-grant capacity and failure reporting. Per-process quotas and pressure policy remain open.
+- [x] **F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; `/MEMORY.STATUS` must stay coherent across partial reads.
+  Each non-kernel owner has a 64-frame quota including tables, with 256 ledger entries reserved from user admission. Denial preserves other owners and rolls back partial construction; two production pressure cycles and interleaved Ring 3 report reads prove bounded behavior. No swapping/OOM victim policy is implied.
 
 Contract and current limits: [MEMORY.md](docs/MEMORY.md). Scrubbing is RAM hygiene,
 not proof of cache erasure or physical remanence protection. Owner/grant enforcement
@@ -205,7 +217,8 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [ ] **F5.2:** bound IRQ work and masked duration; move blocking/expensive device work to coordinators. Record worst observed latency under the declared workload.
 - [ ] **F5.3:** put current process/address space/scheduler-local/interrupt-local state behind a per-CPU-ready interface, while retaining exactly one active CPU in R1.
 - [ ] **F5.4:** test delayed/nested interrupt delivery during allocation, context changes, request cancellation and device completion, with forward progress and ownership checks.
-- [ ] **F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.
+- [x] **F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.
+  [The local ordering and future acknowledgment contract](docs/TLB_RETIREMENT.md) documents disabled PCID/global retention, conservative invalidation/CR3 switches and real-CPU root/reuse tests. AP admission remains disabled; no cross-CPU shootdown code is claimed.
 
 ### F6 — Test boot, release boot, fuzzing, and fault injection
 
@@ -215,7 +228,8 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] Retained deterministic ELF/network/socket mutation inputs, exact fault evidence parsers, allocation injection and selected packet/storage failures exist.
 - [ ] **F6.1:** finish the normal startup cost/dependency audit. Optional devices must fail within declared deadlines and cannot make the local terminal depend on a test server or fixture.
 - [ ] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
-- [ ] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
+- [x] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
+  Pinned nightly Miri ran 53 production-selected pure Rust tests. The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. Kernel hardware/unsafe code and unbounded executions are not covered.
 - [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
 - [ ] **F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.
 - [ ] **F6.6:** qualify the existing kernel fixtures with at least 10000 lifecycle cycles and a proposed 24-hour single-boot memory/IPC/I/O pressure run. Record bounded caches, resource baselines, deadlines and coverage gaps. C5 later repeats and extends this with general applications and the complete console workflow; R1 does not depend on those later features.
@@ -224,9 +238,11 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 
 **Owner:** change author and reviewer. **Status:** process defined; enforcement/evidence must accompany each release.
 
-- [ ] **F7.1:** produce buildable, reviewable commits; separate mechanical moves from behavior where possible and explain inseparable large changes.
+- [x] **F7.1:** produce buildable, reviewable commits; separate mechanical moves from behavior where possible and explain inseparable large changes.
+  Four focused committed source steps each linked a validation boot image from an immutable source archive; follow-up harness and documentation commits are separated. Exact archive manifests and commit differences are retained locally. Remote review/merge remains F0.1/F0.3.
 - [ ] **F7.2:** map each public guarantee to success, negative, exhaustion, cancellation and cleanup evidence; review the actual failing cases and unsafe sites.
-- [ ] **F7.3:** retain migration/downgrade/rollback plans for every public format/interface and a release-specific limitations snapshot.
+- [x] **F7.3:** retain migration/downgrade/rollback plans for every public format/interface and a release-specific limitations snapshot.
+  [The 20-boundary inventory](docs/COMPATIBILITY.md) has matched-bundle, data-preserving rollback and candidate-limit plans. This closes the local planning slice only; a promoted release still needs exact-version mixed-version/rejection/rollback execution and reviewer sign-off.
 - [ ] **F7.4:** require reproducible performance experiments and independent clean-build review. Do not optimize by removing required correctness work or relaxing a failing budget after the fact.
 
 ### Foundation gate exit
@@ -255,11 +271,12 @@ references, not an automatic filesystem selection. See [storage/platform researc
 
 - [x] Dual snapshot format, synchronous commits, host inspection/repair and read-only recovery have bounded local proofs.
 - [x] **S1.1:** reproduce unknown final-commit outcomes and enter read-only recovery. Explicit outcomes, sticky write quarantine, dirty-cache discard, last-acknowledged RAM rollback and visible remount status are implemented. The host regression proves either old or new complete media state after failed final flush; subsequent writes issue no device commands. Live reconciliation is not implemented.
-- [ ] **S1.2:** specify atomic visibility, acknowledged durability, cancellation and remount results separately. Inject cuts/errors before and after every logical write/flush, including the final commit record.
-  The production commit/cache path now runs 176 before/after device-operation error cases across writeback and writethrough models. See [STORAGE.md](docs/STORAGE.md) for exact guarantees and model limits; wider hardware/cancellation coverage remains.
-- [ ] **S1.3:** test torn/reordered/lost sectors, corruption of either/both generations, full storage, counter overflow and a second failure during repair/recovery. Preserve unreadable media; never silently format it.
-  Twenty-five torn/recovery cases, counter-overflow refusal and atomic mount rejection for late malformed entries or a full VFS are covered. Arbitrary lost/reordered sectors and physical-device qualification remain open.
-- [ ] **S1.4:** document device flush/FUA/cache assumptions and compare guest recovery with an independent host checker. Killing QEMU alone is not a full physical power-loss model.
+- [x] **S1.2:** specify atomic visibility, acknowledged durability, cancellation and remount results separately. Inject cuts/errors before and after every logical write/flush, including the final commit record.
+  [The storage contract](docs/STORAGE.md) separates synchronous acknowledgement, unacknowledged old/new recovery, pre-commit cancellation and read-only quarantine. The production seam exercises 176 before/after device-operation errors across writeback and writethrough.
+- [x] **S1.3:** test torn/reordered/lost sectors, corruption of either/both generations, full storage, counter overflow and a second failure during repair/recovery. Preserve unreadable media; never silently format it.
+  The 606-image corpus includes 176 reordered cuts, 44 silent losses, 21 corruption placements, 176 repeated repair failures, and full/counter/semantic cases. Completely unreadable or contradictory media remain preserved/refused; physical controller faults are separate qualification.
+- [x] **S1.4:** document device flush/FUA/cache assumptions and compare guest recovery with an independent host checker. Killing QEMU alone is not a full physical power-loss model.
+  The [ATA/cache contract](docs/STORAGE.md) names FLUSH CACHE, writeback, no FUA and honest completion assumptions. An independent decoder checks each retained actual-production recovery image. This is a device model, not physical power-loss evidence.
 - [ ] **S2.1:** choose format growth in an ADR after comparing workloads, space amplification, RAM cost, recovery time, implementation/reuse/licensing cost and tooling. Do not select journaling, copy-on-write trees or littlefs by fashion.
 - [ ] **S2.2:** support larger files/directories and streams with explicit quotas and partial-I/O semantics. Initial candidate tests: at least 1 MiB files, 1024 namespace entries and 255-byte complete paths; validate budgets before freezing C5.
 - [ ] **S2.3:** implement atomic replacement/rename, metadata and filename policy, backup/export/restore, versioned migration and interrupted-migration recovery. Keep a read-only path for old GFS2 data.

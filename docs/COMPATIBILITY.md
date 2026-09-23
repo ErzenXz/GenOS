@@ -1,9 +1,10 @@
 # Compatibility, migration and rollback inventory
 
-**Snapshot: GenOS 0.56 experimental console candidate, 2026-09-22.** This inventory
+**Snapshot: GenOS 0.56 experimental console candidate, 2026-09-23.** This inventory
 belongs to the source commit that contains it. The pre-campaign baseline was
 `98c8b38b809f5948edf4d90cc672f22a3013bde4`; the implemented hardening series runs
-through `d5a94b1` at this inventory review. Exact executed source revisions and
+through `507c4c6` plus the later network-validation race fix at this inventory review.
+Exact executed source revisions and
 retained artifacts are identified separately by the release/evidence manifest. This is
 not a stable-release announcement or a promise that an arbitrary older binary
 can read newer state. [VERIFICATION.md](VERIFICATION.md) records executed tests;
@@ -142,7 +143,8 @@ Newly implemented mechanisms still require their exact committed VM evidence.
 
 ## Release acceptance record
 
-F7.3 is satisfied for a release only after its reviewer records that this inventory
+The local F7.3 planning slice is recorded here. F7.3 is satisfied for a release
+only after its reviewer records that this inventory
 matches that exact source, identifies every changed row and its migration plan,
 retains this limitations snapshot with the release, and links the executed mixed-
 version/rejection/rollback evidence appropriate to those changes. A missing
