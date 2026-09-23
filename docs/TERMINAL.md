@@ -6,6 +6,15 @@ messages remain available; `validation-boot` retains the detailed proof trace.
 Start with `make run`. This serial-only QEMU session does not capture the mouse.
 To quit the emulator, press Control+A, release both keys, then press `x`. These
 are host emulator controls, not a guest shutdown command.
+This stops QEMU immediately. It does not wait for guest services, drain the
+device cache or prove that recent file writes survived. The shell has no guest
+`exit`, `shutdown` or `reboot` command yet; do not treat closing the VM window,
+Control+A then `x`, QMP `quit` or a test harness's `terminate()` as such a
+command. After an unexpected host stop, use the documented storage inspection/
+recovery path before assuming the latest mutation was durable. The explicit
+QMP `guest-shutdown` event required by the malformed-kernel-ELF test proves only
+that loader rejection asked the guest to stop; it is not a normal shell session
+shutdown or a filesystem durability proof.
 Type one command and press Enter. Commands use plain arguments, not shell quoting,
 pipelines or redirection. The current namespace is rooted at `/` with no `cd`.
 

@@ -347,7 +347,8 @@ choices, not prerequisites for GenOS's own launch/stream model.
 - [x] Normal output is quiet; `help` respects the 80-byte ABI limit; `clear`, files/jobs and `mem` have visible transcript tests.
 - [ ] Separate byte/escape decoding, bounded line editing, shell parsing and foreground input ownership. Cover cursor/delete/home/end, history, completion, cancellation, paste, long input and invalid/incomplete sequences.
 - [ ] Add `cd`, `pwd`, relative paths, quoting/escaping, general named launch and exit-status reporting. Enforce directory confinement below the shell; text normalization is not authority.
-- [ ] Define encoding, filename comparison and safe display of control bytes. Data display must not inject terminal controls, alter pending input or execute commands; prompt ownership must remain clear after background output. A limited initial encoding profile must be documented.
+- [x] Define encoding, filename comparison and safe display of control bytes. Data display must not inject terminal controls, alter pending input or execute commands; prompt ownership must remain clear after background output. A limited initial encoding profile must be documented.
+  [TERMINAL.md](docs/TERMINAL.md) defines printable ASCII and case-insensitive ASCII filenames. Console admission and the final serial data sink replace controls/non-ASCII; a committed-source [interleaving fixture](tools/test_terminal_interleave.py) proves an ESC/CR background payload cannot clear the screen or submit a partly typed command, and that the prompt is redrawn before Enter.
 - [ ] Build copy, atomic move/rename, text viewing/editing and diagnostics around real storage/stream interfaces. Add `ping`/DNS tools when a reviewed network interface exists; the ABI's existing test `ping` is not ICMP.
 
 ### C3 — Composable jobs and scripts
@@ -362,7 +363,8 @@ choices, not prerequisites for GenOS's own launch/stream model.
 - [ ] Implement guest `exit`, shell/session restart, shutdown and reboot with privilege checks, bounded service stopping, storage draining and explicit failure outcomes.
 - [ ] Provide a functional serial recovery parser for inspection, read-only mount/export, backup/restore and authorized repair. Do not depend on graphics or the normal shell surviving.
 - [ ] Test a failed shell, failed optional service, damaged configuration, unavailable device, failed flush and interrupted recovery; return to a usable documented state.
-- [ ] Keep QEMU host controls separate from guest shutdown. Exiting the emulator is not a guest durability guarantee.
+- [x] Keep QEMU host controls separate from guest shutdown. Exiting the emulator is not a guest durability guarantee.
+  [Terminal instructions](docs/TERMINAL.md) identify Control+A then `x`, window close, QMP quit and harness termination as host stops without durability semantics. The malformed-ELF harness separately requires a QMP `guest-shutdown` event; guest session shutdown and draining remain open in the first C4 item.
 
 ### C5 — Stable console reference acceptance
 
