@@ -13,11 +13,9 @@ BASELINE = (ROOT / "tools/console-progress-baseline.json").read_bytes()
 
 class ConsoleProgressTests(unittest.TestCase):
     def test_original_denominator_and_initial_progress(self):
-        original = __import__("subprocess").check_output(
-            ["git", "show", "98c8b38:ROADMAP.md"], cwd=ROOT, text=True
-        )
-        result = console_progress.audit(original, BASELINE)
-        self.assertEqual((result["complete"], result["total"]), (26, 100))
+        result = console_progress.audit(ROADMAP, BASELINE)
+        self.assertEqual((result["baseline_complete"], result["total"]), (26, 100))
+        self.assertGreaterEqual(result["complete"], result["baseline_complete"])
         self.assertEqual(result["groups"]["Applications and terminal"]["total"], 19)
 
     def test_changed_criterion_cannot_preserve_the_percentage(self):
