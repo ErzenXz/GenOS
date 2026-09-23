@@ -1,0 +1,19 @@
+diff --git a/userspace/init/src/main.rs b/userspace/init/src/main.rs
+index aab6913..5181fba 100644
+--- a/userspace/init/src/main.rs
++++ b/userspace/init/src/main.rs
+@@ -237,8 +237,12 @@ fn run(token: u64) -> u8 {
+         FILE_TOKEN_MODE => file_program(),
+         WRITE_TOKEN_MODE => write_program(),
+         INPUT_TOKEN_MODE => input_program(),
+-        HOLD_TOKEN_MODE => loop {
+-            core::hint::spin_loop();
++        HOLD_TOKEN_MODE => {
++            let _ = nap(100);
++            let _ = say(b"BACKGROUND\x1b[2J\rATTACK");
++            loop {
++                core::hint::spin_loop();
++            }
+         },
+         _ => None,
+     };
