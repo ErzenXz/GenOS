@@ -38,6 +38,9 @@ jobs:
           cargo fmt --all -- --check
           cargo fmt --manifest-path tools/parser-stress/Cargo.toml -- --check
 
+      - name: Check kernel module dependency direction
+        run: python3 tools/check_kernel_dependencies.py
+
       - name: Lint host-side ABI and build tooling
         run: |
           cargo clippy -p genos_abi -- -D warnings
