@@ -25,6 +25,17 @@ pub fn println(text: &str) {
     print("\n");
 }
 
+/// Only for untrusted display data. Terminal controls are emitted by explicit
+/// UI operations such as clear, never by file or process output.
+pub fn println_data(text: &str) {
+    for byte in text.bytes() {
+        if !write_byte(kernel::console_text::terminal_data_byte(byte)) {
+            break;
+        }
+    }
+    let _ = write_byte(b'\n');
+}
+
 pub fn print_u64(mut value: u64) {
     let mut buf = [0u8; 20];
     let mut i = buf.len();

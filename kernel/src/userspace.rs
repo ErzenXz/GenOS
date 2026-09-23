@@ -7223,9 +7223,7 @@ fn copy_user_text(process: &UserProcess, address: u64, length: u64) -> Option<Fi
         return None;
     }
     for byte in &mut bytes[..length] {
-        if !byte.is_ascii() || byte.is_ascii_control() {
-            *byte = b'?';
-        }
+        *byte = kernel::console_text::terminal_data_byte(*byte);
     }
     let text = core::str::from_utf8(&bytes[..length]).ok()?;
     Some(FixedText::from_str(text))

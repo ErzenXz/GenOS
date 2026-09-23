@@ -2,6 +2,16 @@
 
 pub const MAX_LINE_BYTES: usize = 160;
 
+/// The serial console accepts printable ASCII as data. Control and extended
+/// bytes are displayed as a single '?' so file contents cannot emit escapes.
+pub const fn terminal_data_byte(byte: u8) -> u8 {
+    if byte >= 0x20 && byte <= 0x7e {
+        byte
+    } else {
+        b'?'
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineKind {
     Prompt,
@@ -93,6 +103,27 @@ impl FixedText {
         if self.len < MAX_LINE_BYTES {
             self.bytes[self.len] = byte;
             self.len += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_data_tests {
+    use super::terminal_data_byte;
+
+    #[test]
+    fn every_data_byte_is_printable_and_controls_never_survive() {
+        for byte in u8::MIN..=u8::MAX {
+            let displayed = terminal_data_byte(byte);
+            assert!((0x20..=0x7e).contains(&displayed));
+            assert_eq!(
+                displayed,
+                if (0x20..=0x7e).contains(&byte) {
+                    byte
+                } else {
+                    b'?'
+                }
+            );
         }
     }
 }

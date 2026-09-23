@@ -24,6 +24,7 @@ pub mod physmem;
 pub mod protection;
 pub mod recovery;
 pub mod request;
+pub mod serial_prompt;
 pub mod serial_transport;
 pub mod socket;
 pub mod stack;
