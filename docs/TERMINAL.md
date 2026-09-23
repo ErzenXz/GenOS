@@ -15,6 +15,23 @@ recovery path before assuming the latest mutation was durable. The explicit
 QMP `guest-shutdown` event required by the malformed-kernel-ELF test proves only
 that loader rejection asked the guest to stop; it is not a normal shell session
 shutdown or a filesystem durability proof.
+
+The input line is capped at 80 printable ASCII bytes. Left/Right, Home/End,
+Backspace and Delete edit around a cursor; Up/Down traverse eight remembered
+commands and restore the unfinished line when returning to the newest slot.
+Tab extends a unique or shared prefix of built-in command names; it does not
+complete paths. Escape alone cancels the current line after a short prefix
+timeout; Control+C also cancels when the host terminal forwards that byte.
+Unknown escape sequences are dropped, and an incomplete sequence cannot submit
+the line. The shell enables bracketed paste and converts pasted newlines/tabs
+to spaces; a paste over 512 bytes cancels and discards the rest through its end
+marker. A host terminal that ignores bracketed-paste negotiation sends raw
+newlines as Enter, so paste one line at a time in that environment.
+
+The serial renderer uses ANSI cursor movement for edits and background-output
+redraw. A basic log viewer may show those control bytes literally even though
+the actual terminal presents one editable line. Control+A is reserved by QEMU's
+default serial multiplexer; use the Home key for shell navigation in `make run`.
 Type one command and press Enter. Commands use plain arguments, not shell quoting,
 pipelines or redirection. The current namespace is rooted at `/` with no `cd`.
 
@@ -53,14 +70,15 @@ canonical path policy; no Unicode normalization or locale-specific comparison
 is offered. When `cat` reads file bytes, LF separates displayed lines; every
 other control byte, DEL and byte above `0x7e` displays as `?`. Console syscalls
 apply the same substitution before data reaches presentation, and the serial
-output sink applies it again. Only the kernel's explicit `clear` operation emits
-terminal control sequences. Displayed file/process data therefore cannot clear
+output sink applies it again. Only explicit presentation operations (clear,
+input redraw and paste-mode negotiation) emit terminal control sequences.
+Displayed file/process data therefore cannot clear
 the screen, reposition the cursor or manufacture input through an escape byte.
 An asynchronous output line temporarily clears the visible prompt and redraws
 the shell-owned pending input afterward. The pending command is never executed
-because output arrived. The serial terminal remains a limited editor: typed
-printable ASCII and Backspace are currently supported; broader cursor movement,
-paste and completion are separate roadmap work.
+because output arrived. Encoding, editing and completion are intentionally
+bounded; quoting, filename completion and full terminal-emulator compatibility
+are separate work.
 
 ## A small end-to-end check
 
@@ -88,7 +106,7 @@ memory profiler. See [the memory contract](MEMORY.md).
 
 This remains an experimental console OS, not a complete everyday shell. General
 program launch, working-directory navigation, quoting, pipelines, redirection,
-interactive job control, a mature terminal escape parser and a supported shutdown
+interactive job control, broader terminal escape compatibility and a supported shutdown
 interface remain future work. The graphical UI remains deferred behind foundation
 correctness. Familiar command names describe their documented operations; they do
 not imply Linux/POSIX compatibility.
