@@ -483,3 +483,8 @@ The subsequent isolated network rerun passed without changing code or the
 budget. This variability remains open under F6/F7 reliability and timing work;
 it is not a clean whole-suite claim. F3.4 covers the audited existing
 constructor/teardown boundaries, not future C1 mapping/heap growth or DMA/SMP.
+The unsafe-inventory diff for this change identified only the two expected
+modified `paging.rs` unsafe blocks (root admission and supervisor splitting);
+the lexical total remains **423 sites in 91 files**. The reviewed source-context
+baseline was refreshed and `check_unsafe.py --check` plus its 11 scanner tests
+pass. This is inventory maintenance, not the F4.4 unsafe-boundary review.
