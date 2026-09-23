@@ -5,6 +5,7 @@ use kernel::{
     display::{DisplayManager, FixedText, LineKind},
     input::{InputEvent, KeyEvent},
     recovery::{self, RecoveryCommand},
+    serial_prompt::SerialPrompt,
 };
 
 use crate::{
@@ -21,9 +22,11 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
     let mut last_was_cr = false;
     let mut serial_rx_marker_sent = false;
     let mut initial_prompt_sent = cfg!(feature = "validation-boot");
+    let mut prompt = SerialPrompt::new();
     serial::println("");
     if initial_prompt_sent {
         serial::print("genos> ");
+        prompt.activate();
     }
 
     loop {
@@ -48,6 +51,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
                     b'\r' | b'\n' => {
                         serial::println("");
                         awaiting_command_completion = true;
+                        prompt.finish_command();
                         InputEvent::Key(KeyEvent::Enter)
                     }
                     8 | 0x7f => {
@@ -65,7 +69,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
                 handled_event = true;
                 runtime.record_input_activity(tick);
                 match runtime.deliver_input(event) {
-                    Ok(Some(update)) => write_terminal_update(update),
+                    Ok(Some(update)) => write_terminal_update(update, &mut prompt),
                     Ok(None) => {}
                     Err(_) => serial::println("terminal input delivery failed"),
                 }
@@ -77,7 +81,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
             let batch = runtime.advance(tick);
             for event in batch.iter() {
                 match event {
-                    RuntimeEvent::Process(update) => write_terminal_update(update),
+                    RuntimeEvent::Process(update) => write_terminal_update(update, &mut prompt),
                     RuntimeEvent::Error(_) => serial::println("userspace lifecycle error"),
                 }
             }
@@ -91,10 +95,12 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
                 serial::println("NORMAL_SHELL_READY");
             }
             serial::print("genos> ");
+            prompt.activate();
             initial_prompt_sent = true;
         }
         if awaiting_command_completion && runtime.console_input_ready() {
             serial::print("genos> ");
+            prompt.activate();
             awaiting_command_completion = false;
         }
         if !irq_tick_marker_sent && tick >= 100 {
@@ -117,20 +123,39 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
     }
 }
 
-fn write_terminal_update(update: userspace::ProcessUpdate) {
-    if !update.output.is_empty() && !cfg!(feature = "validation-boot") {
-        serial::println(update.output.as_str());
+fn write_terminal_update(update: userspace::ProcessUpdate, prompt: &mut SerialPrompt) {
+    if let Some(userspace::ConsoleUpdate::SetInput(text)) = update.console {
+        prompt.set_input(text);
+    }
+    let process_output = !update.output.is_empty() && !cfg!(feature = "validation-boot");
+    let console_output = matches!(update.console,
+        Some(userspace::ConsoleUpdate::Write { kind, .. })
+            if kind != LineKind::Prompt || cfg!(feature = "validation-boot"));
+    let redraw = !cfg!(feature = "validation-boot")
+        && (process_output || console_output)
+        && prompt.pending_line().is_some();
+    if redraw {
+        serial::print("\r\x1b[2K");
+    }
+    if process_output {
+        serial::println_data(update.output.as_str());
     }
     match update.console {
         Some(userspace::ConsoleUpdate::Write { kind, text }) => {
             // Serial input was already echoed at the prompt. The validation
             // transcript keeps its historical explicit command record.
             if kind != LineKind::Prompt || cfg!(feature = "validation-boot") {
-                serial::println(text.as_str());
+                serial::println_data(text.as_str());
             }
         }
         Some(userspace::ConsoleUpdate::Clear) => serial::println("\x1b[2J\x1b[H"),
         _ => {}
+    }
+    if redraw {
+        serial::print("genos> ");
+        if let Some(line) = prompt.pending_line() {
+            serial::print(line);
+        }
     }
 }
 

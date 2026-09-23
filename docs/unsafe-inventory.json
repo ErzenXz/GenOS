@@ -83,9 +83,9 @@
       "sha256": "38b2052cb575318a14a13fad244a0de209edc19a47f8b8fdff732262f5740040"
     },
     {
-      "lines": 98,
+      "lines": 129,
       "path": "kernel/src/console_text.rs",
-      "sha256": "c488935031b7bf0ee96c9b5bb25745b419f02786a9b91c129d8780c20e95a175"
+      "sha256": "3b97cd33caceeea14a70956242b25143ceccf52c2881c3c0ea796422eecc6d34"
     },
     {
       "lines": 383,
@@ -193,9 +193,9 @@
       "sha256": "de208b2f6116d487e6c2a2b91416cf6b9b29689096b9a163dc482edeebbb17ba"
     },
     {
-      "lines": 72,
+      "lines": 73,
       "path": "kernel/src/lib.rs",
-      "sha256": "57c40ab8b6d79bc64e89820e3246178b269748b1106605d37820209c2ab220a8"
+      "sha256": "a9c3750be1850286ed959eb1108cf0f7fbafe1b40776a5e0ef2de63ea6865bde"
     },
     {
       "lines": 289,
@@ -288,9 +288,14 @@
       "sha256": "1af40cd883c2b304d7ea978fb545ace593198e3b72b03a6fe386113158a2aa03"
     },
     {
-      "lines": 131,
+      "lines": 142,
       "path": "kernel/src/serial.rs",
-      "sha256": "dbd60706743d524e1af0fd0e04270a061b76dc21cc4a6bd93c05471d5638c3d7"
+      "sha256": "1cbd3c5fdc495b628b52fa529c6d0bf2d2bf7beb1ab496a57707a8e9df02faa8"
+    },
+    {
+      "lines": 58,
+      "path": "kernel/src/serial_prompt.rs",
+      "sha256": "a8a133924744a36ecb481ba864a1d308c9cd7cf028a55de20b9e179aeb40b837"
     },
     {
       "lines": 36,
@@ -298,9 +303,9 @@
       "sha256": "b8781029c8e741d3375c47145562ee505ed587c2662738601e2d07d021f36f8e"
     },
     {
-      "lines": 443,
+      "lines": 468,
       "path": "kernel/src/shell.rs",
-      "sha256": "824d6dae30ac1559d30d21a80af4657ba223df35c030691d41fc1bd65e4eef82"
+      "sha256": "f4ffddf6e0dfd6c1051e97849db6208770723b0aa5af93174f308e7b4a29ea47"
     },
     {
       "lines": 1508,
@@ -338,9 +343,9 @@
       "sha256": "c5adb0e63818be05e359ac41a697998440ad21db99479f143ad044914109e773"
     },
     {
-      "lines": 7401,
+      "lines": 7399,
       "path": "kernel/src/userspace.rs",
-      "sha256": "e1f9305ab131f5e48dff37091b6fd2202173367a5d0d2a1297f385cd21c4b4a8"
+      "sha256": "04765e84093eb4d41c64bf2b72968b333df60d08013be769d9a3a6cf5f9be776"
     },
     {
       "lines": 432,
@@ -1571,60 +1576,60 @@
       "column": 9,
       "construct_sha256": "c310339d010c2c279dec79e3d8bdc635ba9247882638991d300a61bbe205ffc0",
       "context": "\n#[cfg(test)]\nmod arch {\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
-      "context_start_line": 43,
-      "end_line": 48,
+      "context_start_line": 44,
+      "end_line": 49,
       "kind": "unsafe_fn",
-      "line": 46,
+      "line": 47,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "17c7b12b790576fd937eb7f726ddfd58cd1f981940ec1fb7386e9d0084b8af7f",
       "context": "    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {",
-      "context_start_line": 46,
-      "end_line": 51,
+      "context_start_line": 47,
+      "end_line": 52,
       "kind": "unsafe_fn",
-      "line": 49,
+      "line": 50,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "3f568f289ddbf53aced0e01a8c08b8663d90f40db51a5e1be26743d1cdb1909d",
       "context": "    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {",
-      "context_start_line": 49,
-      "end_line": 54,
+      "context_start_line": 50,
+      "end_line": 55,
       "kind": "unsafe_fn",
-      "line": 52,
+      "line": 53,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "00dea65152448b96d0d5ddf452abeaf12431daf027379b4aebfe7ac7e715a65b",
       "context": "    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {",
-      "context_start_line": 52,
-      "end_line": 57,
+      "context_start_line": 53,
+      "end_line": 58,
       "kind": "unsafe_fn",
-      "line": 55,
+      "line": 56,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "1a6c18dc0212beeffb26ec78ecbc3d296d3fd9d71a685cb427653cb62ab59fa2",
       "context": "    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {",
-      "context_start_line": 55,
-      "end_line": 60,
+      "context_start_line": 56,
+      "end_line": 61,
       "kind": "unsafe_fn",
-      "line": 58,
+      "line": 59,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "238b04576c64e3b2b07a66a69a9a15c9f6c008fa62d62f5039892dedddb70d60",
       "context": "    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n}",
-      "context_start_line": 58,
-      "end_line": 63,
+      "context_start_line": 59,
+      "end_line": 64,
       "kind": "unsafe_fn",
-      "line": 61,
+      "line": 62,
       "path": "kernel/src/lib.rs"
     },
     {
@@ -3171,20 +3176,20 @@
       "column": 5,
       "construct_sha256": "9727e77add24495144e27d8891b09c653e8d772c0e151df43d1fa88a9a25da6e",
       "context": "}\n\npub fn read_byte() -> Option<u8> {\n    unsafe { (inb(COM1 + 5) & 1 != 0).then(|| inb(COM1)) }\n}\n\npub fn echo_byte(byte: u8) {",
-      "context_start_line": 69,
-      "end_line": 72,
+      "context_start_line": 80,
+      "end_line": 83,
       "kind": "unsafe_block",
-      "line": 72,
+      "line": 83,
       "path": "kernel/src/serial.rs"
     },
     {
       "column": 5,
       "construct_sha256": "f6b4cb548b4216d389db0ac4fd84860042291ae0239b354b0ae314508d86aae5",
       "context": "fn write_byte(byte: u8) -> bool {\n    // SAFETY: COM1 status reads and writes are bounded port I/O. A failed\n    // transmitter drops output rather than blocking containment or halt.\n    unsafe {\n        if !kernel::serial_transport::wait_ready(|| inb(COM1 + 5) & 0x20 != 0) {\n            return false;\n        }",
-      "context_start_line": 92,
-      "end_line": 100,
+      "context_start_line": 103,
+      "end_line": 111,
       "kind": "unsafe_block",
-      "line": 95,
+      "line": 106,
       "path": "kernel/src/serial.rs"
     },
     {
@@ -3611,10 +3616,10 @@
       "column": 5,
       "construct_sha256": "3e9a5561a7918f56cd09f3ed60eba0c18c94fb637e82c0325eac5579331a2f0a",
       "context": "}\n\nfn channel_message_bytes(message: &UserChannelMessage) -> &[u8] {\n    unsafe {\n        core::slice::from_raw_parts(\n            core::ptr::from_ref(message).cast::<u8>(),\n            core::mem::size_of::<UserChannelMessage>(),",
-      "context_start_line": 7305,
-      "end_line": 7313,
+      "context_start_line": 7303,
+      "end_line": 7311,
       "kind": "unsafe_block",
-      "line": 7308,
+      "line": 7306,
       "path": "kernel/src/userspace.rs"
     },
     {

@@ -38,6 +38,21 @@ duplicate separators, trailing separators and spaces in names are rejected.
 `/MEMORY.STATUS` is reserved and read-only. Job numbers come from `run`/`ps`, not
 the task ID or runtime PID.
 
+The current encoding profile is **printable ASCII** for command input, file
+names and display data. Filename comparison folds ASCII letter case under the
+canonical path policy; no Unicode normalization or locale-specific comparison
+is offered. When `cat` reads file bytes, LF separates displayed lines; every
+other control byte, DEL and byte above `0x7e` displays as `?`. Console syscalls
+apply the same substitution before data reaches presentation, and the serial
+output sink applies it again. Only the kernel's explicit `clear` operation emits
+terminal control sequences. Displayed file/process data therefore cannot clear
+the screen, reposition the cursor or manufacture input through an escape byte.
+An asynchronous output line temporarily clears the visible prompt and redraws
+the shell-owned pending input afterward. The pending command is never executed
+because output arrived. The serial terminal remains a limited editor: typed
+printable ASCII and Backspace are currently supported; broader cursor movement,
+paste and completion are separate roadmap work.
+
 ## A small end-to-end check
 
 ```text
