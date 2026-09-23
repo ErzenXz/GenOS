@@ -17,18 +17,18 @@ from test_exception_entry import firmware_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ("no-controller", "empty-controller")
+CASES = ("no-controller", "empty-controller", "nic-no-server")
 FAILURE = ("KERNEL PANIC", "EXCEPTION_FATAL_HALT", "RECOVERY_CONSOLE_READY", "_FAILED")
 FORBIDDEN = ("BOOT_MODE validation", "USER_CONSOLE_WRITE", "USER_INPUT_", "CONSOLE_TRANSCRIPT_READY")
 
 
 class StartupProof:
-    def __init__(self, nonce: str):
+    def __init__(self, nonce: str, network_reply: str = "network unavailable"):
         self.policy = False
         self.storage_unavailable = False
         self.kernel_ready = False
         self.shell_ready = False
-        self.commands = ((f"echo {nonce}", nonce), ("net", "network unavailable"),
+        self.commands = ((f"echo {nonce}", nonce), ("net", network_reply),
                          ("mem", "consistent=yes"))
         self.step = 0
         self.command_seen = False
@@ -117,6 +117,9 @@ def run_case(case: str, timeout: int) -> Path:
     ]
     if case == "empty-controller":
         args += ["-device", profile["storage_controller"]]
+    if case == "nic-no-server":
+        args += ["-netdev", profile["network_backend"],
+                 "-device", profile["network_device"]]
     args += ["-net", "none", "-display", "none", "-monitor", "none",
              "-serial", "stdio", "-no-reboot"]
     (directory / "qemu-command.json").write_text(json.dumps(args, indent=2) + "\n")
@@ -128,7 +131,9 @@ def run_case(case: str, timeout: int) -> Path:
               "image_sha256": sha256(image), "environment": reference,
               "budget_seconds": timeout, "command": args}
     manifest.write_text(json.dumps(record, indent=2) + "\n")
-    proof = StartupProof("STARTUP_" + run_id)
+    network_reply = ("network online - DHCP configuration available"
+                     if case == "nic-no-server" else "network unavailable")
+    proof = StartupProof("STARTUP_" + run_id, network_reply)
     output: Queue[str | Exception | None] = Queue()
     started = time.monotonic()
     guest = None

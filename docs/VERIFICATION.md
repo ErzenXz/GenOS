@@ -343,3 +343,38 @@ reproduction from this campaign. F1.2/F1.4, sharing/DMA/raw-reference lifetime,
 F4/F5 shared-state audit, S2 storage growth, general C1–C5 terminal work,
 coverage-guided fuzzing, 1000 boots and sustained qualification remain open.
 The 40% count does not promote R1, R2 or R3.
+
+## September 23 dependency and format slices
+
+The presentation dependency change is isolated in `7bba26f` and `d396ba9`;
+`3e55272` refreshes unsafe source locations without adding/removing a lexical
+unsafe construct. The new dependency checker and three host regressions passed,
+as did 78 Python checks, 185 kernel library tests, strict reference acceptance
+and normal image builds on clean `3e55272`. Its reference log is
+`build/fifty-f4-reference-3e55272.log`. The checker rejects direct authority
+imports and mutable authority borrows in presentation. This closes the scoped
+F4.3 direction rule, not the shared-global or unsafe-boundary audits.
+
+Normal release startup dependency probes on `a42386c` used the exact
+`genos-q35-tcg-v3` environment, a snapshot-backed boot image, no persistent
+data image and no host test service. Both no-controller and empty-controller
+cases passed with clean source: manifests are
+`build/startup-dependency-evidence/1790153859111060000/no-controller/manifest.json`
+and
+`build/startup-dependency-evidence/1790153862955639000/empty-controller/manifest.json`.
+Both reached the Ring 3 prompt in about two seconds and completed fresh
+`echo`/`net`/`mem` exchanges within 3.5 seconds under the declared 60-second
+deadline. The NIC-present/no-server case passed in an exploratory run and must
+be repeated on clean committed source before counting the complete F6.1 matrix.
+The first no-controller exploratory manifest is explicitly `invalid`: the old
+harness closed its serial log before its reader thread stopped. The corrected
+harness joins the reader before closing logs, records reader failures, and has
+two negative/order host tests. No VM was left running.
+
+[ADR-0008](adr/0008-bounded-littlefs-growth.md) now selects pinned littlefs for
+the *next* storage provider after comparing the specific console workloads,
+space/write amplification, RAM, recovery, reuse/licensing and host tooling.
+The [primary-source review](research/2026-09-littlefs-format-decision.md) verified
+the tag, static-buffer API, format behavior and important GenOS-side quota and
+device-sync obligations. Its status remains Proposed; no C code or new media
+format has been integrated. S2.2 and S2.3 remain open.
