@@ -1,4 +1,4 @@
-use crate::display::Point;
+use crate::geometry::Point;
 use genos_abi::{
     UserInputEvent, USER_INPUT_KIND_KEY, USER_INPUT_KIND_POINTER_BUTTON,
     USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_KEYBOARD, USER_INPUT_MASK_POINTER,

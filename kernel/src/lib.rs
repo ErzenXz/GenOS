@@ -5,12 +5,14 @@ extern crate std;
 
 pub mod boot_cpu;
 pub mod capability;
+pub mod console_text;
 pub mod display;
 pub mod elf;
 pub mod endpoint;
 pub mod exception;
 pub mod file_snapshot;
 pub mod frame_grant;
+pub mod geometry;
 pub mod input;
 pub mod ipc;
 pub mod ipv6;

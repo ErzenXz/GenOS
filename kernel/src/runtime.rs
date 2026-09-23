@@ -1,5 +1,5 @@
 use kernel::{
-    display::FixedText,
+    console_text::FixedText,
     input::{InputEvent, KeyEvent},
     socket::SocketProtocol,
     tasks::{TaskRegistry, TaskSnapshotSet, TaskState},

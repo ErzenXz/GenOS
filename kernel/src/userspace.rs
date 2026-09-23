@@ -21,7 +21,7 @@ use genos_abi::{
 };
 use kernel::{
     capability::{HandleKind, HandleTable},
-    display::{FixedText, LineKind},
+    console_text::{FixedText, LineKind},
     elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     endpoint::{EndpointRole, EndpointState, PendingReceive, QueueResult},
     file_snapshot::FileSnapshots,
