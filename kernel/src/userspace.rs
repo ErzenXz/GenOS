@@ -957,7 +957,10 @@ impl ManagedProcess {
         }
         if snapshot.is_some_and(|bytes| !self.file_snapshots.insert(handle, bytes, &self.handles)) {
             let revoked = self.handles.unregister(handle, HandleKind::File);
-            debug_assert!(revoked);
+            assert!(
+                revoked,
+                "failed snapshot allocation retained file authority"
+            );
             return None;
         }
         self.file_handles[slot] = Some(FileCapability {
@@ -1638,7 +1641,7 @@ impl ProcessManager {
         {
             Ok(process) => process,
             Err(_) => {
-                let _ = reclaim_process(&mut parent);
+                reclaim_process(&mut parent).expect("failed child build leaked parent frames");
                 return Err(LaunchError::ProcessBuildFailed);
             }
         };
@@ -1697,7 +1700,7 @@ impl ProcessManager {
         ) {
             Ok(process) => process,
             Err(_) => {
-                let _ = reclaim_process(&mut receiver);
+                reclaim_process(&mut receiver).expect("failed fan-in build leaked receiver frames");
                 return Err(LaunchError::ProcessBuildFailed);
             }
         };
@@ -1708,8 +1711,9 @@ impl ProcessManager {
         ) {
             Ok(process) => process,
             Err(_) => {
-                let _ = reclaim_process(&mut producer_a);
-                let _ = reclaim_process(&mut receiver);
+                reclaim_process(&mut producer_a)
+                    .expect("failed fan-in build leaked producer frames");
+                reclaim_process(&mut receiver).expect("failed fan-in build leaked receiver frames");
                 return Err(LaunchError::ProcessBuildFailed);
             }
         };
@@ -2143,7 +2147,10 @@ impl ProcessManager {
                 handle
             }
             Ok(handle) => {
-                let _ = managed.sockets.close(owner, handle);
+                managed
+                    .sockets
+                    .close(owner, handle)
+                    .expect("failed socket registration retained socket state");
                 syscall::error_code(syscall::SyscallError::Unavailable)
             }
             Err(error) => socket_error_code(error),
@@ -2233,7 +2240,10 @@ impl ProcessManager {
                 accepted
             }
             Ok(accepted) => {
-                let _ = managed.sockets.close(owner, accepted);
+                managed
+                    .sockets
+                    .close(owner, accepted)
+                    .expect("failed accepted-handle registration retained socket state");
                 crate::serial::trace::println("USER_SOCKET_ACCEPT_ROLLBACK");
                 syscall::error_code(syscall::SyscallError::Unavailable)
             }
@@ -2420,8 +2430,13 @@ impl ProcessManager {
             Err(SocketError::InvalidHandle)
         };
         managed.process.context.rax = match result {
-            Ok(()) if managed.handles.unregister(handle, HandleKind::Socket) => 0,
-            Ok(()) => syscall::error_code(syscall::SyscallError::InvalidArgument),
+            Ok(()) => {
+                assert!(
+                    managed.handles.unregister(handle, HandleKind::Socket),
+                    "closed socket retained handle authority"
+                );
+                0
+            }
             Err(error) => socket_error_code(error),
         };
         managed.state = ManagedState::Ready;
@@ -2529,7 +2544,7 @@ impl ProcessManager {
                 owner.allocate_process_handle(key)
             };
             let Some(handle) = handle else {
-                let _ = reclaim_process(&mut process);
+                reclaim_process(&mut process).expect("failed process handle leaked child frames");
                 return None;
             };
             let owner_key = self.slots[owner_index].as_ref()?.key;
@@ -4223,6 +4238,14 @@ impl ProcessManager {
         state: ManagedState,
         forced_exit_code: Option<u8>,
     ) -> Result<TerminalRecord, LaunchError> {
+        let candidate = self
+            .slots
+            .get(index)
+            .and_then(Option::as_ref)
+            .ok_or(LaunchError::ImageUnavailable)?;
+        if forced_exit_code.is_none() && !candidate.process.completed {
+            return Err(LaunchError::InvalidResult);
+        }
         self.release_endpoints(index);
         let (record, supervisor) = {
             let managed = self.slots[index]
@@ -4235,12 +4258,10 @@ impl ProcessManager {
                 managed.process.exit_code = exit_code;
                 managed.process.completion_order =
                     COMPLETION_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
-            } else if !managed.process.completed {
-                return Err(LaunchError::InvalidResult);
             }
             managed.state = state;
             managed.revoke_resources();
-            reclaim_process(&mut managed.process).map_err(|_| LaunchError::InvalidResult)?;
+            reclaim_process(&mut managed.process).expect("terminal process reclaim failed");
             (
                 TerminalRecord {
                     key: managed.key,
@@ -4280,10 +4301,9 @@ impl ProcessManager {
                     managed.process.killed = true;
                     managed.process.exit_code = 137;
                     managed.state = ManagedState::Killed;
-                    managed.revoke_resources();
-                    reclaim_process(&mut managed.process)
-                        .map_err(|_| LaunchError::InvalidResult)?;
                 }
+                managed.revoke_resources();
+                reclaim_process(&mut managed.process).expect("supervised child reclaim failed");
                 self.slots[index] = None;
                 cleaned += 1;
             }
@@ -5072,7 +5092,7 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
         run_slice(&mut process);
         if process.event == ProcessEvent::Fault {
             paging::activate_kernel();
-            let _ = reclaim_process(&mut process);
+            reclaim_process(&mut process).expect("faulted init reclaim failed");
             return Err(LaunchError::ProcessFaulted);
         }
     }
@@ -5083,7 +5103,7 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
         || process.report != token
         || process.preemptions == 0
     {
-        let _ = reclaim_process(&mut process);
+        reclaim_process(&mut process).expect("invalid init reclaim failed");
         return Err(LaunchError::InvalidResult);
     }
 
@@ -5091,7 +5111,7 @@ pub fn launch_init() -> Result<LaunchResult, LaunchError> {
         pid,
         preemptions: process.preemptions,
     };
-    reclaim_process(&mut process).map_err(|_| LaunchError::InvalidResult)?;
+    reclaim_process(&mut process).expect("completed init reclaim failed");
     DYNAMIC_PROCESSES.fetch_add(1, Ordering::AcqRel);
     TOTAL_PREEMPTIONS.fetch_add(result.preemptions, Ordering::AcqRel);
     crate::serial::trace::print("USER_ELF_LAUNCH_OK pid=");
@@ -5127,11 +5147,11 @@ pub fn run_sdk_probe(elf_bytes: &[u8]) -> bool {
         && process.event == ProcessEvent::Exit
         && process.exit_code == 0
         && process.output.as_str() == "Hello from the standalone GenOS SDK";
-    let reclaimed = reclaim_process(&mut process).is_ok();
-    if passed && reclaimed {
+    reclaim_process(&mut process).expect("SDK probe reclaim failed");
+    if passed {
         crate::serial::trace::println("SDK_APPLICATION_READY abi=18 exit=0 reclaimed=true");
     }
-    passed && reclaimed
+    passed
 }
 
 #[cfg(feature = "memory-test-faults")]
@@ -6277,7 +6297,10 @@ fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, Pr
             if paging::map_user_page(space, virtual_address, frame, writable, executable).is_err() {
                 // SAFETY: mapping failed before publishing this new image-page
                 // grant. The constructor is its sole owner and has no live user.
-                let _ = unsafe { memory::free_frame(frame) };
+                assert!(
+                    unsafe { memory::free_frame(frame) },
+                    "failed ELF map retained frame"
+                );
                 return Err(ProcessBuildError::Paging);
             }
             if virtual_address == paging::USER_DATA
@@ -6317,7 +6340,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
     let loaded = match load_elf(space, elf_bytes) {
         Ok(loaded) => loaded,
         Err(error) => {
-            let _ = paging::destroy_user_address_space(space);
+            paging::destroy_user_address_space(space).expect("partial ELF reclaim failed");
             return Err(error);
         }
     };
@@ -6325,7 +6348,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         let stack_frame = match paging::allocate_zeroed_frame(space) {
             Ok(frame) => frame,
             Err(_) => {
-                let _ = paging::destroy_user_address_space(space);
+                paging::destroy_user_address_space(space).expect("partial stack reclaim failed");
                 return Err(ProcessBuildError::Paging);
             }
         };
@@ -6340,8 +6363,11 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         {
             // SAFETY: this newly allocated stack page was never published;
             // the failed constructor still owns it exclusively.
-            let _ = unsafe { memory::free_frame(stack_frame) };
-            let _ = paging::destroy_user_address_space(space);
+            assert!(
+                unsafe { memory::free_frame(stack_frame) },
+                "failed stack map retained frame"
+            );
+            paging::destroy_user_address_space(space).expect("failed stack map reclaim failed");
             return Err(ProcessBuildError::Paging);
         }
     }

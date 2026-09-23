@@ -168,7 +168,7 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     let _ = vfs.mkdir("/USER");
     for file in initrd.iter() {
-        if file.name != "INIT.ELF" && file.name != "SHELL.ELF" {
+        if file.name != "INIT.ELF" && file.name != "SHELL.ELF" && file.name != "SDK.ELF" {
             vfs.seed_file(file.name, file.data);
         }
     }
