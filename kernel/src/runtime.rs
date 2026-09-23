@@ -330,6 +330,13 @@ impl RuntimeCoordinator {
         self.processes.deliver_input(event)
     }
 
+    pub fn deliver_console_input(
+        &mut self,
+        event: InputEvent,
+    ) -> Result<Option<userspace::ProcessUpdate>, userspace::LaunchError> {
+        self.processes.deliver_console_input(event)
+    }
+
     pub fn advance(&mut self, tick: u64) -> RuntimeBatch {
         // Boot probes use synthetic scheduler ticks; IPv6 DAD/lifetimes must
         // always use elapsed hardware time, including during those probes.

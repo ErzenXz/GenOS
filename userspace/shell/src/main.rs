@@ -4,6 +4,10 @@
 use core::panic::PanicInfo;
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
+use genos_shell::{
+    editor::Editor,
+    parser::{self, Command},
+};
 use genos_user_runtime as runtime;
 
 const LINE_CAPACITY: usize = runtime::CONSOLE_TEXT_MAX;
@@ -44,6 +48,8 @@ const MUTATION_PROOF_APPEND: &[u8] = b" is ready.";
 const MUTATION_PROOF_EXPECTED: &[u8] = b"Ring 3 shell file mutation is ready.";
 const JOB_CAPACITY: usize = runtime::PROCESS_HANDLE_CAPACITY as usize;
 const HISTORY_CAPACITY: usize = 8;
+const COMMAND_WORDS: &[u8] =
+    b"help\0clear\0uname\0net\0mem\0echo\0ls\0cat\0stat\0touch\0write\0append\0mkdir\0rm\0run\0ps\0kill\0wait\0";
 #[cfg(feature = "validation-boot")]
 const NAMESPACE_PROOF_DIRECTORY: &[u8] = b"ABI14";
 
@@ -81,12 +87,7 @@ struct ShellData {
     jobs: [Job; JOB_CAPACITY],
     next_job_id: u64,
     file_buffer: [u8; runtime::FILE_READ_MAX],
-    line: [u8; LINE_CAPACITY],
-    len: usize,
-    history: [[u8; LINE_CAPACITY]; HISTORY_CAPACITY],
-    history_lens: [usize; HISTORY_CAPACITY],
-    history_len: usize,
-    history_cursor: usize,
+    editor: Editor<LINE_CAPACITY, HISTORY_CAPACITY>,
 }
 
 #[used]
@@ -103,12 +104,7 @@ static mut DATA: ShellData = ShellData {
     jobs: [Job::empty(); JOB_CAPACITY],
     next_job_id: 1,
     file_buffer: [0; runtime::FILE_READ_MAX],
-    line: [0; LINE_CAPACITY],
-    len: 0,
-    history: [[0; LINE_CAPACITY]; HISTORY_CAPACITY],
-    history_lens: [0; HISTORY_CAPACITY],
-    history_len: 0,
-    history_cursor: 0,
+    editor: Editor::new(),
 };
 
 #[no_mangle]
@@ -142,15 +138,38 @@ pub extern "C" fn _start(console: u64, supervisor: u64) -> ! {
         if event.kind != runtime::INPUT_KIND_KEY {
             continue;
         }
-        match event.code {
-            runtime::KEY_CHAR if (0x20..=0x7e).contains(&event.value0) => push(event.value0 as u8),
-            runtime::KEY_BACKSPACE => backspace(),
-            runtime::KEY_ENTER => execute(console, supervisor),
-            runtime::KEY_ARROW_UP => history_up(),
-            runtime::KEY_ARROW_DOWN => history_down(),
-            _ => continue,
+        if event.code == runtime::KEY_ENTER {
+            execute(console, supervisor);
+        } else {
+            let editor = unsafe { &mut *addr_of_mut!(DATA.editor) };
+            match event.code {
+                runtime::KEY_CHAR if (0x20..=0x7e).contains(&event.value0) => {
+                    editor.insert(event.value0 as u8);
+                }
+                runtime::KEY_BACKSPACE => {
+                    editor.backspace();
+                }
+                runtime::KEY_DELETE => {
+                    editor.delete();
+                }
+                runtime::KEY_ARROW_LEFT => editor.left(),
+                runtime::KEY_ARROW_RIGHT => editor.right(),
+                runtime::KEY_HOME => editor.home(),
+                runtime::KEY_END => editor.end(),
+                runtime::KEY_ARROW_UP => {
+                    editor.history_up();
+                }
+                runtime::KEY_ARROW_DOWN => {
+                    editor.history_down();
+                }
+                runtime::KEY_TAB => {
+                    editor.complete_command(COMMAND_WORDS);
+                }
+                runtime::KEY_CANCEL => editor.clear_line(),
+                _ => continue,
+            }
         }
-        let line = unsafe { &DATA.line[..DATA.len] };
+        let line = unsafe { (&*addr_of!(DATA.editor)).line() };
         if runtime::console_set_input(console, line) != line.len() as u64 {
             runtime::exit(252);
         }
@@ -923,102 +942,34 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
-fn push(byte: u8) {
-    unsafe {
-        if DATA.len < LINE_CAPACITY {
-            DATA.line[DATA.len] = byte;
-            DATA.len += 1;
-        }
-        DATA.history_cursor = DATA.history_len;
-    }
-}
-
-fn backspace() {
-    unsafe {
-        DATA.len = DATA.len.saturating_sub(1);
-        DATA.history_cursor = DATA.history_len;
-    }
-}
-
-fn history_up() {
-    unsafe {
-        if DATA.history_len == 0 {
-            return;
-        }
-        DATA.history_cursor = DATA.history_cursor.saturating_sub(1);
-        let index = DATA.history_cursor;
-        DATA.len = DATA.history_lens[index];
-        DATA.line[..DATA.len].copy_from_slice(&DATA.history[index][..DATA.len]);
-    }
-}
-
-fn history_down() {
-    unsafe {
-        if DATA.history_cursor + 1 < DATA.history_len {
-            DATA.history_cursor += 1;
-            let index = DATA.history_cursor;
-            DATA.len = DATA.history_lens[index];
-            DATA.line[..DATA.len].copy_from_slice(&DATA.history[index][..DATA.len]);
-        } else {
-            DATA.history_cursor = DATA.history_len;
-            DATA.len = 0;
-        }
-    }
-}
-
-fn remember_history(line: &[u8]) {
-    if line.is_empty() {
-        return;
-    }
-    unsafe {
-        let index = if DATA.history_len < HISTORY_CAPACITY {
-            let index = DATA.history_len;
-            DATA.history_len += 1;
-            index
-        } else {
-            let mut index = 1usize;
-            while index < HISTORY_CAPACITY {
-                DATA.history[index - 1] = DATA.history[index];
-                DATA.history_lens[index - 1] = DATA.history_lens[index];
-                index += 1;
-            }
-            HISTORY_CAPACITY - 1
-        };
-        DATA.history[index] = [0; LINE_CAPACITY];
-        DATA.history[index][..line.len()].copy_from_slice(line);
-        DATA.history_lens[index] = line.len();
-        DATA.history_cursor = DATA.history_len;
-    }
-}
-
 #[cfg(feature = "validation-boot")]
 fn prove_history() -> bool {
-    remember_history(b"uname");
-    remember_history(b"echo history");
-    history_up();
-    let newest = unsafe { matches(&DATA.line[..DATA.len], b"echo history") };
-    history_up();
-    let oldest = unsafe { matches(&DATA.line[..DATA.len], b"uname") };
-    history_down();
-    let forward = unsafe { matches(&DATA.line[..DATA.len], b"echo history") };
-    history_down();
-    let cleared = unsafe { DATA.len == 0 && DATA.history_cursor == DATA.history_len };
-    unsafe {
-        DATA.history = [[0; LINE_CAPACITY]; HISTORY_CAPACITY];
-        DATA.history_lens = [0; HISTORY_CAPACITY];
-        DATA.history_len = 0;
-        DATA.history_cursor = 0;
-    }
+    let mut editor: Editor<LINE_CAPACITY, HISTORY_CAPACITY> = Editor::new();
+    let _ = editor.load(b"uname");
+    editor.remember();
+    editor.clear_line();
+    let _ = editor.load(b"echo history");
+    editor.remember();
+    editor.clear_line();
+    editor.history_up();
+    let newest = matches(editor.line(), b"echo history");
+    editor.history_up();
+    let oldest = matches(editor.line(), b"uname");
+    editor.history_down();
+    let forward = matches(editor.line(), b"echo history");
+    editor.history_down();
+    let cleared = editor.line().is_empty();
     newest && oldest && forward && cleared
 }
 
 fn execute(console: u64, supervisor: u64) {
-    let len = unsafe { DATA.len };
+    let editor = unsafe { &mut *addr_of_mut!(DATA.editor) };
+    let len = editor.line().len();
     let mut command = [0u8; LINE_CAPACITY];
-    unsafe { command[..len].copy_from_slice(&DATA.line[..len]) };
+    command[..len].copy_from_slice(editor.line());
     let line = &command[..len];
     if len != 0 {
-        remember_history(line);
+        editor.remember();
         let mut prompt = [0u8; LINE_CAPACITY];
         prompt[0] = b'/';
         prompt[1] = b'>';
@@ -1027,77 +978,63 @@ fn execute(console: u64, supervisor: u64) {
         prompt[3..3 + copy].copy_from_slice(&line[..copy]);
         let _ = runtime::console_write(console, &prompt[..3 + copy], runtime::CONSOLE_LINE_PROMPT);
     }
-    if matches(line, b"help") {
-        for line in HELP {
-            if runtime::console_write(console, line, runtime::CONSOLE_LINE_OUTPUT)
-                != line.len() as u64
-            {
-                break;
+    match parser::parse(line) {
+        Command::Empty => {}
+        Command::Help => {
+            for line in HELP {
+                if runtime::console_write(console, line, runtime::CONSOLE_LINE_OUTPUT)
+                    != line.len() as u64
+                {
+                    break;
+                }
             }
         }
-    } else if matches(line, b"uname") {
-        let _ = runtime::console_write(console, UNAME, runtime::CONSOLE_LINE_OUTPUT);
-    } else if matches(line, b"net") {
-        network_status(console);
-    } else if matches(line, b"mem") {
-        print_file(console, b"/MEMORY.STATUS");
-    } else if matches(line, b"clear") {
-        let _ = runtime::console_clear(console);
-    } else if line.len() >= 5 && matches(&line[..5], b"echo ") {
-        let _ = runtime::console_write(console, &line[5..], runtime::CONSOLE_LINE_OUTPUT);
-    } else if matches(line, b"ls") {
-        list_directory(console, b"/");
-    } else if line.len() > 3 && matches(&line[..3], b"ls ") {
-        list_directory(console, &line[3..]);
-    } else if line.len() > 4 && matches(&line[..4], b"cat ") {
-        print_file(console, &line[4..]);
-    } else if line.len() > 5 && matches(&line[..5], b"stat ") {
-        stat_path(console, &line[5..]);
-    } else if line.len() > 6 && matches(&line[..6], b"touch ") {
-        touch_file(console, &line[6..]);
-    } else if line.len() > 6 && matches(&line[..6], b"write ") {
-        let (path, text) = split_argument(&line[6..]);
-        if path.is_empty() || text.is_empty() {
-            let _ = runtime::console_write(
-                console,
-                b"usage: write /USER/FILE TEXT",
-                runtime::CONSOLE_LINE_ERROR,
-            );
-        } else {
-            change_file(console, path, text, true);
+        Command::Uname => {
+            let _ = runtime::console_write(console, UNAME, runtime::CONSOLE_LINE_OUTPUT);
         }
-    } else if line.len() > 7 && matches(&line[..7], b"append ") {
-        let (path, text) = split_argument(&line[7..]);
-        if path.is_empty() || text.is_empty() {
-            let _ = runtime::console_write(
-                console,
-                b"usage: append /USER/FILE TEXT",
-                runtime::CONSOLE_LINE_ERROR,
-            );
-        } else {
-            change_file(console, path, text, false);
+        Command::Net => network_status(console),
+        Command::Mem => print_file(console, b"/MEMORY.STATUS"),
+        Command::Clear => {
+            let _ = runtime::console_clear(console);
         }
-    } else if line.len() > 6 && matches(&line[..6], b"mkdir ") {
-        mutate_namespace(console, &line[6..], true);
-    } else if line.len() > 3 && matches(&line[..3], b"rm ") {
-        mutate_namespace(console, &line[3..], false);
-    } else if matches(line, b"run init") {
-        launch_job(console, supervisor, runtime::PROCESS_MODE_NORMAL);
-    } else if matches(line, b"run init hold") {
-        launch_job(console, supervisor, runtime::PROCESS_MODE_HOLD);
-    } else if matches(line, b"ps") {
-        list_jobs(console);
-    } else if line.len() > 5 && matches(&line[..5], b"kill ") {
-        control_job(console, &line[5..], false);
-    } else if line.len() > 5 && matches(&line[..5], b"wait ") {
-        control_job(console, &line[5..], true);
-    } else if !line.is_empty() {
-        let _ = runtime::console_write(console, UNKNOWN, runtime::CONSOLE_LINE_ERROR);
+        Command::Echo(text) => {
+            let _ = runtime::console_write(console, text, runtime::CONSOLE_LINE_OUTPUT);
+        }
+        Command::Ls(path) => list_directory(console, path),
+        Command::Cat(path) => print_file(console, path),
+        Command::Stat(path) => stat_path(console, path),
+        Command::Touch(path) => touch_file(console, path),
+        Command::Write { path, text, append } => {
+            if path.is_empty() || text.is_empty() {
+                let usage: &[u8] = if append {
+                    b"usage: append /USER/FILE TEXT"
+                } else {
+                    b"usage: write /USER/FILE TEXT"
+                };
+                let _ = runtime::console_write(console, usage, runtime::CONSOLE_LINE_ERROR);
+            } else {
+                change_file(console, path, text, !append);
+            }
+        }
+        Command::Mkdir(path) => mutate_namespace(console, path, true),
+        Command::Remove(path) => mutate_namespace(console, path, false),
+        Command::RunInit { hold } => launch_job(
+            console,
+            supervisor,
+            if hold {
+                runtime::PROCESS_MODE_HOLD
+            } else {
+                runtime::PROCESS_MODE_NORMAL
+            },
+        ),
+        Command::Ps => list_jobs(console),
+        Command::Kill(id) => control_job(console, id, false),
+        Command::Wait(id) => control_job(console, id, true),
+        Command::Unknown => {
+            let _ = runtime::console_write(console, UNKNOWN, runtime::CONSOLE_LINE_ERROR);
+        }
     }
-    unsafe {
-        DATA.len = 0;
-        DATA.history_cursor = DATA.history_len;
-    }
+    editor.clear_line();
 }
 
 fn network_status(console: u64) {
@@ -1600,17 +1537,6 @@ fn advance_to_end(handle: u64) -> bool {
     }
 }
 
-fn split_argument(input: &[u8]) -> (&[u8], &[u8]) {
-    let Some(space) = input.iter().position(|byte| *byte == b' ') else {
-        return (input, &[]);
-    };
-    let mut text_start = space;
-    while input.get(text_start) == Some(&b' ') {
-        text_start += 1;
-    }
-    (&input[..space], &input[text_start..])
-}
-
 fn list_directory(console: u64, path: &[u8]) {
     let mut absolute = [0u8; runtime::PATH_MAX];
     let path = absolute_path(path, &mut absolute);
@@ -1750,6 +1676,7 @@ fn append_u64(output: &mut [u8; LINE_CAPACITY], len: &mut usize, mut value: u64)
     }
 }
 
+#[cfg(feature = "validation-boot")]
 fn matches(actual: &[u8], expected: &[u8]) -> bool {
     actual.len() == expected.len() && actual.iter().zip(expected).all(|(a, b)| a == b)
 }

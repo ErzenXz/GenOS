@@ -5,7 +5,8 @@ use kernel::{
     display::{DisplayManager, FixedText, LineKind},
     input::{InputEvent, KeyEvent},
     recovery::{self, RecoveryCommand},
-    serial_prompt::SerialPrompt,
+    serial_keys::SerialKeys,
+    serial_prompt::{InputEcho, SerialPrompt},
 };
 
 use crate::{
@@ -23,6 +24,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
     let mut serial_rx_marker_sent = false;
     let mut initial_prompt_sent = cfg!(feature = "validation-boot");
     let mut prompt = SerialPrompt::new();
+    let mut decoder = SerialKeys::new();
     serial::println("");
     if initial_prompt_sent {
         serial::print("genos> ");
@@ -34,46 +36,52 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
         let mut handled_event = false;
 
         if runtime.console_process_active() && runtime.console_input_ready() {
-            for _ in 0..16 {
-                let Some(byte) = serial::read_byte() else {
-                    break;
-                };
-                if !serial_rx_marker_sent {
-                    serial::trace::println("SERIAL_RX_OK");
-                    serial_rx_marker_sent = true;
+            let mut key = decoder.expire(tick);
+            if key.is_none() {
+                for _ in 0..16 {
+                    let Some(byte) = serial::read_byte() else {
+                        break;
+                    };
+                    if !serial_rx_marker_sent {
+                        serial::trace::println("SERIAL_RX_OK");
+                        serial_rx_marker_sent = true;
+                    }
+                    if byte == b'\n' && last_was_cr {
+                        last_was_cr = false;
+                        continue;
+                    }
+                    last_was_cr = byte == b'\r';
+                    key = decoder.feed(byte, tick);
+                    if key.is_some() {
+                        break;
+                    }
                 }
-                if byte == b'\n' && last_was_cr {
-                    last_was_cr = false;
-                    continue;
-                }
-                last_was_cr = byte == b'\r';
-                let event = match byte {
-                    b'\r' | b'\n' => {
+            }
+            if let Some(key) = key {
+                match key {
+                    KeyEvent::Enter => {
                         serial::println("");
                         awaiting_command_completion = true;
                         prompt.finish_command();
-                        InputEvent::Key(KeyEvent::Enter)
                     }
-                    8 | 0x7f => {
-                        serial::print("\x08 \x08");
-                        InputEvent::Key(KeyEvent::Backspace)
+                    KeyEvent::Cancel => {
+                        serial::println("^C");
+                        awaiting_command_completion = true;
+                        prompt.finish_command();
                     }
-                    b'\t' => InputEvent::Key(KeyEvent::Tab),
-                    0x1b => InputEvent::Key(KeyEvent::Escape),
-                    byte if (0x20..=0x7e).contains(&byte) => {
-                        serial::echo_byte(byte);
-                        InputEvent::Key(KeyEvent::Char(byte))
-                    }
-                    _ => continue,
-                };
+                    _ => match prompt.note_key(key) {
+                        InputEcho::None | InputEcho::Redraw => {}
+                        InputEcho::Char(byte) => serial::echo_byte(byte),
+                        InputEcho::EraseLast => serial::print("\x08 \x08"),
+                    },
+                }
                 handled_event = true;
                 runtime.record_input_activity(tick);
-                match runtime.deliver_input(event) {
+                match runtime.deliver_console_input(InputEvent::Key(key)) {
                     Ok(Some(update)) => write_terminal_update(update, &mut prompt),
                     Ok(None) => {}
                     Err(_) => serial::println("terminal input delivery failed"),
                 }
-                break;
             }
         }
 
@@ -92,6 +100,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
             // This is emitted only after the real Ring 3 shell has written its
             // banner and armed the existing input capability through syscalls.
             if !cfg!(feature = "validation-boot") {
+                serial::print("\x1b[?2004h\n");
                 serial::println("NORMAL_SHELL_READY");
             }
             serial::print("genos> ");
@@ -112,6 +121,7 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
             terminal_idle_marker_sent = true;
         }
         if !runtime.console_process_active() {
+            serial::print("\x1b[?2004l\n");
             serial::println("RECOVERY_CONSOLE_READY");
             serial::println("recovery commands require the later serial recovery parser");
             let _ = boot_info;
@@ -124,17 +134,19 @@ pub fn run_terminal(boot_info: &'static BootInfo, mut runtime: RuntimeCoordinato
 }
 
 fn write_terminal_update(update: userspace::ProcessUpdate, prompt: &mut SerialPrompt) {
-    if let Some(userspace::ConsoleUpdate::SetInput(text)) = update.console {
-        prompt.set_input(text);
-    }
+    let redraw_input = if let Some(userspace::ConsoleUpdate::SetInput(text)) = update.console {
+        prompt.set_input(text)
+    } else {
+        false
+    };
     let process_output = !update.output.is_empty() && !cfg!(feature = "validation-boot");
     let console_output = matches!(update.console,
         Some(userspace::ConsoleUpdate::Write { kind, .. })
             if kind != LineKind::Prompt || cfg!(feature = "validation-boot"));
-    let redraw = !cfg!(feature = "validation-boot")
+    let redraw_background = !cfg!(feature = "validation-boot")
         && (process_output || console_output)
         && prompt.pending_line().is_some();
-    if redraw {
+    if redraw_background {
         serial::print("\r\x1b[2K");
     }
     if process_output {
@@ -151,10 +163,25 @@ fn write_terminal_update(update: userspace::ProcessUpdate, prompt: &mut SerialPr
         Some(userspace::ConsoleUpdate::Clear) => serial::println("\x1b[2J\x1b[H"),
         _ => {}
     }
-    if redraw {
+    if redraw_background {
+        draw_terminal_prompt(prompt, false);
+    } else if redraw_input && !cfg!(feature = "validation-boot") {
+        draw_terminal_prompt(prompt, true);
+    }
+}
+
+fn draw_terminal_prompt(prompt: &SerialPrompt, clear_line: bool) {
+    if let Some(line) = prompt.pending_line() {
+        if clear_line {
+            serial::print("\r\x1b[2K");
+        }
         serial::print("genos> ");
-        if let Some(line) = prompt.pending_line() {
-            serial::print(line);
+        serial::print(line);
+        let left = line.len().saturating_sub(prompt.cursor());
+        if left != 0 {
+            serial::print("\x1b[");
+            serial::print_u64(left as u64);
+            serial::print("D");
         }
     }
 }
@@ -228,6 +255,12 @@ pub fn run(
                             | KeyEvent::Backspace
                             | KeyEvent::ArrowUp
                             | KeyEvent::ArrowDown
+                            | KeyEvent::ArrowLeft
+                            | KeyEvent::ArrowRight
+                            | KeyEvent::Home
+                            | KeyEvent::End
+                            | KeyEvent::Delete
+                            | KeyEvent::Cancel
                     )
                 )
             {
@@ -301,6 +334,14 @@ pub fn run(
                     }
                     runtime.record_shell_activity(tick);
                 }
+                InputEvent::Key(
+                    KeyEvent::ArrowLeft
+                    | KeyEvent::ArrowRight
+                    | KeyEvent::Home
+                    | KeyEvent::End
+                    | KeyEvent::Delete
+                    | KeyEvent::Cancel,
+                ) => {}
                 InputEvent::Key(KeyEvent::Escape) => display.dismiss_focused(),
                 InputEvent::Key(KeyEvent::Tab) => display.cycle_focus(),
                 InputEvent::MouseMove { buttons, .. } => {

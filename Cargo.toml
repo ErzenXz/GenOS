@@ -34,3 +34,8 @@ inherits = "release"
 panic = "abort"
 lto = false
 codegen-units = 1
+
+# Keep the interactive shell and its validation code inside the fixed eight-page
+# RX budget without weakening the guarded userspace layout.
+[profile.userspace.package.genos-shell]
+opt-level = "z"
