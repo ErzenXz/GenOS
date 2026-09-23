@@ -47,7 +47,7 @@ def audit(roadmap: str, baseline_bytes: bytes) -> dict:
     added = [entry['text'] for entry, original in zip(current, baseline['entries'])
              if entry['complete'] and not original['baseline_complete']]
     return {'baseline_commit': baseline['baseline_commit'], 'baseline_complete': 26,
-            'complete': complete, 'total': 100, 'percent': complete, 'target_percent': 40,
+            'complete': complete, 'total': 100, 'percent': complete, 'target_percent': 50,
             'groups': groups, 'newly_completed': added,
             'meaning': 'Original checklist entries, not effort, time remaining or a stability certification; QEMU console scope excludes GUI and physical hardware.'}
 
@@ -63,7 +63,7 @@ def main() -> None:
     if args.json:
         print(json.dumps(result, indent=2))
     else:
-        print(f"{result['percent']}% — {result['complete']}/{result['total']} original console checklist entries (target40%).")
+        print(f"{result['percent']}% — {result['complete']}/{result['total']} original console checklist entries (target50%).")
         for name, group in result['groups'].items():
             print(f"{name}: {group['complete']}/{group['total']}")
         print(result['meaning'])

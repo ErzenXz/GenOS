@@ -1,6 +1,6 @@
 # GenOS userspace boundary
 
-GenOS 0.54 boots the interactive command shell as a separately linked Ring 3 process and gives it opaque console, VFS, namespace, process-lifecycle, and socket capabilities plus bounded network exchanges. ABI 18 keeps normal filesystem and process control in `SHELL.ELF` without granting authority through raw paths or PIDs, preserves generation-safe UDP/TCP clients and bounded listener authority, and adds scheduler-backed waits on one exact socket capability. Each accepted capability may carry at least 1,024 bytes through repeated 128-byte cycles while retaining fixed two-segment receive storage. This document states exactly what the milestone proves and what it does not.
+GenOS boots the interactive command shell as a separately linked Ring 3 process and gives it opaque console, VFS, namespace, process-lifecycle, and socket capabilities plus bounded network exchanges. ABI 18 keeps normal filesystem and process control in `SHELL.ELF` without granting authority through raw paths or PIDs, preserves generation-safe UDP/TCP clients and bounded listener authority, and adds scheduler-backed waits on one exact socket capability. Each accepted capability may carry at least 1,024 bytes through repeated 128-byte cycles while retaining fixed two-segment receive storage. This document states exactly what the current implementation proves and what it does not.
 
 ## Build and packaging pipeline
 
@@ -33,7 +33,7 @@ Every accepted page receives a newly allocated zeroed physical frame. File bytes
 
 At boot, GenOS creates three independent instances of `INIT.ELF` for the preemption and fault-containment proof:
 
-1. all instances query ABI version 17 and become eligible for timer scheduling;
+1. all instances query ABI version 18 and become eligible for timer scheduling;
 2. a 100 Hz PIT interrupt involuntarily preempts each process and saves its full CPU context;
 3. the first instance writes to its guard page and is terminated with page-fault status 142 before performing output work;
 4. the two healthy instances resume afterward, write greetings through the validated output syscall, report private values through validated copy-in, and exit with status 0.
@@ -54,22 +54,16 @@ A second file-mode process then requests read/write authority for `/README.TXT`;
 
 After close, the application reopens the file read-only. A write through that narrower capability returns `USER_ERROR_INVALID_ARGUMENT` without reaching the VFS. The application reads back and verifies all 27 bytes, closes the handle, exits with status 0, and releases its ten address-space frames. The lifecycle probe submits a forged write offset before the real completion and requires rejection without changing authority or offset.
 
-The probe next starts an input-mode process. After two bounded output calls it invokes `wait_input` with the keyboard mask; the process becomes `Waiting`, retains its writable event address, and cannot consume another scheduler slice. A synthetic pointer movement is presented first and deliberately does not wake the keyboard-only waiter. Pointer handling therefore remains available to the desktop rather than being stolen by an unrelated subscription.
+The validation probe next starts an input-mode process. After two bounded output calls it invokes `wait_input` with the keyboard mask; the process becomes `Waiting`, retains its writable event address, and cannot consume another scheduler slice. A synthetic pointer movement is presented first and deliberately does not wake the keyboard-only waiter. This is not interactive foreground input ownership: the active serial path explicitly routes typed keys only to the live console process.
 
 While the first process still owns the one-shot input channel, a second input-mode process attempts the same wait. It receives `USER_ERROR_UNAVAILABLE`, reports that the channel is busy, exits normally, and releases its address space. The kernel then converts key `G` into the stable 32-byte `UserInputEvent`, revalidates the first process's private writable range, copies the event, writes `32` into saved `rax`, and returns that process to `Ready`. Ring 3 verifies the kind, code, printable value, and reserved field before reporting the exact key and exiting. Both task records are reaped and both ten-frame address spaces are reclaimed.
 
 The QEMU smoke test requires markers for structured copy-out, file block/wake, exact content verification, directory copy-out, handle truncation, input block/filter/ownership/wake, sleep/block/wake, owned child wait/wake, message send/receive, endpoint capability, channel fairness, endpoint wake, fan-in ordering, frame reclamation, fault containment, and the long-lived desktop. Recycled roots are visibly reused by later processes in the serial proof.
 
-## Desktop lifecycle
+## Serial shell lifecycle and validation modes
 
-- `run init` asks the desktop coordinator to reserve a user task and construct a fresh process, then stores the returned opaque child handle under a monotonically increasing shell job ID.
+- `run init` asks the runtime coordinator to reserve a user task and construct a fresh process, then stores the returned opaque child handle under a monotonically increasing shell job ID.
 - `run init hold` launches the same ELF with a persistent token. After its greeting, it remains runnable until controlled through that job handle.
-- `run init sleep` blocks the process for three scheduler ticks and prints a second line only after its deadline wakeup.
-- `run init file` copies out system metadata, opens `/README.TXT`, verifies stat and offset changes across two blocking reads, closes the handle, and proves stale reuse fails.
-- `run init write` proves protected-path denial, creates `/USER/APP.TXT`, performs two bounded writes, checks stat, closes and reopens read-only, proves write denial, and verifies exact read-back.
-- `run init input` waits for one printable keyboard event. Matching input is routed to the application instead of the shell, copied into private memory, reported, and consumed once.
-- `run pair` reserves two task records and launches the parent-child coordination proof over one published endpoint. Task Manager exposes their `waiting`, `sleeping`, `ready`, and terminal transitions.
-- `run fanin` reserves three task records and launches the receiver and two producers of the multi-producer proof: FIFO drain of `A1` and `B1`, one fairness denial, a blocking receive woken directly by `A2`, and `wait_child` reaping inside Ring 3.
 - `ps` shows only the shell's owned jobs and copies status from the exact immutable process instance behind each handle.
 - `kill JOB` terminates that owned live instance with status 137 and immediately releases its address space.
 - `wait JOB` is non-blocking. It reports “still running” for a live instance; after exit, fault, or kill it copies terminal status, atomically consumes the handle, and frees the process-manager slot.
@@ -78,14 +72,19 @@ Completed task history remains in the task registry even after the heavier proce
 
 The shell's `wait JOB` remains an observational reap command for operators. ABI `wait_child` is the blocking primitive used by a Ring 3 parent; the two operations intentionally serve different callers.
 
-## ABI version 17
+The sleep, file, write, input, parent-child pair and fan-in modes described in
+the execution proof above are **validation fixtures invoked by the kernel and
+test coordinator**, not commands accepted by the normal serial shell. The
+active command list and editing limits are in [TERMINAL.md](TERMINAL.md).
+
+## ABI version 18
 
 The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`, `r10`, `r8`, and `r9`. Results are returned in `rax`.
 
 | Number | Runtime function | Arguments | Result |
 | ---: | --- | --- | --- |
 | 0 | `ping` | all zero | fixed GenOS reply value |
-| 1 | `abi_version` | all zero | ABI version `17` |
+| 1 | `abi_version` | all zero | ABI version `18` |
 | 2 | `exit` | status `0..255`; remaining arguments zero | terminates the current process instance |
 | 3 | `yield_now` | all zero | cooperatively returns to the kernel scheduler |
 | 4 | `report_u64` | owned user address and length `8` | validated value copied from user memory |
@@ -113,7 +112,7 @@ The syscall number is passed in `rax`. Scalar arguments use `rdi`, `rsi`, `rdx`,
 | 26 | `console_clear` | console handle; remaining arguments zero | clears terminal scrollback and returns `0` |
 | 27 | `read_directory` | directory handle, ordinal cursor, writable entry address, exact size `96` | blocks; returns `96` for one direct child, `0` at end, or a bounded error |
 | 28 | `truncate_handle` | write-capable regular-file handle; remaining arguments zero | blocks, sets file size and the handle offset to zero, and returns `0`; stale, read-only, directory, and protected-path handles are rejected |
-| 29 | `process_launch` | exact shell supervisor capability, image `INIT`, mode normal or hold | blocks through the desktop coordinator and returns a new opaque process handle; altered authority, table exhaustion, or launch failure returns a bounded error |
+| 29 | `process_launch` | exact shell supervisor capability, image `INIT`, mode normal or hold | blocks through the runtime coordinator and returns a new opaque process handle; altered authority, table exhaustion, or launch failure returns a bounded error |
 | 30 | `process_status` | owned process handle, writable address, exact structure size `64` | copies status for the exact process incarnation and returns `64`; guessed, foreign, consumed, or stale handles are rejected |
 | 31 | `process_kill` | owned process handle; remaining arguments zero | terminates a live target with status `137`; terminal targets return `USER_ERROR_UNAVAILABLE` without consuming the handle |
 | 32 | `process_reap` | owned process handle, writable address, exact structure size `64` | for a terminal target, atomically copies status, consumes the handle, frees the manager slot, and returns `64`; a live target returns `USER_ERROR_UNAVAILABLE` |

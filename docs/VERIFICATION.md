@@ -391,5 +391,57 @@ transcript displayed `BACKGROUND?[2J?ATTACK`, restored `genos> echo PENDING`, an
 showed one `PENDING` result only after Enter. Its source patch, build/image/
 firmware identities, exact QEMU command and serial hash are retained at
 `build/terminal-safety-evidence/1790154885972713000/manifest.json`. This closes
-the scoped C2 display/encoding item; cursor editing, pasted escape decoding,
-shell syntax and general background job ownership remain separate C2/C3 work.
+the scoped C2 display/encoding item. Cursor editing and paste decoding are
+evaluated separately below; shell syntax and general job ownership remain C2/C3 work.
+
+## September 23 terminal input gate
+
+Source **`264dc0a`** separates bounded serial byte/escape decoding in
+`kernel::serial_keys`, fixed-capacity Ring 3 line editing in
+`genos_shell::editor`, and plain command classification in
+`genos_shell::parser`. The active serial path sends keyboard events only to the
+live console process; background waiters cannot steal a typed line. New key
+codes are additive under experimental ABI 18. The shell's validation image
+remains under its unchanged eight-page RX/one-page data and guarded-stack
+layout: the shell package alone uses size optimization, with measured
+validation `.text` **28,489 bytes**, 4,279 bytes below the 32 KiB link bound.
+
+`build/terminal-editing-evidence/1790156875159464000/manifest.json` retains
+the clean source, reference environment, release image and exact QEMU command,
+serial/stderr hashes and ten passing normal-boot exchanges. They cover cursor
+insertion/delete, history, Home/End/Right/Backspace, command completion,
+bracketed paste without newline submission, invalid escape rejection,
+cancellation, an 80-byte full line with rejected suffix, timed-out prefix
+cancellation and recovery. Unit tests exercise decoder prefix/paste exhaustion
+and editor bounds/history/draft/completion. The complete `cargo xtask test`
+suite passed on this exact clean commit in `build/fifty-editor-full-264dc0a.log`,
+including storage/network/SDK, all ten construction failure cutoffs, six CPU
+protection faults and both normal modes. Strict clean-source reference
+acceptance passed in `build/fifty-editor-reference-264dc0a.log`. The refreshed
+inventory records **423 lexical sites across 91 files**; moving editing out of
+`static mut` access removed eleven lexical unsafe blocks, without making the
+remaining sites reviewed or safe.
+
+The terminal still has no quoting, working directory, general named program
+launch, file-name completion or job-control signal transfer. Unbracketed raw
+paste cannot be distinguished from typed Enter and is documented as such.
+
+## September 23 architecture and test-wiring audit
+
+[ADRs 0009–0012](adr/README.md) record the currently implemented native ABI,
+single-BSP scheduling/IRQ division, device/coordinator ownership and GFS2
+snapshot contract. Each states the chosen trade-off, denied/failure behavior,
+compatibility and rollback path, evidence and limits. They are **Proposed**
+records on this local branch, not accepted release contracts. The existing
+[compatibility inventory](COMPATIBILITY.md) retains the public-boundary
+migration/downgrade plan; [USERSPACE.md](USERSPACE.md) now distinguishes the
+actual serial commands from kernel-invoked validation modes and reports ABI 18.
+
+`python3 tools/test_kernel_test_wiring.py` compares every standalone kernel
+test file containing `#[test]` with `cargo test -p kernel --lib -- --list`.
+All **48** named tests from exception, IPv6, network and storage files were
+listed under the production-module paths; a synthetic missing name fails its
+negative check. Network and storage use host mock devices only at the driver
+boundary while compiling the production protocol/commit modules. This
+evidence closes the local F4.5 documentation/wiring item, not an unsafe-site,
+shared-global, whole-kernel, remote-CI or independent reviewer audit.

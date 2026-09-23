@@ -93,8 +93,8 @@ The original kernel-and-console checklist has **100 criteria**, with **26 checke
 at `98c8b38`**. Run `python3 tools/console_progress.py` for the audited count;
 its frozen baseline rejects renamed, inserted or removed criteria. This is a
 count of scoped checklist results, not work effort, product completeness or a
-stable-release percentage. On 2026-09-23 the count is **40/100 (40%)**:
-33/60 kernel foundations, 5/8 bounded-storage criteria, 2/19 application and
+stable-release percentage. On 2026-09-23 the count is **48/100 (48%)**:
+37/60 kernel foundations, 6/8 bounded-storage criteria, 5/19 application and
 terminal criteria, and 0/13 console-qualification criteria.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
@@ -206,7 +206,8 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] **F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.
   Neutral text/geometry types replaced authority-module imports from display; a checked dependency rule rejects forbidden imports and mutable authority borrows in presentation. The normal reference boot passed on `3e55272`; [module contract](docs/MODULE_DEPENDENCIES.md). This does not close F4.2/F4.4.
 - [ ] **F4.4:** review caller obligations, aliasing, synchronization, assembly clobbers and failure containment at every unsafe boundary, including unsafe Send/Sync. Inventory presence alone does not close this review.
-- [ ] **F4.5:** document ABI, scheduler, interrupt, storage and driver decisions, compatibility and rollback; remove or migrate dormant tests so they really compile against production modules.
+- [x] **F4.5:** document ABI, scheduler, interrupt, storage and driver decisions, compatibility and rollback; remove or migrate dormant tests so they really compile against production modules.
+  [ADRs 0009–0012](docs/adr/README.md) record the current ABI, single-BSP scheduler/interrupt, driver and GFS2 trade-offs with failure and rollback boundaries; [COMPATIBILITY.md](docs/COMPATIBILITY.md) tracks public formats. A [test-wiring guard](tools/test_kernel_test_wiring.py) proves all 48 named standalone exception/IPv6/network/storage tests compile through production modules. The new ADRs remain Proposed and do not close F4.1/F4.2/F4.4 or release review.
 
 ### F5 — Explicit single-core and concurrency model
 
@@ -345,7 +346,8 @@ choices, not prerequisites for GenOS's own launch/stream model.
 ### C2 — Terminal input and command execution
 
 - [x] Normal output is quiet; `help` respects the 80-byte ABI limit; `clear`, files/jobs and `mem` have visible transcript tests.
-- [ ] Separate byte/escape decoding, bounded line editing, shell parsing and foreground input ownership. Cover cursor/delete/home/end, history, completion, cancellation, paste, long input and invalid/incomplete sequences.
+- [x] Separate byte/escape decoding, bounded line editing, shell parsing and foreground input ownership. Cover cursor/delete/home/end, history, completion, cancellation, paste, long input and invalid/incomplete sequences.
+  The serial decoder, Ring 3 editor and plain command classifier are separate production modules; keyboard delivery checks the console owner. Host tests and [ten committed-source QEMU editing cases](docs/VERIFICATION.md#september-23-terminal-input-gate) cover the named controls, bounded paste and failure cases. This remains a limited ASCII shell, not full job control or POSIX syntax.
 - [ ] Add `cd`, `pwd`, relative paths, quoting/escaping, general named launch and exit-status reporting. Enforce directory confinement below the shell; text normalization is not authority.
 - [x] Define encoding, filename comparison and safe display of control bytes. Data display must not inject terminal controls, alter pending input or execute commands; prompt ownership must remain clear after background output. A limited initial encoding profile must be documented.
   [TERMINAL.md](docs/TERMINAL.md) defines printable ASCII and case-insensitive ASCII filenames. Console admission and the final serial data sink replace controls/non-ASCII; a committed-source [interleaving fixture](tools/test_terminal_interleave.py) proves an ESC/CR background payload cannot clear the screen or submit a partly typed command, and that the prompt is redrawn before Enter.

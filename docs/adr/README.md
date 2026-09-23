@@ -48,5 +48,9 @@ Do not silently rewrite an accepted ADR to make history appear cleaner. Small co
 | 0006 | [Scrubbed frame release](0006-scrubbed-frame-release.md) | Proposed |
 | 0007 | [Physical alias and copy authority](0007-physical-alias-and-copy-authority.md) | Proposed |
 | 0008 | [Bounded littlefs growth](0008-bounded-littlefs-growth.md) | Proposed |
+| 0009 | [Capability-explicit native ABI](0009-capability-explicit-native-abi.md) | Proposed |
+| 0010 | [Single-BSP scheduling and interrupt work](0010-single-bsp-scheduling-and-interrupt-work.md) | Proposed |
+| 0011 | [Device and coordinator boundaries](0011-device-and-coordinator-boundaries.md) | Proposed |
+| 0012 | [Bounded GFS2 snapshot commit](0012-bounded-gfs2-snapshot-commit.md) | Proposed |
 
 Add accepted ADRs to this index in the same pull request.

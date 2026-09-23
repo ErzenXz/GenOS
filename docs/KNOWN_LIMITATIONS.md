@@ -105,8 +105,9 @@ not implemented; SMP remains disabled. **Roadmap:** F3, F5, H-SMP.
 
 Endpoint authority and pathname rules now have production modules with executable
 host tests. Much process/context/loader/syscall/lifecycle coordination remains in
-`kernel/src/userspace.rs`, and other shared globals and presentation dependencies
-need decomposition. The generated [lexical inventory](unsafe-inventory.json)
+`kernel/src/userspace.rs`, and other shared globals need decomposition. Presentation
+now uses neutral text/geometry types and a dependency checker, but the generated
+[lexical inventory](unsafe-inventory.json)
 records the current unsafe/assembly sites and their source context. It is not a
 caller-invariant audit, Rust soundness proof or measure of relative OS safety.
 **Roadmap:** F4.
@@ -121,7 +122,7 @@ commands in [TERMINAL.md](TERMINAL.md).
 The general application/console platform is still missing: named launch from storage,
 arguments/environment and tailored directory/stdio authority, userspace heap/mapping
 growth, composable streams, service discovery/supervision, stable SDK compatibility,
-working directories, complete line/escape editing, quoting, redirection, pipelines,
+working directories, broader terminal encoding/escape coverage, quoting, redirection, pipelines,
 foreground cancellation, background job rules, scripting and guest shutdown/recovery.
 
 There are four managed asynchronous process slots including the shell. Each process
@@ -131,8 +132,8 @@ scheduler does not establish fairness/priority behavior for broad workloads, quo
 priority inversion or multicore scaling. Full POSIX, fork and dynamic linking are
 possible later design choices, not requirements to copy another OS. **Roadmap:** C1–C5.
 
-The linked validation shell uses 32,656 of its 32,768 executable bytes (112 bytes
-spare); the normal shell uses 17,200 bytes. Further validation growth needs shared
+The linked validation shell uses 28,489 of its 32,768 executable bytes (4,279 bytes
+spare) under its size-optimized build; the normal shell uses 17,617 bytes. Further validation growth needs shared
 or separate test programs within explicit image budgets. Clippy alone does not
 establish that an executable fits; actual linking remains required.
 
