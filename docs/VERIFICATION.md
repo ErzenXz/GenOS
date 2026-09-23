@@ -276,3 +276,70 @@ Eleven independent guard/ELF/snapshot CI cases are configured in
 previous workflow-scope publication restriction remains unresolved. No release
 promotion occurs: GenOS remains Experimental, and the roadmap now names the
 remaining alias, sharing/device, CPU/stack and console-platform work explicitly.
+
+## September 23 kernel-and-console checklist: 40 of 100
+
+The [roadmap](../ROADMAP.md) retains the original 100-entry kernel-and-console
+checklist from `98c8b38b809f5948edf4d90cc672f22a3013bde4`, when 26 entries
+were checked. `python3 tools/console_progress.py` verifies every original criterion
+line against `tools/console-progress-baseline.json` and reports **40/100 (40%)**:
+33/60 kernel foundations, 5/8 bounded-storage criteria, 2/19 application/terminal
+criteria and 0/13 console-qualification criteria. The newly checked IDs are F0.4,
+F1.3, F1.5, F2.1, F2.2, F3.3, F3.5, F5.5, F6.3, F7.1, F7.3, S1.2, S1.3 and S1.4. This is a
+criterion count, not an estimate of effort, release readiness or safety.
+
+The clean full-suite source was **`34756d1`** (`1026634` contains the final
+network-validation race fix). Kernel and bootloader source has not changed since
+the independently tested `ff3ab1e` foundation commit. `cargo xtask test` and
+`cargo xtask test-reference` both passed on `34756d1`; the strict reference run
+matched Rust 1.97.0, QEMU 11.1.1, firmware SHA-256
+`33090cc07675baa5190d9f1e84bf5176b33bcbfa9bacac522961150cdb6dbb2a`
+and `genos-q35-tcg-v3`. The full run retained ten passing validation VM manifests,
+six exact CPU protection fault results, and normal debug/release acceptance;
+strict reference repeated the two normal modes with a clean-source guard.
+`build/forty-percent-evidence/summary.json` indexes and hashes the fourteen
+passing VM manifests and primary logs.
+
+| Scoped evidence | Retained location and result |
+| --- | --- |
+| Full integration and strict normal reference | `build/forty-percent-full-34756d1.log` and `build/forty-percent-reference-34756d1.log`; four passing normal manifests under `build/normal-evidence/` |
+| Stack containment | `build/stack-guard-evidence/1790077416619100000/`; all 16 cases passed, including fourteen exact guards, seven usage readings and a 12-KiB compiler frame crossing into its guard. Validation remaining stack budget exceeded 4 KiB |
+| CPU admission and ISA | `build/cpu-feature-evidence/1790078218598487000/`; all 18 kernel-lane cases passed. Actual FXSR/SSE-disabled QEMU variants fault in firmware before GenOS, retained separately as unsupported platform failures in `build/cpu-feature-summary-ff3ab1e-7d6a383.json` |
+| Physical aliases, copying, quotas and local TLB | Three hardware alias faults passed in `build/forty-percent-alias-campaign-ff3ab1e/summary.json`; the production memory lane passed with exact pressure, copy and translation-reuse markers in `build/forty-percent-memory-786c602.log` and the clean full run's `serial-memory` manifest |
+| Transactional storage | `build/storage-fault-evidence/1790077462740587000/manifest.json`; 606 production-seam fault images independently decoded, including loss, reordering, both-generation corruption and repeated repair failures. Physical power loss remains outside the model |
+| Pure Rust checks | `build/pure-rust-evidence/1790078228643094000/manifest.json`; pinned Miri ran 53 selected production tests and the ownership model explored 3,257,436 sequences / 19,248,492 transitions through depth six. Neither covers the whole kernel |
+| Buildable series and compatibility | Four intermediate source commits independently linked validation images in `build/forty-percent-buildable-series/`; [COMPATIBILITY.md](COMPATIBILITY.md) inventories twenty public boundaries and the candidate's rollback/limitations plan |
+
+The complete host workspace run passed **263 Rust tests** (14, 9, 2, 7, 185 and
+46 across its test binaries); Python discovery passed **75 tests**. The earlier
+100,000 parser-mutation run with seed `20260924`, twelve corpus inputs and 693
+prefixes is in `build/forty-percent-parser-stress.log`. The target-appropriate
+strict Clippy commands, formatting, documentation links and unsafe inventory
+checks pass. The refreshed lexical inventory has **434 sites in 85 source files**;
+the latest two-source diff only shifted locations, and an inventory is not an
+unsafe-boundary soundness review.
+
+Several failed diagnostic runs remain retained. The full-suite attempt on
+`507c4c6` reached network validation but timed out because its required HTTP
+proofs never occurred (`build/validation-evidence/1790151186977092000/network/`).
+Further targeted runs showed two timing assumptions: the validation shell
+rejected a TCP socket that had already reached ESTABLISHED, and the host HTTP
+helper read an accepted nonblocking socket as though its immediate `WouldBlock`
+were an empty request. `1026634` accepts CONNECTING or ESTABLISHED, explicitly
+switches accepted sockets to blocking mode with a bounded read timeout, and adds
+a delayed-request host regression. Both network variants then passed in the
+full suite. Earlier exact-parser failures and their reruns remain in unique
+`build/validation-evidence/` directories; no failing manifest was promoted.
+
+The ordinary persistent volume `build/genos-data.img` was never a fault fixture:
+its SHA-256 before and after qualification was
+`8175ce14b173824cf267dafa82a9f1284019eb9ce9de9682ac15e047aa27b57a`.
+All GenOS test QEMU processes were stopped. The tested image is a normal release
+image; `build/image-mode.txt` records its mode and paths.
+
+GenOS remains **Experimental**. Remote required-check publication is still blocked
+by the GitHub credential's missing `workflow` scope; there is no PR or independent
+reproduction from this campaign. F1.2/F1.4, sharing/DMA/raw-reference lifetime,
+F4/F5 shared-state audit, S2 storage growth, general C1–C5 terminal work,
+coverage-guided fuzzing, 1000 boots and sustained qualification remain open.
+The 40% count does not promote R1, R2 or R3.
