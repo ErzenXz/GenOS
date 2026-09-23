@@ -83,13 +83,20 @@ Compile with `LFS_NO_MALLOC`; no hidden libc allocator is available.
 
 Candidate buffers are a 512 B read cache, 512 B program cache, a 128 B lookahead
 and sixteen 512 B file caches: **9344 B** before structures and wrapper state.
+With `LFS_NO_MALLOC`, open each file through `lfs_file_opencfg` with its own
+caller-owned `lfs_file_config.buffer`; keep that configuration and cache alive
+until close. A plain `lfs_file_open` cannot supply the required static cache.
 Cap the complete provider/open-handle allocation at **64 KiB**, measured by
 `size_of`/link-map checks; separate owned I/O buffers are charged to their caller.
 Use `metadata_max=4096`, `inline_max=128`, explicit file/name maxima, and a maximum
 directory depth of 32. Increasing any cap requires repeat exhaustion and stack
 measurements. These settings must be tested with 1024 entries; the directory
 quota is not achieved by assuming the existing 32-node RAM VFS already supports
-it. The callback/cache options and file sync API are upstream contracts.
+it. `metadata_max=4096` equals the candidate block size, so it does not tighten
+the default compaction bound; the 255-byte **complete path**, directory depth,
+and total-entry caps must be enforced by the GenOS wrapper, not inferred from
+littlefs's per-component `name_max`. The callback/cache options and file sync
+API are upstream contracts.
 [Pinned configuration/API](https://github.com/littlefs-project/littlefs/blob/6cb4e86540eca0d9ba62500a298385c9d863c8be/lfs.h).
 
 For the sector adapter, erase prepares only a free 4 KiB block; initially use
