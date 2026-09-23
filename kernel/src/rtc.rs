@@ -1,6 +1,6 @@
 // RTC presentation remains part of the dormant framebuffer path tracked by ROADMAP F4.
 
-use kernel::display::FixedText;
+use kernel::console_text::FixedText;
 
 use crate::arch;
 

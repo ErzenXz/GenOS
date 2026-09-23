@@ -1,4 +1,4 @@
-use crate::display::FixedText;
+use crate::console_text::FixedText;
 
 pub const MAX_NODES: usize = 32;
 pub const MAX_FILE_BYTES: usize = 512;

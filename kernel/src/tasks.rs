@@ -1,4 +1,4 @@
-use crate::display::FixedText;
+use crate::console_text::FixedText;
 
 pub const MAX_TASKS: usize = 16;
 pub const MAX_TASK_SNAPSHOTS: usize = MAX_TASKS + 4;

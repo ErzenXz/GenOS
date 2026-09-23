@@ -1,7 +1,7 @@
 // The serial-first kernel still compiles the legacy framebuffer and PS/2 path.
 // ROADMAP F4 tracks isolating or removing that path.
 
-use kernel::display::Point;
+use kernel::geometry::Point;
 use kernel::input::{EventQueue, InputEvent, KeyboardDecoder, MouseDecoder, MouseState};
 
 use crate::arch;

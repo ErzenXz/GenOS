@@ -2,7 +2,7 @@
 //! This module has no mutable state, hardware access, or presentation effects.
 //! Absolute paths use nonempty ASCII components; dot navigation and duplicate
 //! separators are rejected instead of being interpreted differently by callers.
-use crate::display::FixedText;
+use crate::console_text::FixedText;
 use genos_abi::{USER_PATH_MAX, USER_WRITABLE_PREFIX};
 
 pub fn valid_name(name: &str) -> bool {
