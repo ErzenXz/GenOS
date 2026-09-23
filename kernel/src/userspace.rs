@@ -3482,10 +3482,28 @@ impl ProcessManager {
         &mut self,
         input: InputEvent,
     ) -> Result<Option<ProcessUpdate>, LaunchError> {
+        self.deliver_input_owned(input, false)
+    }
+
+    /// The serial prompt has one foreground owner. A background process with
+    /// a pending keyboard wait cannot take bytes typed for the shell.
+    pub fn deliver_console_input(
+        &mut self,
+        input: InputEvent,
+    ) -> Result<Option<ProcessUpdate>, LaunchError> {
+        self.deliver_input_owned(input, true)
+    }
+
+    fn deliver_input_owned(
+        &mut self,
+        input: InputEvent,
+        console_only: bool,
+    ) -> Result<Option<ProcessUpdate>, LaunchError> {
         let required_mask = input.user_mask();
         let index = self.slots.iter().position(|managed| {
             managed.as_ref().is_some_and(|managed| {
-                managed.state == ManagedState::Waiting
+                (!console_only || managed.console_process)
+                    && managed.state == ManagedState::Waiting
                     && managed.blocked_on == BlockReason::Input
                     && managed
                         .pending_input

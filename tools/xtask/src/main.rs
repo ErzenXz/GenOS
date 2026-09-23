@@ -222,6 +222,7 @@ fn run() -> Result<(), String> {
 fn test() -> Result<(), String> {
     cargo(["test", "-p", "genos_abi"])?;
     cargo(["test", "-p", "kernel", "--lib"])?;
+    cargo(["test", "-p", "genos-shell", "--lib"])?;
     cargo(["test", "-p", "xtask"])?;
     build_validation()?;
     ensure_test_data_image(true)?;

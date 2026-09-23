@@ -2,9 +2,10 @@ use crate::geometry::Point;
 use genos_abi::{
     UserInputEvent, USER_INPUT_KIND_KEY, USER_INPUT_KIND_POINTER_BUTTON,
     USER_INPUT_KIND_POINTER_MOVE, USER_INPUT_MASK_KEYBOARD, USER_INPUT_MASK_POINTER,
-    USER_KEY_ARROW_DOWN, USER_KEY_ARROW_UP, USER_KEY_BACKSPACE, USER_KEY_CHAR, USER_KEY_ENTER,
-    USER_KEY_ESCAPE, USER_KEY_TAB, USER_POINTER_BUTTON_LEFT, USER_POINTER_BUTTON_MIDDLE,
-    USER_POINTER_BUTTON_RIGHT,
+    USER_KEY_ARROW_DOWN, USER_KEY_ARROW_LEFT, USER_KEY_ARROW_RIGHT, USER_KEY_ARROW_UP,
+    USER_KEY_BACKSPACE, USER_KEY_CANCEL, USER_KEY_CHAR, USER_KEY_DELETE, USER_KEY_END,
+    USER_KEY_ENTER, USER_KEY_ESCAPE, USER_KEY_HOME, USER_KEY_TAB, USER_POINTER_BUTTON_LEFT,
+    USER_POINTER_BUTTON_MIDDLE, USER_POINTER_BUTTON_RIGHT,
 };
 
 pub const EVENT_QUEUE_CAP: usize = 64;
@@ -18,6 +19,12 @@ pub enum KeyEvent {
     Tab,
     ArrowUp,
     ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    Home,
+    End,
+    Delete,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +77,12 @@ impl InputEvent {
                     KeyEvent::Tab => (USER_KEY_TAB, 0),
                     KeyEvent::ArrowUp => (USER_KEY_ARROW_UP, 0),
                     KeyEvent::ArrowDown => (USER_KEY_ARROW_DOWN, 0),
+                    KeyEvent::ArrowLeft => (USER_KEY_ARROW_LEFT, 0),
+                    KeyEvent::ArrowRight => (USER_KEY_ARROW_RIGHT, 0),
+                    KeyEvent::Home => (USER_KEY_HOME, 0),
+                    KeyEvent::End => (USER_KEY_END, 0),
+                    KeyEvent::Delete => (USER_KEY_DELETE, 0),
+                    KeyEvent::Cancel => (USER_KEY_CANCEL, 0),
                 };
                 UserInputEvent {
                     kind: USER_INPUT_KIND_KEY,
