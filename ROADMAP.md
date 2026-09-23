@@ -93,8 +93,8 @@ The original kernel-and-console checklist has **100 criteria**, with **26 checke
 at `98c8b38`**. Run `python3 tools/console_progress.py` for the audited count;
 its frozen baseline rejects renamed, inserted or removed criteria. This is a
 count of scoped checklist results, not work effort, product completeness or a
-stable-release percentage. On 2026-09-23 the count is **48/100 (48%)**:
-37/60 kernel foundations, 6/8 bounded-storage criteria, 5/19 application and
+stable-release percentage. On 2026-09-23 the count is **49/100 (49%)**:
+38/60 kernel foundations, 6/8 bounded-storage criteria, 5/19 application and
 terminal criteria, and 0/13 console-qualification criteria.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
@@ -188,7 +188,8 @@ these remaining CPU-state and hardware obligations.
   User PTE pins, inactive-root construction/teardown, CR3 retirement with PCID/global retention disabled, and unlink-before-release are implemented. Raw kernel references/direct aliases, DMA and SMP still require broader lifetime policy.
 - [x] **F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.
   Runtime grants are order-0 only, with no adjacency promise; firmware boot allocations and admitted runtime regions have separate owners. Metadata measures 591,504 bytes; usable coverage is bounded to 8 GiB/64 regions and live grants to 8192. Contiguous DMA allocation is not advertised.
-- [ ] **F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.
+- [x] **F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.
+  [Construction audit](docs/CONSTRUCTION_FAILURES.md) maps publication and rollback for supervisor splits, user roots/pages, partial ELF/stack, process/file/socket handles and bounded RAM VFS nodes. Failed teardown now halts instead of returning a recoverable error with live authority. All ten process allocation cutoffs, the network/SDK lanes, six exact-address CPU faults and strict clean-source reference boots passed on the audited code. A separate 30-second no-HTTP validation timing miss remains retained and is not concealed by the passing targeted rerun; broader F6/F7 reliability gates remain open.
 - [x] **F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; `/MEMORY.STATUS` must stay coherent across partial reads.
   Each non-kernel owner has a 64-frame quota including tables, with 256 ledger entries reserved from user admission. Denial preserves other owners and rolls back partial construction; two production pressure cycles and interleaved Ring 3 report reads prove bounded behavior. No swapping/OOM victim policy is implied.
 
