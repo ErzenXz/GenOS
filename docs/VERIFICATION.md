@@ -488,3 +488,35 @@ modified `paging.rs` unsafe blocks (root admission and supervisor splitting);
 the lexical total remains **423 sites in 91 files**. The reviewed source-context
 baseline was refreshed and `check_unsafe.py --check` plus its 11 scanner tests
 pass. This is inventory maintenance, not the F4.4 unsafe-boundary review.
+
+## September 23 complete 1000-boot release lane
+
+The clean detached source `7b8caa921d860e7f1904c74577fa13f63550f144`
+ran `cargo xtask test-repeat 1000` to exit zero. The last lines are
+`NORMAL_BOOT_REPETITION_PROGRESS completed=1000 requested=1000` and
+`NORMAL_BOOT_REPETITION_OK completed=1000 requested=1000`. Every fresh QEMU
+release boot completed the visible `uname`, launch/status/kill/reap and
+persistent-file workflow. No first failure occurred.
+
+The complete log, 1000 distinct manifests and all 2000 serial/QEMU output
+files were copied into `build/fifty-repeat-evidence/7b8caa9/`. The log SHA-256
+is `200127ce2b0316fb682cacaf90a2eaa54b45f44ca27269ad485833b8e6624772`;
+the unchanged release image SHA-256 is
+`806f6095d7586020a3455547b4e7c23e90a44eaa89d9210e255a0a66f48c1b59`.
+Every manifest reports clean source, `genos-q35-tcg-v3`, the pinned firmware
+SHA-256 `33090cc07675baa5190d9f1e84bf5176b33bcbfa9bacac522961150cdb6dbb2a`,
+QEMU 11.1.1 and Rust 1.97.0. The test used the disposable
+`genos-data-repeat-test.img`, not the user's `genos-data.img`.
+
+`tools/audit_repeat_boots.py` passed on the copied evidence. It requires every
+ordinal 1–1000 exactly once in both the ordered log and manifests, a single
+final completion marker, distinct run IDs, clean source, one release/profile/
+firmware/image identity, and hashes of every retained serial and QEMU log.
+Eight host tests reject missing, duplicated, dirty, changed-image, failed and
+tampered-log evidence. The runtime source directories (`bootloader`, `kernel`,
+`userspace`, `crates`) have no diff from the tested commit on this branch; later
+commits in the series update only evidence tooling and documentation.
+
+This closes F6.5's configured fresh-boot lane only. It does not substitute for
+F6.6's 10,000 lifecycle cycles and proposed 24-hour single-boot pressure, C5's
+72-hour mixed console workload, physical-device qualification or remote CI.
