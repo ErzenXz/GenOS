@@ -1,0 +1,506 @@
+{
+  "baseline_commit": "98c8b38b809f5948edf4d90cc672f22a3013bde4",
+  "baseline_roadmap_sha256": "345204a9d639428745ede2b984b33b314691fc533a69030981e274933c13db11",
+  "entries": [
+    {
+      "section": "F0",
+      "text": "Pinned Rust 1.97.0 and declared 1.97 minimum; host/target builds and strict lint commands exist.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F0",
+      "text": "Separate normal debug/release, validation, no-NIC, network, storage and CPU proof commands exist locally.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F0",
+      "text": "Serial logs, image/source identities, fixture patches and scoped manifests exist; new CI jobs are configured in the local branch.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F0",
+      "text": "A versioned VM candidate and exact tool/firmware preflight exist; new normal evidence requires a fresh serial challenge, ordered readiness, unique retained run files and failure details. CPU-state and exception proofs reject duplicate/wrong-phase records.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F0",
+      "text": "September 22 local checks passed the complete suite, six malformed-boot cases, five BSP cases, eight original exceptions, strict reference acceptance and ten consecutive release boots. [Exact commits and limits](docs/VERIFICATION.md#september-22-foundation-implementation-and-verification) are part of the claim; no release level advanced.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F0",
+      "text": "**F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F0",
+      "text": "**F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F0",
+      "text": "**F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F0",
+      "text": "**F0.4:** test the harness itself: omitted, duplicated, forged, wrong-phase and stale success evidence must fail. Retain incomplete/failing manifests and stderr, not just successful runs.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F0",
+      "text": "**F0.5:** reproduce clean builds on the supported host lanes, publish artifact hashes/provenance and make another reviewer reproduce the documented reference run.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F1",
+      "text": "Normalized vector/error/frame handling, explicit user termination/kernel halt, dedicated emergency stacks and IDT write protection have scoped reference proofs.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F1",
+      "text": "Eight original user/kernel exception cases and six page-protection probes are reported as passing; BSP/reentry checks and the owned boot-stack fix are implemented.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F1",
+      "text": "Checked UEFI byte decoding and kernel handoff admission reject descriptor truncation/capacity, overflow, overlap and unretained boot/kernel/initrd memory. See [MEMORY.md](docs/MEMORY.md) for the trusted-pointer boundary and rejection fixtures.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F1",
+      "text": "The [bounded eager CPU-state policy](docs/CPU_STATE.md) preserves x87/MMX/XMM0\u201315/MXCSR, initializes fresh process state, disables OSXSAVE/PKE and enforces soft-float kernel compilation. A real Ring 3 fixture covers six processes, direct/yield syscalls, preemption, fault/reuse and exact frame reclamation.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F1",
+      "text": "The [kernel ELF load plan](docs/KERNEL_ELF.md) validates the whole image before allocation/copy; six malformed-image VM cases prove rejection before kernel entry and explicit QMP guest shutdown.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F1",
+      "text": "Seven kernel stacks have fourteen inaccessible guards with boot-time mapping readback; four selected CPU faults prove exact guard addresses and deliberate containment.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F1",
+      "text": "**F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F1",
+      "text": "**F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F1",
+      "text": "**F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F1",
+      "text": "**F1.4:** specify and test NMI/machine-check/same-IST nesting, fault-during-return and malformed return state. Recover only where a safe recovery contract is demonstrated; otherwise halt deliberately.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F1",
+      "text": "**F1.5:** test missing/mixed CPU features and unsupported ISA use before admitting general applications. Record exactly what the reference CPU contract permits.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F2",
+      "text": "Required NX/WP and supported SMEP/SMAP are enabled/read back; linked sections, IDT, user data and stacks receive explicit permissions.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F2",
+      "text": "Current explicit mapping APIs reject W+X; real faults test the selected protections.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F2",
+      "text": "**F2.1:** enforce a physical-frame permission/alias policy across the kernel direct map, temporary loader mappings, user aliases, remapping and protection changes. A writable alias must not silently defeat executable/read-only authority.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F2",
+      "text": "**F2.2:** centralize user-copy lifetime/range validation and mapping updates behind reviewed interfaces; retire translations before backing storage can be reused.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F2",
+      "text": "**F2.3:** extend actual CPU access tests across every mapping family and feature profile, including stale translations, cross-process aliases and failed protection changes.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F3",
+      "text": "Lossless bitmap reclamation, fragmented-map tests, zero-before-grant, scrub-before-release and scoped IRQ allocator access exist.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F3",
+      "text": "All ten reference process-construction allocation cutoffs restore the live-frame baseline; `mem` observes an increase for a running job and return after cleanup.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F3",
+      "text": "Private-field owner/generation grants, exact user mapping pins, stale-root denial and unlink-before-release now use one production ledger; host and VM probes exercise denied authority and exact reclamation.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F3",
+      "text": "`/MEMORY.STATUS` captures immutable bytes per open handle; Ring 3 interleaved reads retain the original report while a live process changes allocation, then close/reuse and kill/reap restore the baseline.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F3",
+      "text": "**F3.1:** make grants carry enforceable owner/allocation identity; define explicit sharing and pinned device buffers. A physical address alone must not authorize release.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F3",
+      "text": "**F3.2:** retire references, mappings, translations and device use before scrubbing/reuse. Wrong-owner, stale-generation, duplicate, aliased and pinned releases must leave state and bytes unchanged.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F3",
+      "text": "**F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F3",
+      "text": "**F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F3",
+      "text": "**F3.5:** add bounded memory-pressure behavior, per-owner accounting and a coherent per-open or versioned-retry diagnostic snapshot; `/MEMORY.STATUS` must stay coherent across partial reads.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F4",
+      "text": "Endpoint authority and canonical pathname policy execute in host-tested modules; a lexical unsafe/assembly inventory retains source context.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F4",
+      "text": "**F4.1:** split process state, CPU context, scheduler policy, ELF loading, user-copy, lifecycle, syscalls and remaining typed handles into modules with clear failure/cleanup interfaces.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F4",
+      "text": "**F4.2:** classify every mutable object as boot-only, coordinator-owned, IRQ-shared or emergency-safe; replace raw global mutation with scoped access that cannot leak mutable borrows.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F4",
+      "text": "**F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F4",
+      "text": "**F4.4:** review caller obligations, aliasing, synchronization, assembly clobbers and failure containment at every unsafe boundary, including unsafe Send/Sync. Inventory presence alone does not close this review.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F4",
+      "text": "**F4.5:** document ABI, scheduler, interrupt, storage and driver decisions, compatibility and rollback; remove or migrate dormant tests so they really compile against production modules.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F5",
+      "text": "Non-BSP/repeated entry is rejected; one/four-vCPU reference tests still admit one kernel CPU.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F5",
+      "text": "IRQ rules and scoped allocator access exist; nested IF preservation has a real CPU probe.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F5",
+      "text": "**F5.1:** guard all state shared with interrupts, and assert allowed execution context and lock order in debug/validation builds. No handler may wait on a lock held by the interrupted context.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F5",
+      "text": "**F5.2:** bound IRQ work and masked duration; move blocking/expensive device work to coordinators. Record worst observed latency under the declared workload.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F5",
+      "text": "**F5.3:** put current process/address space/scheduler-local/interrupt-local state behind a per-CPU-ready interface, while retaining exactly one active CPU in R1.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F5",
+      "text": "**F5.4:** test delayed/nested interrupt delivery during allocation, context changes, request cancellation and device completion, with forward progress and ownership checks.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F5",
+      "text": "**F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F6",
+      "text": "Explicit normal/validation policies; normal interactive tests use visible results and reject development trace leakage.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F6",
+      "text": "Retained deterministic ELF/network/socket mutation inputs, exact fault evidence parsers, allocation injection and selected packet/storage failures exist.",
+      "baseline_complete": true
+    },
+    {
+      "section": "F6",
+      "text": "**F6.1:** finish the normal startup cost/dependency audit. Optional devices must fail within declared deadlines and cannot make the local terminal depend on a test server or fixture.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F6",
+      "text": "**F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F6",
+      "text": "**F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F6",
+      "text": "**F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F6",
+      "text": "**F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F6",
+      "text": "**F6.6:** qualify the existing kernel fixtures with at least 10000 lifecycle cycles and a proposed 24-hour single-boot memory/IPC/I/O pressure run. Record bounded caches, resource baselines, deadlines and coverage gaps. C5 later repeats and extends this with general applications and the complete console workflow; R1 does not depend on those later features.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F7",
+      "text": "**F7.1:** produce buildable, reviewable commits; separate mechanical moves from behavior where possible and explain inseparable large changes.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F7",
+      "text": "**F7.2:** map each public guarantee to success, negative, exhaustion, cancellation and cleanup evidence; review the actual failing cases and unsafe sites.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F7",
+      "text": "**F7.3:** retain migration/downgrade/rollback plans for every public format/interface and a release-specific limitations snapshot.",
+      "baseline_complete": false
+    },
+    {
+      "section": "F7",
+      "text": "**F7.4:** require reproducible performance experiments and independent clean-build review. Do not optimize by removing required correctness work or relaxing a failing budget after the fact.",
+      "baseline_complete": false
+    },
+    {
+      "section": "S",
+      "text": "Dual snapshot format, synchronous commits, host inspection/repair and read-only recovery have bounded local proofs.",
+      "baseline_complete": true
+    },
+    {
+      "section": "S",
+      "text": "**S1.1:** reproduce unknown final-commit outcomes and enter read-only recovery. Explicit outcomes, sticky write quarantine, dirty-cache discard, last-acknowledged RAM rollback and visible remount status are implemented. The host regression proves either old or new complete media state after failed final flush; subsequent writes issue no device commands. Live reconciliation is not implemented.",
+      "baseline_complete": true
+    },
+    {
+      "section": "S",
+      "text": "**S1.2:** specify atomic visibility, acknowledged durability, cancellation and remount results separately. Inject cuts/errors before and after every logical write/flush, including the final commit record.",
+      "baseline_complete": false
+    },
+    {
+      "section": "S",
+      "text": "**S1.3:** test torn/reordered/lost sectors, corruption of either/both generations, full storage, counter overflow and a second failure during repair/recovery. Preserve unreadable media; never silently format it.",
+      "baseline_complete": false
+    },
+    {
+      "section": "S",
+      "text": "**S1.4:** document device flush/FUA/cache assumptions and compare guest recovery with an independent host checker. Killing QEMU alone is not a full physical power-loss model.",
+      "baseline_complete": false
+    },
+    {
+      "section": "S",
+      "text": "**S2.1:** choose format growth in an ADR after comparing workloads, space amplification, RAM cost, recovery time, implementation/reuse/licensing cost and tooling. Do not select journaling, copy-on-write trees or littlefs by fashion.",
+      "baseline_complete": false
+    },
+    {
+      "section": "S",
+      "text": "**S2.2:** support larger files/directories and streams with explicit quotas and partial-I/O semantics. Initial candidate tests: at least 1 MiB files, 1024 namespace entries and 255-byte complete paths; validate budgets before freezing C5.",
+      "baseline_complete": false
+    },
+    {
+      "section": "S",
+      "text": "**S2.3:** implement atomic replacement/rename, metadata and filename policy, backup/export/restore, versioned migration and interrupted-migration recovery. Keep a read-only path for old GFS2 data.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C1",
+      "text": "An SDK example builds outside the repository, checks ABI compatibility, executes in Ring 3 and is reclaimed.",
+      "baseline_complete": true
+    },
+    {
+      "section": "C1",
+      "text": "Define native capability-explicit spawn with executable reference, arguments, optional environment, working-directory authority, stdin/stdout/stderr and resource budget. Validate the whole request before making the child runnable.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C1",
+      "text": "Add owned userspace heap/mapping growth and bounded accounting; publish an ABI/image compatibility policy and deterministic unsupported-version errors.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C1",
+      "text": "Add bounded streams with partial I/O, readiness, EOF, broken-peer errors, cancellation and close. Keep structured message/handle transfer separate where useful.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C1",
+      "text": "Launch at least three independently built useful programs from storage. Test invalid ELF/ABI, every construction failure, stale/wrong-rights handles and cleanup of all intermediate resources.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C1",
+      "text": "Define supervised process groups, service discovery, restart budgets and recovery-console availability; a failed service or restart storm must not destroy unrelated authority.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C2",
+      "text": "Normal output is quiet; `help` respects the 80-byte ABI limit; `clear`, files/jobs and `mem` have visible transcript tests.",
+      "baseline_complete": true
+    },
+    {
+      "section": "C2",
+      "text": "Separate byte/escape decoding, bounded line editing, shell parsing and foreground input ownership. Cover cursor/delete/home/end, history, completion, cancellation, paste, long input and invalid/incomplete sequences.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C2",
+      "text": "Add `cd`, `pwd`, relative paths, quoting/escaping, general named launch and exit-status reporting. Enforce directory confinement below the shell; text normalization is not authority.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C2",
+      "text": "Define encoding, filename comparison and safe display of control bytes. Data display must not inject terminal controls, alter pending input or execute commands; prompt ownership must remain clear after background output. A limited initial encoding profile must be documented.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C2",
+      "text": "Build copy, atomic move/rename, text viewing/editing and diagnostics around real storage/stream interfaces. Add `ping`/DNS tools when a reviewed network interface exists; the ABI's existing test `ping` is not ICMP.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C3",
+      "text": "Implement redirection and multi-stage pipelines after C1 streams; define pipeline exit status and partial-failure cleanup.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C3",
+      "text": "Prove transfers larger than every pipe buffer with slow/early-exiting consumers, peer death and cancellation while blocked; the prompt must return without deadlock.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C3",
+      "text": "Add foreground/background ownership, whole-pipeline interruption and bounded job records; restore the terminal when a process exits or dies after changing its mode.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C3",
+      "text": "Add a small documented scripting language, startup/configuration handling and actionable errors. Do not advertise shell syntax without the corresponding execution semantics.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C4",
+      "text": "Implement guest `exit`, shell/session restart, shutdown and reboot with privilege checks, bounded service stopping, storage draining and explicit failure outcomes.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C4",
+      "text": "Provide a functional serial recovery parser for inspection, read-only mount/export, backup/restore and authorized repair. Do not depend on graphics or the normal shell surviving.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C4",
+      "text": "Test a failed shell, failed optional service, damaged configuration, unavailable device, failed flush and interrupted recovery; return to a usable documented state.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C4",
+      "text": "Keep QEMU host controls separate from guest shutdown. Exiting the emulator is not a guest durability guarantee.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "R1, S1/S2 and C1\u2013C4 pass; publish the exact supported storage/network/encoding/security profile and all excluded capabilities.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Demonstrate an end-to-end workflow: boot, edit/cancel commands, create a project, edit/save/reopen files, launch native programs, pipe data, cancel a stuck workload, recover the shell, reboot and verify durable bytes.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Exercise at least eight application processes plus the shell within the 512 MiB reference workload; publish actual configurable quotas. This is a workload floor, not an architectural ceiling.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Complete 1000 fresh boots; at least 10000 launch/exit/fault/kill/reap cycles in sustained runs; and a 72-hour mixed terminal/storage/process workload on one boot.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Require zero unexplained reset, hang, mixed committed state, authority leak or post-warmup unbounded resource growth. Use exact resource baselines and bounded-cache explanations, not aggregate \u201clooks stable\u201d logs.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Run the storage failure/recovery matrix independently of normal workloads, plus the applicable network/device matrix. Successful writes survive remount under the stated device fault model.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Measure cold/warm boot-to-input-ready, idle CPU/wakeups/memory, input/command latency, syscall/process/stream/storage cost and worst observed IRQ-masked time. Publish raw samples, spread and correctness results; freeze budgets from evidence rather than inventing performance wins.",
+      "baseline_complete": false
+    },
+    {
+      "section": "C5",
+      "text": "Have an independent clean environment reproduce the candidate image/workflow and complete Stage 10's independent console release checklist. Use a dedicated test environment capable of the required uninterrupted soak; the current 180-minute scheduled job cannot establish a 24/72-hour run.",
+      "baseline_complete": false
+    },
+    {
+      "section": "Release",
+      "text": "Review the R1, S1/S2 and C1\u2013C4 evidence and C5 workload results against the exact advertised profile; verify all included guarantees and excluded capabilities.",
+      "baseline_complete": false
+    },
+    {
+      "section": "Release",
+      "text": "Reproduce upgrades, authorized rollback, backup/restore and recovery from prior supported versions, including interrupted activation and failure during recovery. For the first version, retain its tested initial-install/recovery path and freeze the future migration contract.",
+      "baseline_complete": false
+    },
+    {
+      "section": "Release",
+      "text": "Publish profile limits, ABI/storage compatibility, image hashes/provenance, dependency/trust assumptions, maintenance/support policy and unresolved risks.",
+      "baseline_complete": false
+    },
+    {
+      "section": "Release",
+      "text": "Have an independent environment reproduce the candidate image and console workflow; retain fault/coverage/resource evidence. Scheduled failures must block promotion or become explicitly tracked work, never disappear from the record.",
+      "baseline_complete": false
+    },
+    {
+      "section": "Release",
+      "text": "Compare performance only with equivalent named workloads/configurations and reproducible data. No universal-superiority or \u201cperfectly safe\u201d release language.",
+      "baseline_complete": false
+    }
+  ]
+}
