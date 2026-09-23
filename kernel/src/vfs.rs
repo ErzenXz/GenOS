@@ -75,13 +75,14 @@ impl RamVfs {
     }
 
     pub fn init_root(&mut self) {
-        let _ = self.mkdir("/");
+        self.mkdir("/").expect("RAM VFS root construction failed");
     }
 
     pub fn seed_file(&mut self, name: &str, data: &[u8]) {
         let mut path = FixedText::from_str("/");
         path.push_str(name);
-        let _ = self.write(path.as_str(), data);
+        self.write(path.as_str(), data)
+            .expect("initrd file construction failed");
     }
 
     pub fn mkdir(&mut self, path: &str) -> Result<(), VfsError> {
@@ -96,6 +97,9 @@ impl RamVfs {
     }
 
     pub fn write(&mut self, path: &str, data: &[u8]) -> Result<(), VfsError> {
+        if data.len() > MAX_FILE_BYTES {
+            return Err(VfsError::NoSpace);
+        }
         if let Some(index) = self.find_index(path) {
             if self.nodes[index].kind == NodeKind::Directory {
                 return Err(VfsError::IsDirectory);
@@ -108,6 +112,9 @@ impl RamVfs {
     }
 
     pub fn append(&mut self, path: &str, data: &[u8]) -> Result<(), VfsError> {
+        if data.len() > MAX_FILE_BYTES {
+            return Err(VfsError::NoSpace);
+        }
         let index = if let Some(index) = self.find_index(path) {
             index
         } else {
@@ -118,7 +125,10 @@ impl RamVfs {
             return Err(VfsError::IsDirectory);
         }
         let start = self.nodes[index].len;
-        if start + data.len() > MAX_FILE_BYTES {
+        if start
+            .checked_add(data.len())
+            .is_none_or(|end| end > MAX_FILE_BYTES)
+        {
             return Err(VfsError::NoSpace);
         }
         for (offset, byte) in data.iter().enumerate() {
@@ -242,6 +252,9 @@ impl RamVfs {
     }
 
     fn insert(&mut self, path: &str, kind: NodeKind, data: &[u8]) -> Result<(), VfsError> {
+        if kind == NodeKind::File && data.len() > MAX_FILE_BYTES {
+            return Err(VfsError::NoSpace);
+        }
         if !crate::path_policy::valid_absolute_path(path) {
             return Err(VfsError::InvalidPath);
         }
@@ -428,5 +441,21 @@ mod tests {
         assert_eq!(vfs.read("/note.txt"), Ok(&b""[..]));
         assert_eq!(vfs.write_at("/note.txt", 0, b"new"), Ok(3));
         assert_eq!(vfs.read("/note.txt"), Ok(&b"new"[..]));
+    }
+
+    #[test]
+    fn oversized_file_operations_preserve_existing_data_and_namespace() {
+        let mut vfs = RamVfs::new();
+        vfs.init_root();
+        vfs.write("/note.txt", b"kept").unwrap();
+        let too_large = [0xa5; MAX_FILE_BYTES + 1];
+        let before = vfs.list_root().count();
+
+        assert_eq!(vfs.write("/note.txt", &too_large), Err(VfsError::NoSpace));
+        assert_eq!(vfs.write("/new.txt", &too_large), Err(VfsError::NoSpace));
+        assert_eq!(vfs.append("/new.txt", &too_large), Err(VfsError::NoSpace));
+        assert_eq!(vfs.read("/note.txt"), Ok(&b"kept"[..]));
+        assert!(vfs.find("/new.txt").is_none());
+        assert_eq!(vfs.list_root().count(), before);
     }
 }

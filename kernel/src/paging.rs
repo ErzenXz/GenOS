@@ -119,7 +119,10 @@ pub fn create_user_address_space() -> Result<AddressSpace, PagingError> {
         let destination = table_mut(root);
         destination.copy_from_slice(source);
         if destination[USER_PML4_INDEX] & PRESENT != 0 {
-            let _ = memory::free_frame(authority);
+            assert!(
+                memory::free_frame(authority),
+                "unpublished user root ownership"
+            );
             return Err(PagingError::AddressInUse);
         }
     }
@@ -230,7 +233,9 @@ fn map_user_page_inner(
 }
 
 /// Seal a supervisor mapping, splitting firmware huge pages without changing
-/// the neighboring mappings. Bootstrap-only: no process root may be active.
+/// the neighboring mappings. Bootstrap-only with interrupts masked and no
+/// published process root. Each call rolls back its own splits on failure;
+/// callers halt if a multi-page bootstrap sealing pass fails.
 pub fn protect_kernel_page(
     address: u64,
     writable: bool,
@@ -240,6 +245,7 @@ pub fn protect_kernel_page(
     if root == 0
         || unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) }
         || active_root() != root
+        || crate::arch::interrupts_enabled()
         || address & (PAGE_SIZE - 1) != 0
         || !(PAGE_SIZE..USER_BASE).contains(&address)
         || (writable && executable)
@@ -250,64 +256,95 @@ pub fn protect_kernel_page(
     // SAFETY: BSP initialization owns these supervisor tables with IF clear;
     // every child table is populated before its parent entry is published.
     unsafe {
-        let mut current = root;
-        for shift in [39, 30, 21] {
-            let entry = &mut table_mut(current)[index(address, shift)];
+        let mut created = [(core::ptr::null_mut::<u64>(), 0u64, 0u64); 2];
+        let mut count = 0;
+        let result = (|| {
+            let mut current = root;
+            for shift in [39, 30, 21] {
+                let entry = &mut table_mut(current)[index(address, shift)];
+                if *entry & PRESENT == 0 || *entry & USER != 0 {
+                    return Err(PagingError::MissingMapping);
+                }
+                // This API only tightens effective permissions. Relaxing a leaf
+                // cannot override an ancestor restriction (including one copied
+                // from a huge mapping), so reject such requests explicitly.
+                if (writable && *entry & WRITABLE == 0) || (executable && *entry & NO_EXECUTE != 0)
+                {
+                    return Err(PagingError::InvalidAddress);
+                }
+                if *entry & HUGE_OR_PAT != 0 {
+                    if shift == 39 {
+                        return Err(PagingError::InvalidAddress);
+                    }
+                    let original = *entry;
+                    let child = allocate_table()?;
+                    let mask = if shift == 30 {
+                        PAGE_1G_ADDRESS_MASK
+                    } else {
+                        PAGE_2M_ADDRESS_MASK
+                    };
+                    let base = *entry & mask;
+                    let mut flags = *entry & !mask;
+                    let step = if shift == 30 { 1 << 21 } else { PAGE_SIZE };
+                    if shift == 21 {
+                        let pat = flags & (1 << 12) != 0;
+                        flags &= !(HUGE_OR_PAT | (1 << 12));
+                        if pat {
+                            flags |= 1 << 7;
+                        }
+                    }
+                    for (slot, leaf) in table_mut(child).iter_mut().enumerate() {
+                        *leaf = (base + slot as u64 * step) | flags;
+                    }
+                    // Leaf-only PAT/dirty/global attributes must not become
+                    // table-address bits or reserved bits in the parent.
+                    *entry = child | (*entry & (0x3f | NO_EXECUTE));
+                    created[count] = (entry as *mut u64, original, child);
+                    count += 1;
+                }
+                current = *entry & TABLE_ADDRESS_MASK;
+            }
+            let entry = &mut table_mut(current)[index(address, 12)];
             if *entry & PRESENT == 0 || *entry & USER != 0 {
                 return Err(PagingError::MissingMapping);
             }
-            // This API only tightens effective permissions. Relaxing a leaf
-            // cannot override an ancestor restriction (including one copied
-            // from a huge mapping), so reject such requests explicitly.
             if (writable && *entry & WRITABLE == 0) || (executable && *entry & NO_EXECUTE != 0) {
                 return Err(PagingError::InvalidAddress);
             }
-            if *entry & HUGE_OR_PAT != 0 {
-                if shift == 39 {
-                    return Err(PagingError::InvalidAddress);
-                }
-                let child = allocate_table()?;
-                let mask = if shift == 30 {
-                    PAGE_1G_ADDRESS_MASK
-                } else {
-                    PAGE_2M_ADDRESS_MASK
-                };
-                let base = *entry & mask;
-                let mut flags = *entry & !mask;
-                let step = if shift == 30 { 1 << 21 } else { PAGE_SIZE };
-                if shift == 21 {
-                    let pat = flags & (1 << 12) != 0;
-                    flags &= !(HUGE_OR_PAT | (1 << 12));
-                    if pat {
-                        flags |= 1 << 7;
-                    }
-                }
-                for (slot, leaf) in table_mut(child).iter_mut().enumerate() {
-                    *leaf = (base + slot as u64 * step) | flags;
-                }
-                // Leaf-only PAT/dirty/global attributes must not become
-                // table-address bits or reserved bits in the parent.
-                *entry = child | (*entry & (0x3f | NO_EXECUTE));
+            *entry &= !(WRITABLE | NO_EXECUTE);
+            if writable {
+                *entry |= WRITABLE;
             }
-            current = *entry & TABLE_ADDRESS_MASK;
+            if !executable {
+                *entry |= NO_EXECUTE;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Restore every published parent edge before flushing translations
+            // and releasing its child. A later allocation or leaf check must
+            // never return an error with a split table still attached.
+            for &(parent, original, _) in created[..count].iter().rev() {
+                parent.write(original);
+            }
         }
-        let entry = &mut table_mut(current)[index(address, 12)];
-        if *entry & PRESENT == 0 || *entry & USER != 0 {
-            return Err(PagingError::MissingMapping);
+        if count != 0 {
+            // Splitting a huge leaf changes translations for its entire range.
+            // PCID and global retention were disabled at protected-root init.
+            write_cr3(root);
+        } else if result.is_ok() {
+            asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
         }
-        if (writable && *entry & WRITABLE == 0) || (executable && *entry & NO_EXECUTE != 0) {
-            return Err(PagingError::InvalidAddress);
+        if result.is_err() {
+            for &(_, _, child) in created[..count].iter().rev() {
+                assert!(
+                    release_owned_table(Owner::KERNEL, child),
+                    "supervisor split rollback lost ownership"
+                );
+            }
         }
-        *entry &= !(WRITABLE | NO_EXECUTE);
-        if writable {
-            *entry |= WRITABLE;
-        }
-        if !executable {
-            *entry |= NO_EXECUTE;
-        }
-        asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
+        result
     }
-    Ok(())
 }
 
 /// Remove an already split, supervisor-only identity leaf without releasing
