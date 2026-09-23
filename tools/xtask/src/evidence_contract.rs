@@ -529,6 +529,18 @@ impl<'a> Contract<'a> {
         required: &[&str],
         positions: &[Vec<usize>],
     ) -> Result<(), String> {
+        // A repeated event may have earlier occurrences from another phase.
+        // Until this chain's unique closing proof (or final boot readiness),
+        // its next matching occurrence may simply not have arrived yet.
+        let closing_seen = chain.last().is_some_and(|closing| {
+            required
+                .iter()
+                .position(|m| m == closing)
+                .is_some_and(|i| !positions[i].is_empty())
+        }) || required
+            .iter()
+            .position(|m| *m == "GENOS_READY")
+            .is_some_and(|i| !positions[i].is_empty());
         let mut previous = None;
         for marker in chain {
             let Some(index) = required.iter().position(|m| m == marker) else {
@@ -542,6 +554,9 @@ impl<'a> Contract<'a> {
                 .copied()
                 .find(|p| previous.is_none_or(|earlier| *p > earlier));
             let Some(position) = position else {
+                if !closing_seen && REPEATED.contains(&key(marker)) {
+                    return Ok(());
+                }
                 return Err(format!("out-of-order proof: {marker}"));
             };
             previous = Some(position);
@@ -668,6 +683,49 @@ mod tests {
         ] {
             assert_eq!(contract.assess(log), Ok(true));
         }
+    }
+
+    #[test]
+    fn every_valid_live_prefix_waits_for_its_closing_proofs() {
+        for (contract, log) in [
+            (Contract::phase(&[], true), VALIDATION),
+            (Contract::network(false), NETWORK_LOG),
+            (Contract::network(true), WITHOUT_HTTP_LOG),
+        ] {
+            let mut prefix = String::new();
+            let count = log.lines().count();
+            for (index, line) in log.lines().enumerate() {
+                prefix.push_str(line);
+                prefix.push('\n');
+                let status = contract.assess(&prefix);
+                assert!(status.is_ok(), "prefix ending {line}: {status:?}");
+                if index + 1 != count {
+                    assert_ne!(status, Ok(true), "premature completion at {line}");
+                }
+            }
+            assert_eq!(contract.assess(&prefix), Ok(true));
+        }
+    }
+
+    #[test]
+    fn earlier_stress_kills_do_not_reject_or_complete_a_pending_shell_lifecycle() {
+        let contract = Contract::phase(&[], true);
+        let partial = include_str!("../tests/fixtures/validation-partial-lifecycle.txt");
+        assert_eq!(contract.assess(partial), Ok(false));
+        // The aggregate closes the phase: old kills can never stand in for
+        // the new shell-owned child's missing kill/reap witness.
+        assert!(contract
+            .assess(&format!("{partial}USER_SHELL_PROCESS_CONTROL_OK\n"))
+            .is_err());
+        let closed = VALIDATION
+            .lines()
+            .filter(|line| {
+                !line.starts_with("USER_PROCESS_KILLED owner=33 ")
+                    && !line.starts_with("USER_PROCESS_REAPED owner=33 ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(contract.assess(&closed).is_err());
     }
 
     #[test]
