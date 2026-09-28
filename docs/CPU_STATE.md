@@ -112,10 +112,11 @@ This inventory covers the admitted reference feature set. Larger CPU profiles,
 performance-monitoring access, future CET/UINTR/extended state, hostile AC/DF
 campaigns and other machine-wide observations need their own policy/evidence.
 
-Existing fatal behavior is unchanged: a kernel-origin fault halts, and supported
-process-local faults terminate only the current process. Kernel stacks now have
-[dedicated guard pages](KERNEL_STACKS.md); same-IST nesting, return-instruction
-faults and NMI recovery remain separate unfinished work. This policy does not
+Kernel-origin faults halt, and supported process-local faults terminate only
+the current process. The [entry ownership guard](FAULT_CONTAINMENT.md) now
+halts nested entries and #DF in assembly before Rust or CPU-state helpers.
+Native return flags are validated before admission and on syscall/timer capture.
+Kernel stacks have [dedicated guard pages](KERNEL_STACKS.md). This policy does not
 provide nonzero TLS bases, debugger APIs, SMP state ownership, or physical-CPU
 qualification. The internal selector image changes no public ABI or file format;
 rollback uses a matched older kernel/userspace bundle. See

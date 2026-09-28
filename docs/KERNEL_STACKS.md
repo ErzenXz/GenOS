@@ -8,7 +8,7 @@ both sides of its usable storage. The stack capacities remain unchanged:
 | Boot/runtime | 2 MiB | Admitted BSP, then kernel coordinator |
 | Ordinary IRQ/exception | 64 KiB | IST 1 |
 | User privilege transition | 64 KiB | TSS RSP0, including `int 0x80` |
-| Double fault | 16 KiB | IST 2 |
+| Double fault / terminal entry | 16 KiB | IST 2, all IST slots while an entry is active |
 | NMI | 16 KiB | IST 3 |
 | Machine check | 16 KiB | IST 4 |
 | Debug exception | 16 KiB | IST 5 |
@@ -53,7 +53,10 @@ overflowed kernel stack. IST supplies the exception stack independently of the
 faulting RSP. The IRQ-floor probe specifically exercises a fault with RSP at the
 ordinary IST stack's lower boundary, where entry reloads that stack's configured
 top before the fatal handler runs. This tests a bounded fatal path, not safe
-recovery of arbitrary nested frames.
+recovery of arbitrary nested frames. Once an entry claims ownership, all live
+IST slots point to the double-fault stack; a nested guard fault halts in
+assembly there before Rust. That stack never hosts Rust frames. The complete
+claim/release and return-fault policy is in [FAULT_CONTAINMENT.md](FAULT_CONTAINMENT.md).
 
 ## Usage measurements and overflow bounds
 
@@ -119,6 +122,7 @@ Guards become active only after protected page tables and image permissions are
 installed. The earlier firmware/admission and initial boot-stack setup therefore
 remain outside their protection window. General unchecked stack-pointer jumps
 are unsupported; the compiler probe and fixed assembly entry audit are required
-parts of the reference policy. Repeated NMI/same-IST nesting, fault-during-return,
-real double-fault recovery and physical-hardware qualification remain separate
-work; ordinary guard containment does not establish them.
+parts of the reference policy. Dedicated [F1.4 fixtures](FAULT_CONTAINMENT.md)
+test bounded NMI/same-IST nesting and return faults independently. Arbitrary
+event storms, real double-fault recovery and physical-hardware qualification
+remain unsupported; ordinary guard containment does not establish them.
