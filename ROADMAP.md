@@ -110,7 +110,7 @@ Current bounds matter: 4 managed asynchronous process slots including the shell;
 | Next work item | Why it comes next | Completion evidence |
 | --- | --- | --- |
 | **F0.1 — Publish verification** | The VM candidate is pinned locally; GitHub rejected workflow publication for missing OAuth `workflow` scope | Authorized publication, exact-head remote checks and independent reproduction |
-| **F1.2/F1.4 — Complete context and fault qualification** | Eager legacy state, private selectors, bounded zero-base/debug policy and fourteen guards exist | Complete declared CPU-profile qualification and nested/return-fault proofs |
+| **F1.2/F1.4 — Complete context and fault qualification** | Eager legacy state, private selectors, bounded zero-base/debug policy, fourteen guards and terminal entry ownership exist | Complete declared CPU-profile qualification and exact nested/return-fault evidence |
 | **F3.1/F3.2/F2.3 — Finish sharing, device and profile policy** | Reference-profile aliases, user copies, local retirement and quotas have bounded proofs | Explicit sharing/DMA retirement, raw-reference audit and additional hardware/feature profiles |
 | **S2 — Grow recoverable storage** | S1 failure semantics and the 606-image host model are qualified within stated device assumptions | Scalable file format, backup/migration and physical-device qualification |
 | **F4/F5 — Extract and guard remaining state** | Broader applications multiply the current raw-global assumptions | Executable ownership interfaces, context/lock assertions and delayed-interrupt tests |
@@ -155,6 +155,7 @@ must not deepen a known ownership or isolation violation.
 - [x] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
   [All seven stacks](docs/KERNEL_STACKS.md) have fourteen guards, high-water readings and sixteen real CPU cases, including every guard and a compiler-generated 12-KiB frame probe. Same-IST/NMI nesting and return faults remain F1.4.
 - [ ] **F1.4:** specify and test NMI/machine-check/same-IST nesting, fault-during-return and malformed return state. Recover only where a safe recovery contract is demonstrated; otherwise halt deliberately.
+  The [single-BSP entry ownership policy](docs/FAULT_CONTAINMENT.md) redirects IST slots while Rust owns a frame, halts nested entries/#DF in assembly, validates native return flags and enables supported fatal #MC delivery. Seventeen immutable-source CPU fixtures cover the declared failure paths; exact qualification and failures must be retained before closing this gate. Recovery and physical qualification remain excluded.
 - [x] **F1.5:** test missing/mixed CPU features and unsupported ISA use before admitting general applications. Record exactly what the reference CPU contract permits.
   [The admitted reference contract](docs/CPU_FEATURES.md) has eighteen passing kernel-lane CPU cases. Two actual FXSR/SSE-disabled variants fail in firmware before GenOS entry and remain explicit unsupported platform cases; injected CPUID samples test kernel rejection without relabeling those failures.
 

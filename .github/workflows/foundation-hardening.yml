@@ -55,6 +55,57 @@ jobs:
           - name: memory-snapshot
             script: test_memory_snapshot.py
             args: ''
+          - name: entry-irq-pf
+            script: test_fault_containment.py
+            args: --case irq-pf
+          - name: entry-syscall-gp
+            script: test_fault_containment.py
+            args: --case syscall-gp
+          - name: entry-exception-pf
+            script: test_fault_containment.py
+            args: --case exception-pf
+          - name: entry-irq-nmi
+            script: test_fault_containment.py
+            args: --case irq-nmi
+          - name: entry-irq-mce
+            script: test_fault_containment.py
+            args: --case irq-mce
+          - name: entry-mce-gp
+            script: test_fault_containment.py
+            args: --case mce-gp
+          - name: entry-nmi-iret
+            script: test_fault_containment.py
+            args: --case nmi-iret
+          - name: entry-initial-cs
+            script: test_fault_containment.py
+            args: --case initial-cs
+          - name: entry-initial-rip
+            script: test_fault_containment.py
+            args: --case initial-rip
+          - name: entry-initial-rsp
+            script: test_fault_containment.py
+            args: --case initial-rsp
+          - name: entry-syscall-cs
+            script: test_fault_containment.py
+            args: --case syscall-cs
+          - name: entry-irq-rsp
+            script: test_fault_containment.py
+            args: --case irq-rsp
+          - name: entry-double-fault
+            script: test_fault_containment.py
+            args: --case double-fault
+          - name: entry-initial-flags
+            script: test_fault_containment.py
+            args: --case initial-flags
+          - name: entry-user-nt
+            script: test_fault_containment.py
+            args: --case user-nt
+          - name: entry-nmi-idle
+            script: test_fault_containment.py
+            args: --case nmi-idle
+          - name: entry-mce-idle
+            script: test_fault_containment.py
+            args: --case mce-idle
     steps:
       - uses: actions/checkout@v7
         with:
@@ -77,5 +128,6 @@ jobs:
             build/stack-guard-evidence/
             build/kernel-elf-evidence/
             build/memory-snapshot-evidence/
+            build/fault-containment-evidence/
           if-no-files-found: warn
           retention-days: 14

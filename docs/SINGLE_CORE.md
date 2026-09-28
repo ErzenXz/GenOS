@@ -79,9 +79,11 @@ within it. They are not a claim that every shared global has been audited.
   interrupt. Descriptor validation, buffer transfer and protocol state
   mutation remain coordinator work. An IRQ handler must not wait on a lock
   held by interrupted normal code, allocate unbounded work, or block.
-- Emergency entries have dedicated guarded stacks. Repeated entry on the same
-  IST, NMI/fatal nesting and full nested-interrupt behavior remain unestablished;
-  such paths must not rely on ordinary IRQ masking. The current single-CPU
+- Emergency entries have dedicated guarded stacks. The assembly
+  [entry ownership guard](FAULT_CONTAINMENT.md) redirects every IST while an
+  entry is active and halts nested entries before Rust. NMI/#MC are fatal;
+  no general event service or recoverable nested-interrupt contract exists.
+  Such paths must not rely on ordinary IRQ masking. The current single-CPU
   floating-point/SIMD ownership is explicitly bounded by the
   [CPU state policy](CPU_STATE.md).
 

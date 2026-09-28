@@ -287,6 +287,7 @@ Additional foundation hardware fixtures are independent of `cargo xtask test`:
 python3 tools/test_stack_guards.py
 python3 tools/test_kernel_elf.py
 python3 tools/test_memory_snapshot.py
+python3 tools/test_fault_containment.py
 ```
 
 They require a clean committed checkout and Python 3.12+, preserve the production
@@ -295,3 +296,9 @@ fixture changes, output and success/failure manifests. The dedicated foundation
 workflow assigns each guard/ELF case and the diagnostic snapshot its own job.
 Configured Linux jobs are portability checks; they do not claim the pinned macOS
 reference environment or successful remote execution before the workflow runs.
+
+The [entry/return containment harness](docs/FAULT_CONTAINMENT.md) runs seventeen
+independent real fault, NMI, machine-check and return-state cases; `--case irq-pf`
+selects one. It retains QMP transcripts as well as source/image/fault evidence.
+Nested termination, first kernel fatal handling and software process denial are
+distinct proof outcomes and cannot substitute for one another.

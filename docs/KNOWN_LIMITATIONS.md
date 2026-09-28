@@ -75,8 +75,12 @@ guards and a multipage Rust frame have real CPU fault probes. See
 cases have passing isolated evidence; one WRPKRU campaign attempt failed its
 fault-before-peer-exit requirement, then passed unchanged in isolation. Two
 physically absent-feature variants fail in the firmware
-before GenOS entry and remain unsupported. Complete CPU-profile qualification, same-IST/NMI/fatal
-nesting, return faults and broader physical CPU profiles remain open. Retained
+before GenOS entry and remain unsupported. A bounded
+[entry guard and native return policy](FAULT_CONTAINMENT.md) now halt nested
+entries/#DF before Rust and deny unsupported return flags. Their dedicated VM
+qualification is tracked in [VERIFICATION.md](VERIFICATION.md). General NMI or
+machine-check recovery, arbitrary event storms and broader physical CPU
+qualification remain open. Retained
 reference-profile aliases now obey the physical permission policy; DMA/device
 and arbitrary firmware mappings have no comparable qualification.
 **Roadmap:** F1, F2.
