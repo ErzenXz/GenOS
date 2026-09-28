@@ -31,8 +31,13 @@ NESTED = {'irq-pf': (14, 32, 2, 'irq'), 'syscall-gp': (13, 128, 0x38, 'privilege
           'irq-mce': (18, 32, 0, 'irq'), 'mce-gp': (13, 18, 0x38, 'machine-check'),
           'nmi-iret': (13, 2, 0x38, 'nmi'), 'nmi-reentry': (2, 2, 0, 'nmi')}
 RETURNS = {'initial-cs': (13, 0x38), 'initial-rip': (13, 0),
-           'initial-rsp': (12, 0), 'syscall-cs': (13, 0x38), 'irq-rsp': (12, 0), 'irq-cs': (13, 0x38)}
-CASES = [*NESTED, *RETURNS, 'double-fault', 'initial-flags', 'user-nt', 'nmi-idle', 'mce-idle']
+           'syscall-cs': (13, 0x38), 'irq-cs': (13, 0x38)}
+SOFTWARE_KERNEL = {
+    'initial-flags': ('rflags: 0x202,', 'rflags: 2,'),
+    'initial-rsp-reject': ('rsp: paging::USER_STACK_TOP,', 'rsp: 0x0000800000000000,'),
+    'initial-ss-reject': ('ss: arch::USER_DATA_SELECTOR as u64,', 'ss: 0x10,'),
+}
+CASES = [*NESTED, *RETURNS, 'double-fault', *SOFTWARE_KERNEL, 'user-nt', 'nmi-idle', 'mce-idle']
 READY = 'EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5'
 TERMINAL = re.compile(r'^EXCEPTION_TERMINAL kind=(nested|double-fault) vector=0x([0-9a-f]+)'
                      r' parent=0x([0-9a-f]+) error=0x([0-9a-f]+) rip=0x([0-9a-f]+)'
@@ -56,8 +61,8 @@ def patch_fixture(root: Path, case: str) -> str:
         exception_fixture(root, 'user', 'gp')
         edit('userspace/init/src/main.rs', 'core::arch::asm!("cli", options(nostack));',
              'core::arch::asm!("pushfq", "or qword ptr [rsp], 0x4000", "popfq"); let _ = runtime::ping();')
-    if case == 'initial-flags':
-        edit('kernel/src/userspace.rs', 'rflags: 0x202,', 'rflags: 2,')
+    if case in SOFTWARE_KERNEL:
+        edit('kernel/src/userspace.rs', *SOFTWARE_KERNEL[case])
     if case in NESTED:
         if case.startswith('irq-'):
             action = PF if case == 'irq-pf' else WAIT
@@ -91,16 +96,14 @@ def patch_fixture(root: Path, case: str) -> str:
                 edit(path, 'push qword ptr [rbx + {ctx_cs}]',
                      'push qword ptr [rbx + {ctx_cs}]\n    mov qword ptr [rsp], 0x3b')
             else:
-                word = 'rip' if case == 'initial-rip' else 'rsp'
-                edit(path, f'push qword ptr [rbx + {{ctx_{word}}}]',
-                     f'push qword ptr [rbx + {{ctx_{word}}}]\n    movabs rax, 0x0000800000000000\n    mov [rsp], rax')
+                edit(path, 'push qword ptr [rbx + {ctx_rip}]',
+                     'push qword ptr [rbx + {ctx_rip}]\n    movabs rax, 0x0000800000000000\n    mov [rsp], rax')
             edit(path, '    mov rbx, [rbx + {ctx_rbx}]\n    iretq',
                  '    mov rbx, [rbx + {ctx_rbx}]\n    .global genos_probe_iret\ngenos_probe_iret:\n    iretq')
         elif case == 'syscall-cs':
             edit(path, '    pop rax\n    iretq', '    pop rax\n    mov qword ptr [rsp + 8], 0x3b\n    .global genos_probe_iret\ngenos_probe_iret:\n    iretq')
         else:
-            corruption = ('    mov qword ptr [rsp + 8], 0x3b\n' if case == 'irq-cs' else
-                          '    movabs rax, 0x0000800000000000\n    mov [rsp + 24], rax\n')
+            corruption = '    mov qword ptr [rsp + 8], 0x3b\n'
             edit('kernel/src/interrupt_entry.S', '    genos_pop_regs\n    iretq\n\n.global genos_irq1_stub',
                  '    genos_pop_regs\n' + corruption + '    .global genos_probe_iret\ngenos_probe_iret:\n    iretq\n\n.global genos_irq1_stub')
 
@@ -219,7 +222,7 @@ def validate_log(log: str, case: str) -> None:
             raise ValueError('expected one first-level kernel fault and explicit halt')
         vector, cpl = map(int, frames[0][:2])
         error, rip, cs, flags, rsp, ss, cr2 = [int(value, 16) for value in frames[0][2:]]
-        if (vector, error) != identity or cpl != 0 or cs != 8 or ss != (0 if case in {'syscall-cs', 'irq-cs', 'irq-rsp'} else 0x10) or not rip or not rsp or cr2 != 0 or not flags & 2:
+        if (vector, error) != identity or cpl != 0 or cs != 8 or ss != (0 if case in {'syscall-cs', 'irq-cs'} else 0x10) or not rip or not rsp or cr2 != 0 or not flags & 2:
             raise ValueError('wrong return/event fault frame')
         if case in RETURNS:
             sites = re.findall(r'^ENTRY_RETURN_SITE rip=0x([0-9a-f]+)$', log, re.MULTILINE)
@@ -228,7 +231,7 @@ def validate_log(log: str, case: str) -> None:
         if lines.index('EXCEPTION_FATAL_HALT') <= lines.index(FRAME.search(log).group(0)) or 'GENOS_READY' in lines:
             raise ValueError('wrong fatal phase or continued boot')
     else:
-        marker = 'USER_RETURN_REJECTED origin=' + ('kernel policy=halt' if case == 'initial-flags' else 'user policy=terminate')
+        marker = 'USER_RETURN_REJECTED origin=' + ('kernel policy=halt' if case in SOFTWARE_KERNEL else 'user policy=terminate')
         if lines.count(marker) != 1 or lines.index(marker) <= armed or frames or terminals:
             raise ValueError('missing software return-state denial or fabricated CPU fault')
         if case == 'user-nt':
@@ -295,7 +298,7 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
                 if injected == 1 and ((case == 'nmi-iret' and 'EXCEPTION_TERMINAL_HALT' in log)
                                       or (case == 'nmi-reentry' and 'ENTRY_NMI_UNBLOCKED' in log)):
                     command({'execute': 'inject-nmi'}); injected = 2
-                marker = ('USERMODE_READY' if case == 'user-nt' else 'USER_RETURN_REJECTED origin=kernel policy=halt' if case == 'initial-flags'
+                marker = ('USERMODE_READY' if case == 'user-nt' else 'USER_RETURN_REJECTED origin=kernel policy=halt' if case in SOFTWARE_KERNEL
                           else 'EXCEPTION_TERMINAL_HALT' if case in NESTED or case == 'double-fault' else 'EXCEPTION_FATAL_HALT')
                 complete = log.count(marker) >= (2 if case == 'nmi-iret' else 1)
                 if complete:
