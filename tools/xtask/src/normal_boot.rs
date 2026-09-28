@@ -118,6 +118,7 @@ impl Transcript {
             "_FAILED",
             "KERNEL PANIC",
             "EXCEPTION_FATAL_HALT",
+            "EXCEPTION_TERMINAL",
             "RECOVERY_CONSOLE_READY",
         ]
         .iter()
@@ -389,6 +390,8 @@ mod tests {
         for marker in FORBIDDEN.iter().copied().chain([
             "KERNEL PANIC",
             "EXCEPTION_FATAL_HALT",
+            "EXCEPTION_TERMINAL kind=nested vector=0x000000000000000e",
+            "EXCEPTION_TERMINAL_HALT",
             "RECOVERY_CONSOLE_READY",
             "USER_INPUT_BLOCK pid=4",
             "USER_CONSOLE_WRITE pid=4 text=hello",

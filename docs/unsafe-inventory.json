@@ -408,9 +408,9 @@
       "sha256": "47e221a605e330daf7e09287ffef4a1c0a3aeb53687fff52cc6dc43a5e8462f9"
     },
     {
-      "lines": 923,
+      "lines": 926,
       "path": "tools/xtask/src/evidence_contract.rs",
-      "sha256": "acb7980ab3ee8a52fa0597a50a57c7808395db0fd3f51bebae57909a8da3c514"
+      "sha256": "696899dd7a9b2f1f8526abe1823712abffc7eb1d8b5cec3feee844b13c4c8401"
     },
     {
       "lines": 2418,
@@ -418,9 +418,9 @@
       "sha256": "f8aafe5b22f35d943b2fe3ad5d0b03502e8b41c431b063b55aa0f144074cecde"
     },
     {
-      "lines": 506,
+      "lines": 509,
       "path": "tools/xtask/src/normal_boot.rs",
-      "sha256": "3ae5bc4444f652c289e9299dd45e2fcd34164793c2a0ef2cf047a7e22bcbeadf"
+      "sha256": "7d1c3cf8870351657170d436e5d65a4cba3da1d8b7954bdebee774f5821e6570"
     },
     {
       "lines": 274,
