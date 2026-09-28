@@ -13,6 +13,7 @@ pub const FORBIDDEN: &[&str] = &[
     "SUPERVISOR_CLEANUP_READY",
     "USER_XSTATE_OK",
     "USER_XSTATE_PREEMPTIONS",
+    "USER_CPU_CONTEXT_OK",
 ];
 
 #[derive(Clone, Copy)]

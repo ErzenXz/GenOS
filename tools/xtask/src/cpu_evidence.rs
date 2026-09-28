@@ -4,6 +4,8 @@ pub const POLICY: &str =
 pub const BOOT_SEQUENCE: &[&str] = &[
     "BOOT_MEMORY_MAP_VALIDATED",
     POLICY,
+    "CPU_AUX_STATE_READY selectors=private fsbase=0 gsbase=0 kernelgsbase=0 debug=off ldt=off",
+    "CPU_FAST_ENTRY_DISABLED syscall=off sysenter=off",
     "CPU_TLB_POLICY_READY pcid=off global=off",
     "KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx",
     "KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096",
@@ -13,6 +15,7 @@ pub const BOOT_SEQUENCE: &[&str] = &[
 ];
 const PROBE: &str = "USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true";
 const PREEMPTIONS: &str = "USER_XSTATE_PREEMPTIONS count=";
+const CONTEXT: &str = "USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true";
 
 pub fn validation_ready(output: &str) -> bool {
     let lines: Vec<_> = output.lines().collect();
@@ -50,8 +53,9 @@ pub fn validation_ready(output: &str) -> bool {
         })
         .collect();
     samples.len() == 1
-        && samples[0].1.as_ref().is_ok_and(|count| *count >= 12)
+        && samples[0].1.as_ref().is_ok_and(|count| *count >= 14)
         && probe < samples[0].0
+        && exact(CONTEXT).is_some_and(|context| context > samples[0].0)
 }
 
 #[cfg(test)]
@@ -62,7 +66,12 @@ mod tests {
         let records: Vec<_> = BOOT_SEQUENCE
             .iter()
             .copied()
-            .chain(["USERMODE_READY", PROBE, "USER_XSTATE_PREEMPTIONS count=12"])
+            .chain([
+                "USERMODE_READY",
+                PROBE,
+                "USER_XSTATE_PREEMPTIONS count=14",
+                CONTEXT,
+            ])
             .collect();
         let good = records.join("\n");
         assert!(validation_ready(&good));
@@ -84,9 +93,9 @@ mod tests {
             swapped.swap(index, index + 1);
             assert!(!validation_ready(&swapped.join("\n")));
         }
-        for count in ["0", "11", "12 suffix", "18446744073709551616"] {
+        for count in ["0", "13", "14 suffix", "18446744073709551616"] {
             assert!(!validation_ready(
-                &good.replace("count=12", &format!("count={count}"))
+                &good.replace("count=14", &format!("count={count}"))
             ));
         }
     }

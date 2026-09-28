@@ -10,11 +10,14 @@ import unittest
 from unittest.mock import patch
 
 import test_cpu_features as harness
-from test_cpu_features import CASES, FIRMWARE_CASES, ISA, LANES, MISSING, MIXED, POLICY, SAMPLES, cpu_variant, patch_fixture, validate_log
+from test_cpu_features import AUX, CASES, FAST_ENTRY, FIRMWARE_CASES, INHERITED, ISA, LANES, MISSING, MIXED, POLICY, SAMPLES, cpu_variant, patch_fixture, validate_log
 from test_exception_harness import valid_log as exception_log
 
 
 def valid_log(case):
+    if case == 'aux-inherited':
+        return '\n'.join([POLICY, 'IDT initialized', INHERITED, AUX, FAST_ENTRY,
+                          'GENOS_READY', 'NORMAL_SHELL_READY']) + '\n'
     if case.startswith(('missing-', 'sample-')):
         marker = ('CPU_PROTECTIONS_UNSUPPORTED required=nx' if case == 'missing-nx'
                   else 'CPU_XSTATE_UNSUPPORTED required=x87,mmx,fxsr,sse,sse2')
@@ -24,7 +27,8 @@ def valid_log(case):
     if case.startswith('isa-'):
         name = case[4:]
         vector = 6 if ISA[name][0] == 'ud' else 13
-        return (POLICY + '\n' + f'CPU_ISA_FIXTURE_READY instruction={name} advertised=1\n'
+        fast_entry = FAST_ENTRY + '\n' if name in {'syscall', 'sysenter'} else ''
+        return (POLICY + '\n' + fast_entry + f'CPU_ISA_FIXTURE_READY instruction={name} advertised=1\n'
                 + exception_log(vector=vector))
     smep, smap = MIXED[case[6:]]
     return (POLICY + '\n' + f'CPU_PROTECTIONS_READY nx=1 wp=1 smep={smep} smap={smap}\n'
@@ -33,10 +37,10 @@ def valid_log(case):
 
 
 class CpuFeatureHarnessTests(unittest.TestCase):
-    def test_all_twenty_variant_contracts_are_explicit(self):
-        self.assertEqual(len(CASES), 20)
-        self.assertEqual(len(set(CASES)), 20)
-        self.assertEqual(len(LANES['kernel']), 18)
+    def test_all_twenty_three_variant_contracts_are_explicit(self):
+        self.assertEqual(len(CASES), 23)
+        self.assertEqual(len(set(CASES)), 23)
+        self.assertEqual(len(LANES['kernel']), 21)
         self.assertEqual(set(FIRMWARE_CASES), {'missing-fxsr', 'missing-sse'})
         self.assertEqual(set(LANES['kernel']) & set(LANES['firmware-limit']), set())
         self.assertEqual(set(LANES['kernel']) | set(LANES['firmware-limit']), set(CASES))
@@ -48,9 +52,11 @@ class CpuFeatureHarnessTests(unittest.TestCase):
             self.assertIn('smep=' + ('on' if smep else 'off'), variant)
             self.assertIn('smap=' + ('on' if smap else 'off'), variant)
         for name in ISA:
-            self.assertEqual(cpu_variant('isa-' + name, profile), 'max')
+            self.assertEqual(cpu_variant('isa-' + name, profile),
+                             'max,vendor=GenuineIntel' if name == 'sysenter' else 'max')
         for name in SAMPLES:
             self.assertEqual(cpu_variant('sample-' + name, profile), profile['cpu'])
+        self.assertEqual(cpu_variant('aux-inherited', profile), profile['cpu'])
         for case in CASES:
             validate_log(valid_log(case), case)
 
@@ -181,8 +187,8 @@ class CpuFeatureHarnessTests(unittest.TestCase):
             self.assertEqual(stopped.exception.code, 1)
             self.assertEqual(attempted, CASES)
             records = [json.loads(path.read_text()) for path in (root / 'build').glob('cpu-feature-evidence/*/*/manifest.json')]
-            self.assertEqual(len(records), 20)
-            self.assertEqual(sum(record['status'] == 'passed' for record in records), 18)
+            self.assertEqual(len(records), len(CASES))
+            self.assertEqual(sum(record['status'] == 'passed' for record in records), len(LANES['kernel']))
             self.assertEqual({record['case'] for record in records if record['status'] == 'failed'}, set(FIRMWARE_CASES))
             self.assertTrue(all(record['commit'] == 'a' * 40 and record['serial_sha256'] for record in records))
 

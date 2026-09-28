@@ -22,7 +22,7 @@ import time
 
 from reference_vm import environment, load_profile, qemu_args
 
-VECTORS = {"de": 0, "ud": 6, "gp": 13, "pf": 14}
+VECTORS = {"de": 0, "ud": 6, "gp": 13, "pf": 14, "mf": 16, "xm": 19}
 PROTECTIONS = {"nx-data", "nx-stack", "wp", "kernel-text", "smep", "smap"}
 ALIAS_PROTECTIONS = {"alias-rx", "alias-ro", "direct-nx"}
 PROTECTIONS |= ALIAS_PROTECTIONS
@@ -82,6 +82,14 @@ def instruction(fault: str, mode: str) -> str:
             return 'core::arch::asm!("cli", options(nostack));'
         return ('core::arch::asm!("mov ax, 0x38", "mov ds, ax", '
                 'out("rax") _, options(nostack));')
+    if fault == "mf":
+        return ('let control = 0x037eu16; '
+                'core::arch::asm!("fninit", "fldcw [{control}]", "fldz", "fldz", '
+                '"fdivp st(1), st(0)", "fwait", control = in(reg) &control, options(nostack));')
+    if fault == "xm":
+        return ('let control = 0x1f00u32; '
+                'core::arch::asm!("ldmxcsr [{control}]", "xorps xmm0, xmm0", '
+                '"divss xmm0, xmm0", control = in(reg) &control, options(nostack));')
     if mode == "user":
         return GUARD_WRITE
     return ('core::arch::asm!("mov rax, 0x00007ffffffff000", "mov [rax], rax", '
@@ -147,7 +155,8 @@ def validate_log(log: str, mode: str, fault: str) -> None:
     expected_error = {"de": 0, "ud": 0, "gp": 0 if mode == "user" else 0x38,
                       "pf": 6 if mode == "user" else 2, "nx-data": 0x15, "nx-stack": 0x15,
                       "wp": 3, "kernel-text": 3, "smep": 0x11, "smap": 1,
-                      "alias-rx": 3, "alias-ro": 3, "direct-nx": 0x11}[fault]
+                      "alias-rx": 3, "alias-ro": 3, "direct-nx": 0x11,
+                      "mf": 0, "xm": 0}[fault]
     if error != expected_error or (VECTORS[fault] != 14 and cr2 != 0):
         raise ValueError("wrong normalized error code or fault address policy")
     if VECTORS[fault] == 14 and cr2 == 0:

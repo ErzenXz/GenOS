@@ -302,6 +302,7 @@ struct UserProcess {
     space: paging::AddressSpace,
     context: UserContext,
     xstate: kernel::xstate::State,
+    segments: kernel::segments::State,
     data_frame: u64,
     token: u64,
     event: ProcessEvent,
@@ -4735,10 +4736,16 @@ genos_enter_user_context:
     lea rax, [rip + genos_user_return]
     mov [rip + genos_user_return_rip], rax
 
-    // RSI is the current process's private aligned 512-byte image. The BSP
-    // owns it until the return trampoline, with IF clear outside Ring 3.
+    // RSI is the private aligned 512-byte image, RDX the private selectors.
+    // Both remain supervisor-mapped and immovable until the BSP trampoline,
+    // with IF clear outside Ring 3. Only CPU-captured or initial selectors enter.
     mov [rip + genos_user_xstate], rsi
+    mov [rip + genos_user_segments], rdx
     fxrstor64 [rsi]
+    mov ds, [rdx + {seg_ds}]
+    mov es, [rdx + {seg_es}]
+    mov fs, [rdx + {seg_fs}]
+    mov gs, [rdx + {seg_gs}]
 
     mov rbx, rdi
     push qword ptr [rbx + {ctx_ss}]
@@ -4826,23 +4833,43 @@ genos_leave_userspace:
     // Every Ring 3 entry saved xstate before calling Rust. Do not save again:
     // only the entry capture is authoritative for the interrupted process.
     mov qword ptr [rip + genos_user_xstate], 0
+    mov qword ptr [rip + genos_user_segments], 0
     mov rsp, [rip + genos_user_return_rsp]
     jmp [rip + genos_user_return_rip]
 
     // Assembly-only helpers: caller already saved RAX, and the linked kernel
     // target forbids compiler-generated floating-point/SIMD instructions.
     // They preserve all other GPRs and flags, and use only the current BSP's
-    // kernel-owned aligned image. Kernel-origin IRQs never call these helpers.
+    // kernel-owned aligned image and selector image. Flat GDT/null LDT and
+    // disabled FSGSBASE keep all visible-selector loads at base zero. Kernel-
+    // origin IRQs never call these helpers; unexpected restore faults halt.
     .global genos_save_user_xstate
 genos_save_user_xstate:
     mov rax, [rip + genos_user_xstate]
     fxsave64 [rax]
+    mov rax, [rip + genos_user_segments]
+    mov [rax + {seg_ds}], ds
+    mov [rax + {seg_es}], es
+    mov [rax + {seg_fs}], fs
+    mov [rax + {seg_gs}], gs
+    // Rust always sees the flat kernel selectors. MOV leaves flags intact.
+    mov eax, {kernel_data}
+    mov ds, ax
+    mov es, ax
+    mov eax, 0
+    mov fs, ax
+    mov gs, ax
     ret
 
     .global genos_restore_user_xstate
 genos_restore_user_xstate:
     mov rax, [rip + genos_user_xstate]
     fxrstor64 [rax]
+    mov rax, [rip + genos_user_segments]
+    mov ds, [rax + {seg_ds}]
+    mov es, [rax + {seg_es}]
+    mov fs, [rax + {seg_fs}]
+    mov gs, [rax + {seg_gs}]
     ret
 
     .section .bss
@@ -4852,6 +4879,8 @@ genos_user_return_rsp:
 genos_user_return_rip:
     .quad 0
 genos_user_xstate:
+    .quad 0
+genos_user_segments:
     .quad 0
 
     .section .text
@@ -4876,10 +4905,19 @@ genos_user_xstate:
     ctx_rflags = const core::mem::offset_of!(UserContext, rflags),
     ctx_rsp = const core::mem::offset_of!(UserContext, rsp),
     ctx_ss = const core::mem::offset_of!(UserContext, ss),
+    seg_ds = const core::mem::offset_of!(kernel::segments::State, ds),
+    seg_es = const core::mem::offset_of!(kernel::segments::State, es),
+    seg_fs = const core::mem::offset_of!(kernel::segments::State, fs),
+    seg_gs = const core::mem::offset_of!(kernel::segments::State, gs),
+    kernel_data = const 0x10,
 );
 
 unsafe extern "C" {
-    fn genos_enter_user_context(context: *const UserContext, xstate: *mut kernel::xstate::State);
+    fn genos_enter_user_context(
+        context: *const UserContext,
+        xstate: *mut kernel::xstate::State,
+        segments: *mut kernel::segments::State,
+    );
     fn genos_syscall_stub();
 }
 
@@ -6386,6 +6424,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
         space,
         context: UserContext::initial(token, loaded.entry),
         xstate: kernel::xstate::State::initial(),
+        segments: kernel::segments::State::initial(),
         data_frame: loaded.data_frame,
         token,
         event: ProcessEvent::None,
@@ -6440,13 +6479,14 @@ fn run_slice(process: &mut UserProcess) {
     }
     paging::activate(process.space);
     // SAFETY: IF is clear on the admitted BSP, the process and its aligned
-    // xstate image cannot move until the trampoline returns, and its private
+    // xstate/selector images cannot move until the trampoline returns; their
     // supervisor mapping is live in both address spaces. Assembly preserves
     // the kernel's SysV callee-saved GPRs and uses the validated IRET frame.
     unsafe {
         genos_enter_user_context(
             core::ptr::addr_of!(context),
             core::ptr::addr_of_mut!(process.xstate),
+            core::ptr::addr_of_mut!(process.segments),
         )
     };
     paging::activate_kernel();

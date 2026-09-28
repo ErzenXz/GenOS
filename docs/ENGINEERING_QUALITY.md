@@ -204,7 +204,8 @@ The QEMU harness retains phase-specific serial logs and reproducibility metadata
 Local commands cover normal debug/release boot, BSP admission, deterministic parser
 stress and a checked lexical unsafe inventory. The new CI definitions also configure
 those lanes and weekly repetition. Configuration is not execution: there is no new
-remote CI or completed 1000-boot/24-hour/72-hour qualification result. The scheduled
+remote CI or completed 24-hour/72-hour qualification result. The separate audited
+1000 fresh release boots passed on their recorded source/profile. The scheduled
 180-minute job cannot establish the longer soak targets; those need an appropriate
 dedicated test environment. Coverage-guided fuzzing and semantic unsafe review remain
 open. See [current evidence](VERIFICATION.md) and [research](research/README.md).

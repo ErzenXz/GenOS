@@ -54,7 +54,7 @@ jobs:
       fail-fast: false
       matrix:
         mode: [user, kernel]
-        fault: [de, ud, gp, pf]
+        fault: [de, ud, gp, pf, mf, xm]
     steps:
       - uses: actions/checkout@v7
         with:
