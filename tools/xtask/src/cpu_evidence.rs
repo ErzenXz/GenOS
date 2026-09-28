@@ -6,6 +6,8 @@ pub const BOOT_SEQUENCE: &[&str] = &[
     POLICY,
     "CPU_AUX_STATE_READY selectors=private fsbase=0 gsbase=0 kernelgsbase=0 debug=off ldt=off",
     "CPU_FAST_ENTRY_DISABLED syscall=off sysenter=off",
+    "CPU_MACHINE_CHECK_READY available=1 policy=halt",
+    "EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5",
     "CPU_TLB_POLICY_READY pcid=off global=off",
     "KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx",
     "KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096",

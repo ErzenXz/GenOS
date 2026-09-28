@@ -32,6 +32,26 @@ pub struct ExceptionFrame {
     pub ss: u64,
 }
 
+/// Boot publishes these five TSS IST field addresses and their original tops.
+/// Entry assembly owns updates afterwards. The double-fault stack is reserved
+/// for assembly-only terminal reporting; no Rust frame ever lives there.
+#[repr(C)]
+pub struct EntryConfig {
+    pub slots: [u64; 5],
+    pub tops: [u64; 5],
+    pub terminal_top: u64,
+}
+
+/// Accepted user flags for the native preemptible 64-bit profile. IOPL, NT,
+/// VM, VIF/VIP and reserved bits never cross a return boundary. AC/DF/TF and
+/// arithmetic flags remain private; entry clears live AC/DF before kernel Rust.
+pub const USER_FLAGS_ALLOWED: u64 = 0x0025_0fd7;
+pub const USER_FLAGS_REQUIRED: u64 = (1 << 1) | (1 << 9);
+
+pub const fn user_flags_valid(flags: u64) -> bool {
+    flags & USER_FLAGS_REQUIRED == USER_FLAGS_REQUIRED && flags & !USER_FLAGS_ALLOWED == 0
+}
+
 pub const fn has_error_code(vector: u64) -> bool {
     vector < 32 && ERROR_CODE_MASK & (1 << vector) != 0
 }
