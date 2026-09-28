@@ -520,3 +520,96 @@ commits in the series update only evidence tooling and documentation.
 This closes F6.5's configured fresh-boot lane only. It does not substitute for
 F6.6's 10,000 lifecycle cycles and proposed 24-hour single-boot pressure, C5's
 72-hour mixed console workload, physical-device qualification or remote CI.
+
+## September 28 bounded CPU context and FP qualification
+
+Source `b9ca7fd` adds private DS/ES/FS/GS selector images, neutral kernel selectors
+on entry, initialized/read-back zero FS/GS bases, null LDTR, disabled hardware
+debug control, and explicit denial of unowned SYSCALL/SYSENTER entry. The kernel
+continues using the CPUID-gated aligned 512-byte FXSAVE64 fallback and soft-float.
+The public ABI, IRET frame and storage/ELF formats are unchanged. The register
+inventory, ownership, failure and rollback contract is in [CPU_STATE.md](CPU_STATE.md)
+and [Proposed ADR-0013](adr/0013-bounded-user-cpu-context.md). Companion `00b7647`
+refreshes the lexical source inventory to **436 sites across 92 files**; it does
+not establish a whole-kernel unsafe review.
+
+All hardware evidence below identifies clean tested commit
+`00b76473bd37381f59dcb2893189ccdb159eb255`, Rust 1.97.0, QEMU 11.1.1,
+`genos-q35-tcg-v3` and the pinned firmware digest. Instruction extension cases
+name their explicit `max`/Intel-vendor variants. Later documentation commits
+do not change the tested runtime source.
+
+### Passing local gates
+
+- Workspace tests passed, including **194 kernel library** and **46 xtask** tests;
+  **90 Python** regressions passed. Normal and validation kernel Clippy, the
+  remaining workspace/target strict lint commands, Markdown links, test wiring,
+  formatting and unsafe-inventory checks passed. The deterministic parser harness
+  passed its 12 corpus inputs, 693 truncations and 25,000 mutations. Logs are
+  `build/cpu-context-workspace.log`, `build/cpu-context-python-host.log` and
+  `build/cpu-context-parser.log`.
+- **`cargo xtask test` passed end to end**, including serial persistence/input,
+  read-only/recovery/failed storage, network with/without HTTP, standalone SDK,
+  all ten process allocation cutoffs, six CPU page-protection faults and normal
+  debug/release interaction. Its log is `build/cpu-context-full-qemu.log`, SHA-256
+  `4fc1f496ead6bdc86d1dc5d7a85f28c6396b29a09fdcec50e6fd441ca77ba346`.
+  The no-HTTP lane completed in **26,154 ms** within its unchanged 30,000 ms
+  deadline, manifest `build/validation-evidence/1790598770730387000/network-without-http/manifest.txt`.
+- **`cargo xtask test-reference` passed**, with exact environment acceptance and
+  both normal images on the clean source. Log `build/cpu-context-reference.log`
+  has SHA-256 `39b247c8994d8d8c09ebf667845c13991ff3b7e947b75c0bb113120ee2f070a3`.
+  Normal manifests are `build/normal-evidence/1790599041191199000/normal-debug/manifest.txt`
+  and `build/normal-evidence/1790599052701768000/release/manifest.txt`.
+- The six-process production-loader fixture passed private selectors, FS/GS-relative
+  zero-base reads, direct/yield syscalls, **14 actual preemptions**, two pending
+  unmasked x87 exceptions across scheduling, exact user #MF, fresh state on reuse
+  and frame-baseline reclamation. The retained full serial manifest is
+  `build/validation-evidence/1790598627594908000/serial/manifest.txt`, image SHA-256
+  `65870f625e071be1cfb4704420b68a8f6c53a86ebd6ea9d82d12df107fa14786`.
+  The exact additional marker is
+  `USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true`.
+- Separate actual user/kernel **#MF** probes passed their termination/reclamation
+  and deliberate-halt contracts. Manifests are
+  `build/exception-evidence/user-mf/1790598600000044000/manifest.json` and
+  `build/exception-evidence/kernel-mf/1790598809420084000/manifest.json`.
+- All **21 admission/ISA/inherited-state cases** have passing isolated evidence
+  on this commit. The new cases are
+  `build/cpu-feature-evidence/1790598810762730000/isa-syscall/manifest.json`,
+  `build/cpu-feature-evidence/1790598827229821000/isa-sysenter/manifest.json` and
+  `build/cpu-feature-evidence/1790598843707246000/aux-inherited/manifest.json`.
+  The last explicitly poisons/read-backs all three base MSRs and enables a user-code
+  breakpoint before invoking the unchanged production reset and reaching the
+  normal shell without a fault. The two older absent-FXSR/SSE firmware failures
+  remain separate unsupported platform cases; they were not rerun or relabeled.
+
+### Retained failures and qualification gaps
+
+The 18-case existing-CPU campaign returned nonzero on WRPKRU. It delivered the
+correct user #UD, but both healthy peers exited before the fault, violating the
+unchanged fault-before-peer-exit proof. That failed manifest is retained at
+`build/cpu-feature-evidence/1790598838944690000/isa-wrpkru/manifest.json`.
+An isolated rerun passed without any code or budget change at
+`build/cpu-feature-evidence/1790599079187708000/isa-wrpkru/manifest.json`.
+Thus every selected case has a strict passing run, but the initial combined
+campaign was not clean; its ordering variability remains F6/F7 work.
+
+Strict user/kernel **#XM qualification failed**. User DIVSS 0/0 returned to exit
+254, and the kernel probe printed `KERNEL_EXCEPTION_PROBE_RETURNED`; neither
+delivered vector 19. The failed manifests are
+`build/exception-evidence/user-xm/1790598615949421000/manifest.json` and
+`build/exception-evidence/kernel-xm/1790598827102328000/manifest.json`.
+The separate diagnostic replay at
+`build/exception-evidence/user-xm/1790598859984439000/manifest.json` also remains
+failed, retaining its exact source patch, image identity and `init.elf`. Disassembly
+confirms LDMXCSR/STMXCSR/XORPS/DIVSS; exit 253 is produced only when MXCSR is
+**`0x1f00` before and `0x1f01` after** the operation. This observes unmasked
+invalid status without a delivered trap on the pinned TCG binary. The architecture
+contract requires a real #XM; a flag or software-injected vector cannot close it.
+
+Another qualified CPU/emulator/accelerator is needed for SIMD exception delivery
+and containment. The strict cases and configured independent jobs remain failing
+until that evidence exists. General TLS/debugger interfaces, larger feature/physical
+profiles, exhaustive FP/flag interactions and F1.4 nested/return-fault containment
+remain open. No R1/R2/R3 or engineering release level advances. The frozen console
+checklist remains **50/100**; this closes a bounded F1.2 implementation/evidence
+slice, not the entire F1.2 criterion or a new checklist entry.
