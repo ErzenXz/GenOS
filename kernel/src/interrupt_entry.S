@@ -68,18 +68,29 @@
     mov rsp, [rsp]
 .endm
 
+// All GPRs are already saved. EAX identifies the entry; EDX gives the extra
+// vector/error bytes relative to UserContext. Nested calls never enter Rust.
+.macro genos_claim_entry vector
+    mov rdi, rsp
+    mov eax, \vector
+    mov edx, 0
+    call genos_entry_claim
+.endm
+
 // Timer entry deliberately retains the existing UserContext layout. It does
 // not pass through the extra vector/error words used by ExceptionFrame.
 .global genos_irq0_stub
 genos_irq0_stub:
     cld
     genos_push_regs
+    genos_claim_entry 32
     genos_save_xstate {user_cs}
     mov rdi, rsp
     genos_call_aligned genos_irq0_rust
     test rax, rax
-    jnz genos_leave_userspace
+    jnz genos_leave_entry
     genos_restore_xstate {user_cs}
+    call genos_entry_release
     genos_pop_regs
     iretq
 
@@ -87,9 +98,11 @@ genos_irq0_stub:
 genos_irq1_stub:
     cld
     genos_push_regs
+    genos_claim_entry 33
     genos_save_xstate {user_cs}
     genos_call_aligned genos_irq1_rust
     genos_restore_xstate {user_cs}
+    call genos_entry_release
     genos_pop_regs
     iretq
 
@@ -97,9 +110,11 @@ genos_irq1_stub:
 genos_irq12_stub:
     cld
     genos_push_regs
+    genos_claim_entry 44
     genos_save_xstate {user_cs}
     genos_call_aligned genos_irq12_rust
     genos_restore_xstate {user_cs}
+    call genos_entry_release
     genos_pop_regs
     iretq
 
@@ -108,9 +123,11 @@ genos_irq12_stub:
 genos_irq48_stub:
     cld
     genos_push_regs
+    genos_claim_entry 48
     genos_save_xstate {user_cs}
     genos_call_aligned genos_irq48_rust
     genos_restore_xstate {user_cs}
+    call genos_entry_release
     genos_pop_regs
     iretq
 
@@ -138,18 +155,27 @@ genos_vector_\number:
 genos_vector_common:
     cld
     genos_push_regs
+    mov rdi, rsp
+    mov eax, dword ptr [rsp + {exception_vector}]
+    mov edx, 16
+    call genos_entry_claim
     genos_save_xstate {exception_cs}
     mov rdi, rsp
     // Sample CR2 before calling Rust. It is meaningful only for vector 14.
     mov rsi, cr2
     genos_call_aligned genos_vector_rust
     test rax, rax
-    jnz genos_leave_userspace
+    jnz genos_leave_entry
     genos_restore_xstate {exception_cs}
+    call genos_entry_release
     genos_pop_regs
     // Remove both normalized words, including any CPU-supplied error word.
     add rsp, 16
     iretq
+
+genos_leave_entry:
+    call genos_entry_release
+    jmp genos_leave_userspace
 
 .pushsection .rodata
 .balign 8

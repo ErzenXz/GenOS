@@ -34,6 +34,23 @@ global_asm!(
     error_code_mask = const kernel::exception::ERROR_CODE_MASK,
     user_cs = const userspace::USER_CONTEXT_CS_OFFSET,
     exception_cs = const core::mem::offset_of!(ExceptionFrame, cs),
+    exception_vector = const core::mem::offset_of!(ExceptionFrame, vector),
+);
+
+// SAFETY: callers have complete saved frames before claiming entry ownership.
+// Boot supplies permanent, bounded TSS slots and disjoint guarded stack tops.
+// Nested entries and #DF execute only fixed assembly reporting and never return
+// to Rust; only one admitted BSP can access the guard/configuration.
+global_asm!(
+    include_str!("entry_guard.S"),
+    config_slots = const core::mem::offset_of!(kernel::exception::EntryConfig, slots),
+    config_tops = const core::mem::offset_of!(kernel::exception::EntryConfig, tops),
+    config_terminal = const core::mem::offset_of!(kernel::exception::EntryConfig, terminal_top),
+    config_bytes = const core::mem::size_of::<kernel::exception::EntryConfig>(),
+    exception_error = const core::mem::offset_of!(ExceptionFrame, error),
+    user_rip = const userspace::USER_CONTEXT_RIP_OFFSET,
+    user_cs = const userspace::USER_CONTEXT_CS_OFFSET,
+    user_rsp = const userspace::USER_CONTEXT_RSP_OFFSET,
 );
 
 extern "C" {

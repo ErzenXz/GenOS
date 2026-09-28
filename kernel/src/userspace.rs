@@ -129,6 +129,8 @@ pub(crate) struct UserContext {
 }
 
 pub(crate) const USER_CONTEXT_CS_OFFSET: usize = core::mem::offset_of!(UserContext, cs);
+pub(crate) const USER_CONTEXT_RIP_OFFSET: usize = core::mem::offset_of!(UserContext, rip);
+pub(crate) const USER_CONTEXT_RSP_OFFSET: usize = core::mem::offset_of!(UserContext, rsp);
 
 impl UserContext {
     const fn initial(token: u64, entry: u64) -> Self {
@@ -4801,6 +4803,10 @@ genos_syscall_stub:
     pushfq
     and qword ptr [rsp], -262145
     popfq
+    mov eax, 128
+    mov rdi, rsp
+    mov edx, 0
+    call genos_entry_claim
     call genos_save_user_xstate
     mov rdi, rsp
     and rsp, -16
@@ -4809,8 +4815,12 @@ genos_syscall_stub:
     call genos_syscall_rust
     mov rsp, [rsp]
     test rax, rax
-    jnz genos_leave_userspace
+    jz 3f
+    call genos_entry_release
+    jmp genos_leave_userspace
+3:
     call genos_restore_user_xstate
+    call genos_entry_release
     pop r15
     pop r14
     pop r13
@@ -6474,6 +6484,10 @@ fn run_slice(process: &mut UserProcess) {
     arch::disable_interrupts();
     process.event = ProcessEvent::None;
     let context = process.context;
+    if !valid_return_context(&context, process) {
+        crate::serial::println("USER_RETURN_REJECTED origin=kernel policy=halt");
+        arch::halt_loop();
+    }
     unsafe {
         core::ptr::addr_of_mut!(CURRENT_PROCESS).write(process as *mut UserProcess);
     }
@@ -6507,6 +6521,7 @@ pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
         return false;
     }
     if !valid_user_frame(frame, process) {
+        crate::serial::println("USER_RETURN_REJECTED origin=user policy=terminate");
         terminate_process_fault(process, 13, 0, frame.rip, 0);
         return true;
     }
@@ -6568,6 +6583,7 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
         return 1;
     };
     if !valid_user_frame(frame, process) {
+        crate::serial::println("USER_RETURN_REJECTED origin=user policy=terminate");
         terminate_process_fault(process, 13, 0, frame.rip, 0);
         crate::serial::trace::println("USER_CONTEXT_INVALID");
         return 1;
@@ -7260,13 +7276,17 @@ fn current_process() -> Option<&'static mut UserProcess> {
 }
 
 fn valid_user_frame(frame: &UserContext, process: &UserProcess) -> bool {
+    valid_return_context(frame, process) && paging::active_root() == process.space.root()
+}
+
+fn valid_return_context(frame: &UserContext, process: &UserProcess) -> bool {
     frame.cs == arch::USER_CODE_SELECTOR as u64
         && frame.ss == arch::USER_DATA_SELECTOR as u64
         && frame.rip >= process.executable_start
         && frame.rip < process.executable_end
         && frame.rsp > paging::USER_STACK_BOTTOM
         && frame.rsp <= paging::USER_STACK_TOP
-        && paging::active_root() == process.space.root()
+        && kernel::exception::user_flags_valid(frame.rflags)
 }
 
 fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64> {

@@ -1,4 +1,7 @@
-use super::{has_error_code, ist_index, pic_eoi_policy, process_local, ExceptionFrame};
+use super::{
+    has_error_code, ist_index, pic_eoi_policy, process_local, user_flags_valid, EntryConfig,
+    ExceptionFrame,
+};
 use core::mem::{align_of, offset_of, size_of};
 
 #[test]
@@ -13,6 +16,25 @@ fn frame_matches_the_assembly_stack_exactly() {
     assert_eq!(offset_of!(ExceptionFrame, rflags), 152);
     assert_eq!(offset_of!(ExceptionFrame, rsp), 160);
     assert_eq!(offset_of!(ExceptionFrame, ss), 168);
+}
+
+#[test]
+fn entry_config_matches_assembly_and_contains_exactly_five_ist_slots() {
+    assert_eq!(size_of::<EntryConfig>(), 88);
+    assert_eq!(offset_of!(EntryConfig, slots), 0);
+    assert_eq!(offset_of!(EntryConfig, tops), 40);
+    assert_eq!(offset_of!(EntryConfig, terminal_top), 80);
+}
+
+#[test]
+fn user_return_flags_preserve_private_state_and_deny_task_or_privilege_modes() {
+    assert!(user_flags_valid(0x202));
+    for bit in 0..64 {
+        let allowed = [0, 1, 2, 4, 6, 7, 8, 9, 10, 11, 16, 18, 21].contains(&bit);
+        assert_eq!(user_flags_valid(0x202 | (1 << bit)), allowed, "bit {bit}");
+    }
+    assert!(!user_flags_valid(0x200));
+    assert!(!user_flags_valid(2));
 }
 
 #[test]

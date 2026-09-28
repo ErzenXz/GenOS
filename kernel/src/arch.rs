@@ -189,6 +189,10 @@ static mut NMI_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
 static mut MACHINE_CHECK_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
 static mut DEBUG_STACK: GuardedStack<EMERGENCY_STACK_SIZE> = GuardedStack::new();
 
+unsafe extern "C" {
+    static mut genos_entry_config: kernel::exception::EntryConfig;
+}
+
 /// These addresses describe reserved storage, without referencing its unmapped
 /// guards. The ordering is also the bounded guard-proof fixture's stack index.
 pub fn stack_regions() -> [(&'static str, StackLayout); 7] {
@@ -371,6 +375,37 @@ pub fn init() {
         crate::serial::println("CPU_AUX_STATE_FAILED");
         halt_loop();
     }
+    init_machine_check();
+    crate::serial::println("EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5");
+}
+
+fn init_machine_check() {
+    let features = core::arch::x86_64::__cpuid(1).edx;
+    let available = features & ((1 << 7) | (1 << 14)) == (1 << 7) | (1 << 14);
+    let mut cr4: u64;
+    // SAFETY: BSP startup owns CR4, IF is clear and the normalized IDT plus
+    // assembly terminal stack policy are installed. CPUID gates architectural
+    // MCE/MCA support. The handler always halts and never claims recovery from
+    // machine state corruption; unsupported CPUs leave MCE disabled.
+    unsafe {
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
+        cr4 = if available {
+            cr4 | (1 << 6)
+        } else {
+            cr4 & !(1 << 6)
+        };
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+        asm!("mov {}, cr4", out(reg) cr4, options(nostack, preserves_flags));
+    }
+    if (cr4 & (1 << 6) != 0) != available {
+        crate::serial::println("CPU_MACHINE_CHECK_FAILED");
+        halt_loop();
+    }
+    crate::serial::println(if available {
+        "CPU_MACHINE_CHECK_READY available=1 policy=halt"
+    } else {
+        "CPU_MACHINE_CHECK_READY available=0 policy=unsupported"
+    });
 }
 
 fn init_auxiliary_state() -> bool {
@@ -561,6 +596,23 @@ unsafe fn init_gdt() {
     TSS.ist[3] = regions[5].1.top;
     TSS.ist[4] = regions[6].1.top;
     TSS.rsp[0] = regions[2].1.top;
+    // SAFETY: this boot-only publication precedes LIDT and all entry calls.
+    // Raw packed-field addresses avoid unaligned Rust references. Static TSS
+    // and disjoint stack storage remain supervisor-mapped for the kernel's
+    // lifetime; only the admitted BSP's assembly guard writes these slots later.
+    core::ptr::addr_of_mut!(genos_entry_config).write(kernel::exception::EntryConfig {
+        slots: core::array::from_fn(|index| {
+            core::ptr::addr_of_mut!(TSS.ist).cast::<u64>().add(index) as u64
+        }),
+        tops: [
+            regions[1].1.top,
+            regions[3].1.top,
+            regions[4].1.top,
+            regions[5].1.top,
+            regions[6].1.top,
+        ],
+        terminal_top: regions[3].1.top,
+    });
 
     GDT[0] = 0;
     GDT[1] = 0x00af_9a00_0000_ffff;
