@@ -78,7 +78,7 @@ policy=halt` before entering Ring 3. Invalid captured user state reports
 `USER_RETURN_REJECTED origin=user policy=terminate`, records a process-local
 #GP identity and uses the existing termination/reclamation path. These are
 software denials, not fabricated CPU exception frames. Hardware fixtures
-deliberately corrupt return words after validation to require real #GP/#SS at
+deliberately corrupt return words after validation to require real #GP at
 the actual IRETQ site. Public ABI and frame layouts are unchanged.
 
 ## Verification
@@ -91,7 +91,7 @@ python3 tools/test_fault_containment.py
 
 The immutable-source harness has nineteen cases: nested IRQ #PF, syscall #GP,
 same-IST #PF, IRQ NMI/#MC, #MC-handler #GP, failed NMI IRET plus second NMI;
-six corrupt initial/syscall/IRQ returns; a successful IRET control with NMI re-entry; real #DF; initial flag denial; user NT
+four corrupt initial/syscall/IRQ returns; a successful IRET control with NMI re-entry; real #DF; initial flag/RSP/SS denial; user NT
 denial with cleanup; and first NMI/#MC. External events use QEMU's documented
 [QMP NMI](https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html#command-inject-nmi)
 and [monitor machine-check injection](https://www.qemu.org/docs/master/system/monitor.html).
@@ -103,11 +103,15 @@ identity, stack geometry, active-window ordering, return instruction address,
 explicit halt and a still-running guest after containment. Reset, exit, paused
 guest, missing/duplicate/forged records or resumed dispatch fail qualification.
 The pinned TCG implementation leaves NMI blocked when IRET faults and admits
-noncanonical return RIP/RSP before their later fault. Those four strict cases
-remain qualification failures. A successful IRET control tests second-NMI entry
-without substituting for the failed-IRET requirement. Initial/syscall/IRQ corrupt
-CS cases independently test real return faults. Detailed failures and source
-analysis are retained in [VERIFICATION.md](VERIFICATION.md).
+a noncanonical return RIP before its later fault. Those two strict cases remain
+qualification failures. A successful IRET control tests second-NMI entry without
+substituting for the failed-IRET requirement. Initial/syscall/IRQ corrupt CS
+cases independently test real return faults. The target RSP is validated in
+software: loading it during IRET does not itself require a #SS. Earlier probes
+that assumed otherwise are retained as fixture failures, rather than emulator
+qualification gaps. This follows the IRET operation and exceptions in the
+[Intel instruction manual](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf).
+Detailed results and source analysis are in [VERIFICATION.md](VERIFICATION.md).
 
 Build logs, fixture diffs, hashes, commands, QMP transcripts and success/failure
 manifests remain under `build/fault-containment-evidence`. Configured CI jobs do

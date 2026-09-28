@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from test_exception_harness import valid_log as exception_log
-from test_fault_containment import BAD_ADDRESS, CASES, NESTED, READY, RETURNS, patch_fixture, validate_log
+from test_fault_containment import BAD_ADDRESS, CASES, NESTED, READY, RETURNS, SOFTWARE_KERNEL, patch_fixture, validate_log
 from test_stack_guards import STACK_SIZES
 
 
@@ -46,10 +46,10 @@ def valid_log(case):
     elif case in RETURNS or case in {'nmi-idle', 'mce-idle'}:
         vector, error = RETURNS.get(case, (2 if case == 'nmi-idle' else 18, 0))
         frame_log = exception_log('kernel', vector, error)
-        if case in {'syscall-cs', 'irq-cs', 'irq-rsp'}:
+        if case in {'syscall-cs', 'irq-cs'}:
             frame_log = frame_log.replace('ss=0x10', 'ss=0x0')
         lines += [line for line in frame_log.splitlines() if line.startswith('EXCEPTION_FRAME') or line == 'EXCEPTION_FATAL_HALT']
-    elif case == 'initial-flags':
+    elif case in SOFTWARE_KERNEL:
         lines += ['USER_RETURN_REJECTED origin=kernel policy=halt']
     else:
         lines += ['USER_RETURN_REJECTED origin=user policy=terminate']
@@ -98,7 +98,7 @@ class ContainmentHarnessTests(unittest.TestCase):
                 validate_log(valid_log(case).replace('ss=0x0', 'ss=0x10'), case)
 
     def test_software_denial_never_counts_as_a_cpu_exception(self):
-        for case in ['user-nt', 'initial-flags']:
+        for case in ['user-nt', *SOFTWARE_KERNEL]:
             with self.subTest(case=case), self.assertRaises(ValueError):
                 validate_log(valid_log(case) + exception_log('kernel'), case)
 

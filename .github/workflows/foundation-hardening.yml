@@ -85,15 +85,15 @@ jobs:
           - name: entry-initial-rip
             script: test_fault_containment.py
             args: --case initial-rip
-          - name: entry-initial-rsp
+          - name: entry-initial-rsp-reject
             script: test_fault_containment.py
-            args: --case initial-rsp
+            args: --case initial-rsp-reject
           - name: entry-syscall-cs
             script: test_fault_containment.py
             args: --case syscall-cs
-          - name: entry-irq-rsp
+          - name: entry-initial-ss-reject
             script: test_fault_containment.py
-            args: --case irq-rsp
+            args: --case initial-ss-reject
           - name: entry-irq-cs
             script: test_fault_containment.py
             args: --case irq-cs

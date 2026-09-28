@@ -78,7 +78,9 @@ physically absent-feature variants fail in the firmware
 before GenOS entry and remain unsupported. A bounded
 [entry guard and native return policy](FAULT_CONTAINMENT.md) now halt nested
 entries/#DF before Rust and deny unsupported return flags. Their dedicated VM
-qualification is tracked in [VERIFICATION.md](VERIFICATION.md). General NMI or
+qualification is tracked in [VERIFICATION.md](VERIFICATION.md). Pinned TCG
+leaves NMI blocked after failed IRET and faults on noncanonical return RIP after
+entering the target context; these remain strict F1.4 gaps. General NMI or
 machine-check recovery, arbitrary event storms and broader physical CPU
 qualification remain open. Retained
 reference-profile aliases now obey the physical permission policy; DMA/device
