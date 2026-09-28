@@ -1,10 +1,9 @@
 # GenOS 0.56 verification record
 
-The latest completed campaign covers frame ownership, guarded kernel stacks,
-kernel ELF admission and coherent diagnostic handles. See the
-[September 22 hardening results](#frame-ownership-and-stack-hardening--2026-09-22)
-for current totals and exact source identities. Earlier entries retain their
-original scope and dates.
+The latest campaign adds bounded nested-entry ownership and native return-state
+denial. See the [September 28 fault containment results](#september-28-nested-entry-and-return-containment)
+for exact source identities, passing gates and remaining emulator gaps. Earlier
+entries retain their original scope and dates.
 
 ## Original integration — 2026-09-08
 
@@ -613,3 +612,139 @@ profiles, exhaustive FP/flag interactions and F1.4 nested/return-fault containme
 remain open. No R1/R2/R3 or engineering release level advances. The frozen console
 checklist remains **50/100**; this closes a bounded F1.2 implementation/evidence
 slice, not the entire F1.2 criterion or a new checklist entry.
+
+## September 28 nested entry and return containment
+
+Runtime source `1da63a8aec563ff9874e9b632fd3ec6a04dcffab` adds a single-BSP
+assembly entry claim, redirects all five live IST slots while Rust owns its
+frame, and halts nested entries and #DF before Rust or CPU-state helpers. Normal
+and nonlocal returns restore original tops and clear the claim last. Native
+CS/SS/RIP/RSP/RFLAGS validation denies unsupported return state; supported MCE/MCA
+CPUs enable/read back CR4.MCE and treat #MC as fatal. The contract and transient
+assembly windows are in [FAULT_CONTAINMENT.md](FAULT_CONTAINMENT.md) and
+[Proposed ADR-0014](adr/0014-terminal-entry-ownership.md). Seven stacks and fourteen
+guards, the public ABI, frame layout and storage formats are unchanged.
+The refreshed lexical inventory records **443 sites across 93 files**, without
+claiming a whole-kernel unsafe review.
+
+All following VM runs retain clean source identity, Rust 1.97.0, QEMU 11.1.1,
+`genos-q35-tcg-v3`, firmware digest, source fixture, image hash and exact command.
+Later source commits below change harness contracts, metadata and documentation;
+the kernel runtime remains the one introduced in `1da63a8`.
+
+### Passing local gates
+
+- **196 kernel library tests**, **46 xtask tests**, the remaining workspace tests
+  and **97 Python regressions** passed. Formatting, strict Clippy for normal and
+  validation kernels and every shipped target, documentation links, test wiring
+  and unsafe-inventory checks passed. The parser stress harness passed 12 corpus
+  inputs, 693 truncations and 25,000 mutations. Logs include
+  `build/fault-containment-workspace.log`, `build/fault-containment-xtask-host.log`,
+  `build/fault-containment-python-final.log` and `build/fault-containment-parser.log`.
+- **`cargo xtask test` passed end to end** on clean
+  `03f99aaa3f53915a5b1a7f46a8174b2e3f60913d`: persistence/input, read-only/recovery/
+  failed storage, both network lanes, the standalone SDK, all ten process
+  allocation cutoffs, six exact-address CPU protection faults and normal
+  debug/release interaction. Log `build/fault-containment-full-rerun.log` has
+  SHA-256 `cf554c3c735e5cb59d411a90cefb56b334ffc376ee77df9c382edd6b644df682`.
+  The no-HTTP lane completed in **23,292 ms** within its unchanged 30,000-ms
+  deadline, manifest
+  `build/validation-evidence/1790602795718194000/network-without-http/manifest.txt`.
+  Its full serial CPU fixture still reports **14 actual preemptions**, private
+  selectors, pending #MF, clean reuse and exact frame reclamation at
+  `build/validation-evidence/1790602650600806000/serial/manifest.txt`.
+- **`cargo xtask test-reference` passed** on clean
+  `18c11b64817c90b9ae8ca96e88377110284f6e77`, with exact environment acceptance and
+  both normal images. Log `build/fault-containment-reference.log` has SHA-256
+  `ee431a63551ae178560e285ab4e6dfba401b637d118211519ce6dab88a018f2f`.
+  Manifests are `build/normal-evidence/1790603084328655000/normal-debug/manifest.txt`
+  and `build/normal-evidence/1790603095647961000/release/manifest.txt`.
+- **All 16 stack cases passed** on clean
+  `823a7d4f96863f84089c35067661c8e7d1ad8f9c`: fourteen guard faults, the multipage
+  compiler probe and every stack's usage/margin proof. Manifests remain under
+  `build/stack-guard-evidence/1790601890773123000/`; the log
+  `build/fault-containment-guards.log` has SHA-256
+  `848c62b2573cdbb89b1323a474d8ac8c423b98d9b60f2e3e29db818b1244a280`.
+
+### Fault and return matrix
+
+The current nineteen-case harness has **seventeen passing cases** across the
+exact clean commits below. Software denials require their own marker and forbid
+CPU exception frames; they do not count as hardware #GP/#SS delivery.
+
+| Cases and outcome | Tested source and retained evidence |
+| --- | --- |
+| IRQ #PF, syscall #GP, same-IST #PF, IRQ NMI/#MC, #MC-handler #GP; all nested terminal paths preserve the active Rust stack | `1da63a8`; `build/fault-containment-evidence/1790601712399422000/{irq-pf,syscall-gp,exception-pf,irq-nmi,irq-mce,mce-gp}/manifest.json` |
+| Initial bad CS at IRET, real #DF, first NMI/#MC; deliberate terminal/kernel halt with guest still running | `1da63a8`; same campaign's `{initial-cs,double-fault,nmi-idle,mce-idle}/manifest.json` |
+| Invalid initial flags halt before user entry; user NT is rejected, terminated and reclaimed while healthy peers finish | `1da63a8`; same campaign's `{initial-flags,user-nt}/manifest.json` |
+| Syscall bad CS faults at exact IRET with kernel SS null | `333fad9a858caed6b92d3c561a40814cd31c42d3`; `build/fault-containment-evidence/1790602406603034000/syscall-cs/manifest.json` |
+| IRQ bad CS faults at exact IRET after entry release | `333fad9`; `build/fault-containment-evidence/1790602444242311000/irq-cs/manifest.json` |
+| Successful IRET inside the active NMI handler unblocks a second external NMI; child uses the terminal stack and never enters Rust | `333fad9`; `build/fault-containment-evidence/1790602480168845000/nmi-reentry/manifest.json` |
+| Invalid initial RSP and SS halt before user entry, with no fabricated CPU exception | `18c11b6`; `build/fault-containment-evidence/1790603054161364000/initial-rsp-reject/manifest.json` and `build/fault-containment-evidence/1790603069309838000/initial-ss-reject/manifest.json` |
+
+External events retain the complete QMP transcript: `inject-nmi` delivers vector
+2, and the accepted monitor `mce 0 0 0xb200000000000000 0x5 0x0 0x0` delivers vector
+18 after production CR4.MCE admission/readback. These are external emulator CPU
+events, not software INT substitutes. Terminal evidence checks exact vector,
+parent/error/CR2, stack address and active-window order. Return faults require
+saved RIP to equal the linked IRET site. Every fatal proof also requires QEMU to
+remain running after the explicit halt, rejecting reset, exit or a paused guest.
+
+### Retained failures and corrected assumptions
+
+The first seventeen-case campaign on `1da63a8` returned nonzero: twelve cases
+passed and five failed. All failed manifests and serial/QMP logs remain under
+`build/fault-containment-evidence/1790601712399422000/`.
+
+Two failures remain strict qualification gaps:
+
+- **`nmi-iret`:** the first real NMI reaches an invalid-CS IRET and a nested kernel
+  #GP (`error=0x38`, parent 2) halts on the terminal stack. QMP accepts the second
+  NMI, but no second vector 2 arrives before the unchanged 60-second deadline.
+  QEMU 11.1.1's [IRET helper source](https://gitlab.com/qemu-project/qemu/-/raw/v11.1.1/target/i386/tcg/seg_helper.c)
+  clears NMI blocking only after the return helper succeeds. This accounts for
+  the observed difference from [Intel's instruction contract](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf),
+  which unblocks NMI even when IRET faults. The separate successful-IRET control
+  passes second-NMI containment; it does not close this failed-return requirement.
+- **`initial-rip`:** corrupting the post-validation return RIP to
+  `0x0000800000000000` delivers #GP after the target context is loaded: CPL 3,
+  CS `0x33`, saved RIP equal to the bad address. It terminates all three fixture
+  processes and fails isolation; the required kernel-origin #GP at IRET is absent.
+  The same QEMU source commits target RIP/CS without the required canonical-RIP
+  check. The strict saved-IRET-site requirement remains; no later fault is relabeled
+  as a correct return-instruction fault.
+
+The other three initial failures were fixture/parser mistakes:
+
+- **`syscall-cs`:** the actual #GP and IRET address were correct, but the parser
+  incorrectly required interrupted kernel SS `0x10`. Long-mode interrupt entry
+  sets it to null. The corrected exact-null requirement has its own negative
+  host test and the clean passing rerun listed above. The original failure remains.
+- **`initial-rsp` / `irq-rsp`:** the fixtures incorrectly assumed loading a bad
+  target RSP must produce #SS at IRET. The Intel operation loads that value;
+  #SS's stack-address checks concern memory accesses. The observed later user
+  #PF and kernel #GP are retained, without claiming these runs prove an emulator
+  defect or the intended return-instruction requirement. These cases were retired
+  from the active matrix and replaced with production software rejection of
+  invalid initial RSP/SS; they were not retroactively marked passed.
+
+The first full suite on `823a7d4` also failed its 120,000-ms network deadline:
+DNS/HTTP/API/timeout/diagnostic proof records were absent even though passive TCP
+and the console finished. Manifest
+`build/validation-evidence/1790602053543341000/network/manifest.txt` and log
+`build/fault-containment-full.log` are retained. The network lanes passed unchanged
+in isolation at `build/validation-evidence/1790602259627794000/network/manifest.txt`
+and `build/validation-evidence/1790602285933206000/network-without-http/manifest.txt`;
+the later complete suite passed too. Concurrent VM load is a possible contributor,
+not an established root cause. No timeout, marker, ordering or network budget was
+relaxed. An additional test attempt started with uncommitted evidence-parser
+changes was stopped and retained in `build/fault-containment-uncommitted-attempt.log`;
+it is excluded from qualification. The successful retry began on clean `03f99aa`.
+
+Another qualified emulator/CPU is needed for the two remaining IRET boundaries,
+as well as the earlier #XM gap. The nineteen independent workflow jobs retain
+failures, but workflow publication and remote execution remain unestablished.
+No R1/R2/R3 or engineering release level advances. **F1.4 remains unchecked** and
+the frozen checklist remains **50/100**. Physical corruption, terminal-stack/UART
+failure, unrecoverable CPU shutdown, second #MC with MCIP active, arbitrary storms,
+SMP and general NMI/machine-check recovery remain excluded.
