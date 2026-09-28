@@ -29,9 +29,9 @@ BAD_ADDRESS = 0x7ffffffff000
 NESTED = {'irq-pf': (14, 32, 2, 'irq'), 'syscall-gp': (13, 128, 0x38, 'privilege'),
           'exception-pf': (14, 14, 2, 'irq'), 'irq-nmi': (2, 32, 0, 'irq'),
           'irq-mce': (18, 32, 0, 'irq'), 'mce-gp': (13, 18, 0x38, 'machine-check'),
-          'nmi-iret': (13, 2, 0x38, 'nmi')}
+          'nmi-iret': (13, 2, 0x38, 'nmi'), 'nmi-reentry': (2, 2, 0, 'nmi')}
 RETURNS = {'initial-cs': (13, 0x38), 'initial-rip': (13, 0),
-           'initial-rsp': (12, 0), 'syscall-cs': (13, 0x38), 'irq-rsp': (12, 0)}
+           'initial-rsp': (12, 0), 'syscall-cs': (13, 0x38), 'irq-rsp': (12, 0), 'irq-cs': (13, 0x38)}
 CASES = [*NESTED, *RETURNS, 'double-fault', 'initial-flags', 'user-nt', 'nmi-idle', 'mce-idle']
 READY = 'EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5'
 TERMINAL = re.compile(r'^EXCEPTION_TERMINAL kind=(nested|double-fault) vector=0x([0-9a-f]+)'
@@ -74,10 +74,12 @@ def patch_fixture(root: Path, case: str) -> str:
         else:
             anchor = '    print_fault(frame, cr2);'
             action = PF if case == 'exception-pf' else GP
-            if case == 'nmi-iret':
+            if case in {'nmi-iret', 'nmi-reentry'}:
                 action = ('core::arch::asm!("mov rax, rsp", "push 0x10", "push rax", "push 2", '
                           '"push 0x38", "lea rax, [rip + 2f]", "push rax", "iretq", "2:", out("rax") _);')
-            action = f'if frame.vector == {14 if case == "exception-pf" else 2 if case == "nmi-iret" else 18} {{ crate::serial::println("ENTRY_WINDOW case={case}"); unsafe {{ {action} }} crate::serial::println("ENTRY_PROBE_RETURNED"); crate::arch::halt_loop(); }}'
+                if case == 'nmi-reentry':
+                    action = action.replace('"push 0x38"', '"push 0x8"') + ' crate::serial::println("ENTRY_NMI_UNBLOCKED"); crate::arch::halt_loop();'
+            action = f'if frame.vector == {14 if case == "exception-pf" else 2 if case in {"nmi-iret", "nmi-reentry"} else 18} {{ crate::serial::println("ENTRY_WINDOW case={case}"); unsafe {{ {action} }} crate::serial::println("ENTRY_PROBE_RETURNED"); crate::arch::halt_loop(); }}'
         if action is not None:
             injected = (f'\n    crate::serial::println("ENTRY_WINDOW case={case}");\n    unsafe {{ {action} }}\n'
                         if case.startswith('irq-') else '\n    ' + action + '\n')
@@ -97,8 +99,10 @@ def patch_fixture(root: Path, case: str) -> str:
         elif case == 'syscall-cs':
             edit(path, '    pop rax\n    iretq', '    pop rax\n    mov qword ptr [rsp + 8], 0x3b\n    .global genos_probe_iret\ngenos_probe_iret:\n    iretq')
         else:
+            corruption = ('    mov qword ptr [rsp + 8], 0x3b\n' if case == 'irq-cs' else
+                          '    movabs rax, 0x0000800000000000\n    mov [rsp + 24], rax\n')
             edit('kernel/src/interrupt_entry.S', '    genos_pop_regs\n    iretq\n\n.global genos_irq1_stub',
-                 '    genos_pop_regs\n    movabs rax, 0x0000800000000000\n    mov [rsp + 24], rax\n    .global genos_probe_iret\ngenos_probe_iret:\n    iretq\n\n.global genos_irq1_stub')
+                 '    genos_pop_regs\n' + corruption + '    .global genos_probe_iret\ngenos_probe_iret:\n    iretq\n\n.global genos_irq1_stub')
 
     main = root / 'kernel/src/main.rs'
     anchor = '    serial::println("IDT_READONLY_READY");'
@@ -118,7 +122,7 @@ def patch_fixture(root: Path, case: str) -> str:
     serial::print_hex(core::ptr::addr_of!(genos_probe_iret) as u64); serial::println("");
 '''
     prelude += f'    serial::println("ENTRY_CASE_ARMED case={case}");\n'
-    if case in {'nmi-idle', 'mce-idle', 'nmi-iret', 'mce-gp'}:
+    if case in {'nmi-idle', 'mce-idle', 'nmi-iret', 'nmi-reentry', 'mce-gp'}:
         prelude += '    arch::disable_interrupts(); arch::halt_loop();\n'
     if case.startswith('irq-'):
         prelude += '    arch::enable_interrupts(); arch::halt_loop();\n'
@@ -191,9 +195,13 @@ def validate_log(log: str, case: str) -> None:
                 source = regions[NESTED[case][3]]
                 if not source[1] < rsp <= source[2]:
                     raise ValueError('interrupted RSP was not in the declared outer stack')
-        expected_frames = 1 if case in {'exception-pf', 'mce-gp', 'nmi-iret'} else 0
+        expected_frames = 1 if case in {'exception-pf', 'mce-gp', 'nmi-iret', 'nmi-reentry'} else 0
         if len(frames) != expected_frames:
             raise ValueError('nested entry ran Rust or outer frame missing')
+        if case == 'nmi-reentry':
+            unblocked = 'ENTRY_NMI_UNBLOCKED'
+            if lines.count(unblocked) != 1 or not lines.index(window) < lines.index(unblocked) < lines.index(first.group(0)):
+                raise ValueError('second NMI lacks its successful IRET control')
         if frames:
             vector, cpl = map(int, frames[0][:2])
             error, rip, cs, flags, rsp, ss, cr2 = [int(value, 16) for value in frames[0][2:]]
@@ -211,7 +219,7 @@ def validate_log(log: str, case: str) -> None:
             raise ValueError('expected one first-level kernel fault and explicit halt')
         vector, cpl = map(int, frames[0][:2])
         error, rip, cs, flags, rsp, ss, cr2 = [int(value, 16) for value in frames[0][2:]]
-        if (vector, error) != identity or cpl != 0 or cs != 8 or ss != 0x10 or not rip or not rsp or cr2 != 0 or not flags & 2:
+        if (vector, error) != identity or cpl != 0 or cs != 8 or ss != (0 if case in {'syscall-cs', 'irq-cs', 'irq-rsp'} else 0x10) or not rip or not rsp or cr2 != 0 or not flags & 2:
             raise ValueError('wrong return/event fault frame')
         if case in RETURNS:
             sites = re.findall(r'^ENTRY_RETURN_SITE rip=0x([0-9a-f]+)$', log, re.MULTILINE)
@@ -278,13 +286,14 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
                     raise RuntimeError('QEMU exited/reset instead of deliberate containment')
                 log = serial.read_text(errors='replace') if serial.exists() else ''
                 trigger = f'ENTRY_WINDOW case={case}' if case in {'irq-nmi', 'irq-mce'} else f'ENTRY_CASE_ARMED case={case}'
-                if injected == 0 and trigger in log and case in {'nmi-idle', 'irq-nmi', 'nmi-iret', 'mce-idle', 'irq-mce', 'mce-gp'}:
+                if injected == 0 and trigger in log and case in {'nmi-idle', 'irq-nmi', 'nmi-iret', 'nmi-reentry', 'mce-idle', 'irq-mce', 'mce-gp'}:
                     request = {'execute': 'inject-nmi'} if 'nmi' in case else {'execute': 'human-monitor-command', 'arguments': {'command-line': 'mce 0 0 0xb200000000000000 0x5 0x0 0x0'}}
                     response = command(request)
                     if 'mce' in case and response != '':
                         raise RuntimeError('machine-check injection was not accepted: ' + str(response))
                     injected = 1
-                if case == 'nmi-iret' and injected == 1 and 'EXCEPTION_TERMINAL_HALT' in log:
+                if injected == 1 and ((case == 'nmi-iret' and 'EXCEPTION_TERMINAL_HALT' in log)
+                                      or (case == 'nmi-reentry' and 'ENTRY_NMI_UNBLOCKED' in log)):
                     command({'execute': 'inject-nmi'}); injected = 2
                 marker = ('USERMODE_READY' if case == 'user-nt' else 'USER_RETURN_REJECTED origin=kernel policy=halt' if case == 'initial-flags'
                           else 'EXCEPTION_TERMINAL_HALT' if case in NESTED or case == 'double-fault' else 'EXCEPTION_FATAL_HALT')

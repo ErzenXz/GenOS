@@ -73,7 +73,7 @@ machine state recoverable.
 
 Host tests check frame/configuration offsets and every RFLAGS bit. Harness
 tests reject altered fault identity, terminal location, phase, missing/duplicate
-records and false software-as-hardware reports. Seventeen immutable-source VM
+records and false software-as-hardware reports. Nineteen immutable-source VM
 fixtures cover active nesting, real #DF, failed return words, NMI re-entry,
 actual #MC injection and native-state denial/cleanup. Full boot/reference and
 stack-guard regressions remain required for the changed assembly boundary.
