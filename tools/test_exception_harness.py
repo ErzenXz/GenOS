@@ -43,9 +43,9 @@ class EvidenceTests(unittest.TestCase):
                 require_clean_source(Path("."))
         with patch("test_exception_entry.command_output", side_effect=["", "exact-commit"]):
             self.assertEqual(require_clean_source(Path(".")), "exact-commit")
-    def test_all_eight_fault_identities_are_validated(self):
+    def test_all_twelve_fault_identities_are_validated(self):
         for mode in ("user", "kernel"):
-            for fault, vector in (("de", 0), ("ud", 6), ("gp", 13), ("pf", 14)):
+            for fault, vector in (("de", 0), ("ud", 6), ("gp", 13), ("pf", 14), ("mf", 16), ("xm", 19)):
                 error = (6 if mode == "user" else 2) if fault == "pf" else 0
                 if mode == "kernel" and fault == "gp":
                     error = 0x38

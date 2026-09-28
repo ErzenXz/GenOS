@@ -1,6 +1,6 @@
 # GenOS roadmap
 
-**Updated: 2026-09-23. Foundation series after `98c8b38`; exact tested commits are in [VERIFICATION.md](docs/VERIFICATION.md). Current level: Experimental.**
+**Updated: 2026-09-28. Foundation series after `98c8b38`; exact tested commits are in [VERIFICATION.md](docs/VERIFICATION.md). Current level: Experimental.**
 
 GenOS is an independent Rust operating system. The immediate product goal is a
 reliable kernel and useful terminal on a precisely defined reference machine.
@@ -110,7 +110,7 @@ Current bounds matter: 4 managed asynchronous process slots including the shell;
 | Next work item | Why it comes next | Completion evidence |
 | --- | --- | --- |
 | **F0.1 — Publish verification** | The VM candidate is pinned locally; GitHub rejected workflow publication for missing OAuth `workflow` scope | Authorized publication, exact-head remote checks and independent reproduction |
-| **F1.2/F1.4 — Complete context and fault qualification** | Eager x87/MMX/SSE state, fourteen guards and scoped high-water/overflow proofs exist | FS/GS/debug and FP exception contracts, nested/return-fault proofs |
+| **F1.2/F1.4 — Complete context and fault qualification** | Eager legacy state, private selectors, bounded zero-base/debug policy and fourteen guards exist | Complete declared CPU-profile qualification and nested/return-fault proofs |
 | **F3.1/F3.2/F2.3 — Finish sharing, device and profile policy** | Reference-profile aliases, user copies, local retirement and quotas have bounded proofs | Explicit sharing/DMA retirement, raw-reference audit and additional hardware/feature profiles |
 | **S2 — Grow recoverable storage** | S1 failure semantics and the 606-image host model are qualified within stated device assumptions | Scalable file format, backup/migration and physical-device qualification |
 | **F4/F5 — Extract and guard remaining state** | Broader applications multiply the current raw-global assumptions | Executable ownership interfaces, context/lock assertions and delayed-interrupt tests |
@@ -151,7 +151,7 @@ must not deepen a known ownership or isolation violation.
 - [ ] **F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.
   Map/handoff checks are implemented; the pinned UEFI helper supplies one stale-key retry. A [bounded kernel ELF load plan](docs/KERNEL_ELF.md) now validates the complete image before allocation/copy. Exhaustive map-growth/exit fault injection and firmware allocation-failure qualification remain open.
 - [ ] **F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.
-  The fixed 512-byte FXSAVE64 fallback is implemented and has scoped VM evidence. Broader CPU state (including FS/GS/debug contracts), unmasked FP exceptions and physical/feature-matrix qualification remain open; no complete F1.2 claim.
+  The fixed 512-byte FXSAVE64 fallback now accompanies private DS/ES/FS/GS selectors, fixed zero bases, disabled debug/fast-entry policy and a [bounded register inventory](docs/CPU_STATE.md). Pending unmasked x87 state and user/kernel #MF/#XM fixtures extend local qualification; exact results are in [VERIFICATION.md](docs/VERIFICATION.md). Nonzero TLS/debugger APIs, larger CPU profiles, exhaustive FP/flag interactions and physical qualification remain open; no complete F1.2 claim.
 - [x] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
   [All seven stacks](docs/KERNEL_STACKS.md) have fourteen guards, high-water readings and sixteen real CPU cases, including every guard and a compiler-generated 12-KiB frame probe. Same-IST/NMI nesting and return faults remain F1.4.
 - [ ] **F1.4:** specify and test NMI/machine-check/same-IST nesting, fault-during-return and malformed return state. Recover only where a safe recovery contract is demonstrated; otherwise halt deliberately.

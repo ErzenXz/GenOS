@@ -37,18 +37,23 @@ ISA = {
     'wrgsbase': ('ud', 'core::arch::asm!("xor eax, eax", "wrgsbase rax", out("rax") _, options(nostack));', '__cpuid_count(7, 0).ebx & 1 != 0'),
     'debug-register': ('gp', 'core::arch::asm!("mov rax, dr0", out("rax") _, options(nostack));', 'true'),
     'rdmsr': ('gp', 'core::arch::asm!("mov ecx, 0xc0000100", "rdmsr", out("eax") _, out("edx") _, out("ecx") _, options(nostack));', '__cpuid(1).edx & (1 << 5) != 0'),
+    'syscall': ('ud', 'core::arch::asm!("syscall", options(nostack));', '__cpuid(0x80000001).edx & (1 << 11) != 0'),
+    'sysenter': ('gp', 'core::arch::asm!("sysenter", options(nostack));', '__cpuid(1).edx & (1 << 11) != 0'),
 }
 CASES = [*[f'missing-{name}' for name in MISSING], *[f'mixed-{name}' for name in MIXED],
-         *[f'isa-{name}' for name in ISA], *[f'sample-{name}' for name in SAMPLES]]
+         *[f'isa-{name}' for name in ISA], *[f'sample-{name}' for name in SAMPLES], 'aux-inherited']
 FIRMWARE_CASES = [f'missing-{name}' for name in SAMPLES]
 LANES = {'all': CASES,
          'kernel': [case for case in CASES if case not in FIRMWARE_CASES],
          'firmware-limit': FIRMWARE_CASES}
 POLICY = 'CPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float'
+FAST_ENTRY = 'CPU_FAST_ENTRY_DISABLED syscall=off sysenter=off'
+AUX = 'CPU_AUX_STATE_READY selectors=private fsbase=0 gsbase=0 kernelgsbase=0 debug=off ldt=off'
+INHERITED = 'CPU_INHERITED_AUX_FIXTURE_READY bases=nonzero debug=enabled observed=1'
 
 
 def cpu_variant(case: str, profile: dict[str, str]) -> str:
-    if case.startswith('sample-'):
+    if case.startswith('sample-') or case == 'aux-inherited':
         return profile['cpu']
     if case.startswith('missing-'):
         return profile['cpu'] + ',' + MISSING[case[8:]] + '=off'
@@ -56,11 +61,40 @@ def cpu_variant(case: str, profile: dict[str, str]) -> str:
         smep, smap = MIXED[case[6:]]
         return f'qemu64-v1,smep={"on" if smep else "off"},smap={"on" if smap else "off"}'
     if case.startswith('isa-'):
-        return 'max'
+        # Intel defines SYSENTER in 64-bit mode; AMD instead raises #UD there.
+        return 'max,vendor=GenuineIntel' if case == 'isa-sysenter' else 'max'
     raise ValueError('unknown CPU case')
 
 
 def patch_fixture(root: Path, case: str) -> str:
+    if case == 'aux-inherited':
+        path = root / 'kernel/src/arch.rs'
+        before = path.read_text()
+        anchor = '    if !init_auxiliary_state() {'
+        injected = '''    // SAFETY: isolated fixture poisons inherited state before the unchanged
+    // production reset. IF is clear; no user code or FS/GS-relative Rust runs.
+    unsafe {
+        for msr in [0xc000_0100u32, 0xc000_0101, 0xc000_0102] {
+            asm!("wrmsr", in("ecx") msr, in("eax") 0x12345000u32, in("edx") 0u32,
+                options(nostack, preserves_flags));
+            let (low, high): (u32, u32);
+            asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high,
+                options(nostack, preserves_flags));
+            assert!(low == 0x12345000 && high == 0);
+        }
+        asm!("mov dr0, {address}", "mov dr7, {control}",
+            address = in(reg) crate::paging::USER_CODE, control = in(reg) 0x401u64,
+            options(nostack, preserves_flags));
+        let control: u64;
+        asm!("mov {}, dr7", out(reg) control, options(nostack, preserves_flags));
+        assert_eq!(control, 0x401);
+    }
+    crate::serial::println("CPU_INHERITED_AUX_FIXTURE_READY bases=nonzero debug=enabled observed=1");
+'''
+        after = replace_once(before, anchor, injected + anchor)
+        path.write_text(after)
+        return ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                       fromfile='a/kernel/src/arch.rs', tofile='b/kernel/src/arch.rs'))
     if case.startswith('sample-'):
         name = case[7:]
         mask = SAMPLES[name]
@@ -102,6 +136,16 @@ def patch_fixture(root: Path, case: str) -> str:
 
 def validate_log(log: str, case: str) -> None:
     lines = log.replace('\r', '').splitlines()
+    if case == 'aux-inherited':
+        required = [POLICY, 'IDT initialized', INHERITED, AUX, FAST_ENTRY,
+                    'GENOS_READY', 'NORMAL_SHELL_READY']
+        if any(lines.count(marker) != 1 for marker in required):
+            raise ValueError('missing or duplicate inherited-state reset proof')
+        positions = [lines.index(marker) for marker in required]
+        if positions != sorted(positions) or any(
+                '_FAILED' in line or 'EXCEPTION_FRAME' in line or 'KERNEL PANIC' in line for line in lines):
+            raise ValueError('inherited CPU state was not reset before normal applications')
+        return
     if case.startswith('isa-'):
         name = case[4:]
         fixture = f'CPU_ISA_FIXTURE_READY instruction={name} advertised=1'
@@ -110,6 +154,9 @@ def validate_log(log: str, case: str) -> None:
         if any('_FAILED' in line or 'HARDWARE_MISSING' in line or 'KERNEL PANIC' in line for line in lines):
             raise ValueError('ISA fixture reported failed qualification')
         exception_log(log, 'user', ISA[name][0])
+        if name in {'syscall', 'sysenter'} and (
+                lines.count(FAST_ENTRY) != 1 or lines.index(FAST_ENTRY) >= lines.index(fixture)):
+            raise ValueError('disabled fast entry must precede the instruction')
         if lines.index(fixture) >= next(index for index, line in enumerate(lines) if line.startswith('EXCEPTION_FRAME')):
             raise ValueError('ISA hardware proof came after fault')
         return
@@ -189,7 +236,7 @@ def main() -> None:
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--case', choices=CASES)
     selection.add_argument('--lane', choices=LANES, default='all',
-                           help='kernel: 18 admission/ISA checks; firmware-limit: 2 real unsupported CPUs; all: collect all 20')
+                           help='kernel: 21 admission/ISA/reset checks; firmware-limit: 2 real unsupported CPUs; all: collect all 23')
     parser.add_argument('--timeout', type=int, default=120)
     options = parser.parse_args()
     if sys.version_info < (3, 12) or options.timeout <= 0:
@@ -205,7 +252,8 @@ def main() -> None:
         evidence.mkdir(parents=True, exist_ok=False)
         manifest = {'case': case, 'status': 'incomplete', 'commit': commit, 'source_clean': True,
                     'cpu_variant': cpu_variant(case, load_profile(source)),
-                    'scope': ('injected CPUID sample after actual hardware query' if case.startswith('sample-')
+                    'scope': ('inherited FS/GS base and debug state fixture' if case == 'aux-inherited'
+                              else 'injected CPUID sample after actual hardware query' if case.startswith('sample-')
                               else 'explicit CPU feature variant')}
         try:
             manifest.update(environment(Path(firmware_path()), source))

@@ -95,7 +95,7 @@ pub unsafe extern "sysv64" fn enter_boot_stack(
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
 const TSS_SELECTOR: u16 = 0x18;
-pub const USER_DATA_SELECTOR: u16 = 0x2b;
+pub const USER_DATA_SELECTOR: u16 = kernel::segments::USER_DATA;
 pub const USER_CODE_SELECTOR: u16 = 0x33;
 const INTERRUPT_IST_INDEX: u16 = 1;
 const INTERRUPT_STACK_SIZE: usize = 64 * 1024;
@@ -367,6 +367,70 @@ pub fn init() {
         asm!("lidt [{}]", in(reg) &ptr, options(readonly, nostack, preserves_flags));
     }
     crate::serial::println("IDT initialized");
+    if !init_auxiliary_state() {
+        crate::serial::println("CPU_AUX_STATE_FAILED");
+        halt_loop();
+    }
+}
+
+fn init_auxiliary_state() -> bool {
+    // SAFETY: the admitted BSP owns initialization, IF is clear and the kernel
+    // GDT/IDT are installed. No user process exists. Null LDTR prevents access
+    // to inherited firmware LDT descriptors; flat GDT entries have zero bases.
+    // FSGSBASE is disabled by init_xstate and users cannot write MSRs/MOV DR.
+    // These fixed, architectural MSRs/registers exist in long mode. Unexpected
+    // faults deliberately halt through the installed kernel exception policy.
+    unsafe {
+        asm!(
+            "mov dr7, {off}", "mov dr0, {zero}", "mov dr1, {zero}",
+            "mov dr2, {zero}", "mov dr3, {zero}", "mov dr6, {status}",
+            off = in(reg) 0x400u64, zero = in(reg) 0u64,
+            status = in(reg) 0xffff_0ff0u64, options(nostack, preserves_flags),
+        );
+        for msr in [0xc000_0100u32, 0xc000_0101, 0xc000_0102] {
+            asm!("wrmsr", in("ecx") msr, in("eax") 0u32, in("edx") 0u32,
+                options(nostack, preserves_flags));
+        }
+        // INT 0x80 is the only kernel entry ABI. SEP-capable CPUs must not
+        // retain firmware's SYSENTER selectors, entry point or stack.
+        if core::arch::x86_64::__cpuid(1).edx & (1 << 11) != 0 {
+            for msr in [0x174u32, 0x175, 0x176] {
+                asm!("wrmsr", in("ecx") msr, in("eax") 0u32, in("edx") 0u32,
+                    options(nostack, preserves_flags));
+                let (low, high): (u32, u32);
+                asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high,
+                    options(nostack, preserves_flags));
+                if low != 0 || high != 0 {
+                    return false;
+                }
+            }
+        }
+        for msr in [0xc000_0100u32, 0xc000_0101, 0xc000_0102] {
+            let (low, high): (u32, u32);
+            asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high,
+                options(nostack, preserves_flags));
+            if low != 0 || high != 0 {
+                return false;
+            }
+        }
+        let (dr0, dr1, dr2, dr3, dr6, dr7): (u64, u64, u64, u64, u64, u64);
+        asm!("mov {}, dr0", out(reg) dr0, options(nostack, preserves_flags));
+        asm!("mov {}, dr1", out(reg) dr1, options(nostack, preserves_flags));
+        asm!("mov {}, dr2", out(reg) dr2, options(nostack, preserves_flags));
+        asm!("mov {}, dr3", out(reg) dr3, options(nostack, preserves_flags));
+        asm!("mov {}, dr6", out(reg) dr6, options(nostack, preserves_flags));
+        asm!("mov {}, dr7", out(reg) dr7, options(nostack, preserves_flags));
+        let ldt: u16;
+        asm!("sldt {0:x}", out(reg) ldt, options(nostack, preserves_flags));
+        if dr0 | dr1 | dr2 | dr3 != 0 || dr7 != 0x400 || dr6 & 0xe00f != 0 || ldt != 0 {
+            return false;
+        }
+    }
+    crate::serial::println(
+        "CPU_AUX_STATE_READY selectors=private fsbase=0 gsbase=0 kernelgsbase=0 debug=off ldt=off",
+    );
+    crate::serial::println("CPU_FAST_ENTRY_DISABLED syscall=off sysenter=off");
+    true
 }
 
 fn init_xstate() -> bool {
@@ -382,7 +446,8 @@ fn init_xstate() -> bool {
     // lazy #NM switching; CR4 enables SSE but forbids XSAVE-only components
     // and user PKRU/FS/GS base changes (PKE/FSGSBASE enable these independently
     // of OSXSAVE). General TLS and protection-key interfaces are not exposed.
-    // Clear AMD's optional fast-FXSAVE bit, which can omit XMM at CPL0. EFER
+    // Clear AMD's optional fast-FXSAVE bit, which can omit XMM at CPL0, and
+    // SCE: firmware's unowned SYSCALL entry must not be available to Ring 3. EFER
     // exists in long mode, and all other bits remain unchanged. These writes
     // alter no memory mappings or stack state; readback gates publication.
     unsafe {
@@ -394,7 +459,7 @@ fn init_xstate() -> bool {
         asm!("mov cr0, {}", in(reg) cr0, options(nostack));
         asm!("mov cr4, {}", in(reg) cr4, options(nostack));
         asm!("rdmsr", in("ecx") 0xc000_0080u32, out("eax") low, out("edx") high, options(nostack));
-        low &= !(xstate::EFER_FFXSR as u32);
+        low &= !((xstate::EFER_FFXSR | xstate::EFER_SCE) as u32);
         asm!("wrmsr", in("ecx") 0xc000_0080u32, in("eax") low, in("edx") high, options(nostack));
         asm!("mov {}, cr0", out(reg) cr0, options(nostack));
         asm!("mov {}, cr4", out(reg) cr4, options(nostack));
@@ -517,6 +582,10 @@ unsafe fn init_gdt() {
         "mov ds, ax",
         "mov es, ax",
         "mov ss, ax",
+        "mov ax, 0",
+        "mov fs, ax",
+        "mov gs, ax",
+        "lldt ax",
         "push {code}",
         "lea rax, [rip + 2f]",
         "push rax",

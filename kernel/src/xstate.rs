@@ -11,6 +11,7 @@ pub const CR4_OSXSAVE: u64 = 1 << 18;
 pub const CR4_PKE: u64 = 1 << 22;
 pub const CR4_FSGSBASE: u64 = 1 << 16;
 pub const EFER_FFXSR: u64 = 1 << 14;
+pub const EFER_SCE: u64 = 1;
 const REQUIRED_CPUID_EDX: u32 = (1 << 0) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26);
 
 pub const fn supported(cpuid_edx: u32) -> bool {
@@ -22,7 +23,7 @@ pub const fn configured(cr0: u64, cr4: u64, efer: u64) -> bool {
         && cr0 & CR0_FORBIDDEN == 0
         && cr4 & CR4_REQUIRED == CR4_REQUIRED
         && cr4 & (CR4_OSXSAVE | CR4_PKE | CR4_FSGSBASE) == 0
-        && efer & EFER_FFXSR == 0
+        && efer & (EFER_FFXSR | EFER_SCE) == 0
 }
 
 /// Only the CPU entry assembly mutates a live process's image. It is never
@@ -129,6 +130,7 @@ mod tests {
         assert!(!configured(CR0_REQUIRED, CR4_REQUIRED | CR4_PKE, 0));
         assert!(!configured(CR0_REQUIRED, CR4_REQUIRED | CR4_FSGSBASE, 0));
         assert!(!configured(CR0_REQUIRED, CR4_REQUIRED, EFER_FFXSR));
+        assert!(!configured(CR0_REQUIRED, CR4_REQUIRED, EFER_SCE));
     }
 
     #[test]

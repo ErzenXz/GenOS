@@ -1,6 +1,6 @@
 # GenOS current limitations
 
-**Updated 2026-09-23; exact foundation source and evidence are recorded in [VERIFICATION.md](VERIFICATION.md). Level: Experimental.**
+**Updated 2026-09-28; exact foundation source and evidence are recorded in [VERIFICATION.md](VERIFICATION.md). Level: Experimental.**
 This is the current register, not a cumulative historical audit. The
 [previous register](history/2026-09-08-limitations-before-refresh.md) preserves older
 wording that described already-replaced implementations. Research and planned fixes
@@ -33,7 +33,8 @@ New independent CI jobs and a weekly long-validation workflow are configured loc
 but the branch push was rejected because the OAuth credential lacks `workflow` scope.
 No draft PR was created and these new jobs have not supplied remote evidence.
 
-Coverage-guided fuzzing, complete operation and fault matrices, 1000 boots,
+The audited 1000 fresh release boots passed on their recorded source/profile.
+Coverage-guided fuzzing, complete operation and fault matrices,
 sustained qualification, independent reproduction and required-check enforcement
 remain open. A pinned Miri run on selected pure Rust modules and a bounded
 ownership model have scoped local evidence; neither covers the whole kernel or
@@ -58,14 +59,17 @@ The reference now eagerly preserves x87/MMX/SSE state in a private 512-byte
 process image and initializes clean state on reuse. OSXSAVE/PKE are disabled;
 kernel Rust remains soft-float. The [CPU contract](CPU_STATE.md) records real
 preemption/syscall/fault/reuse evidence and its limits. It does not establish
-FS/GS/debug register virtualization, unmasked FP exception behavior or support
-for arbitrary physical CPUs/ISA combinations.
+nonzero TLS/debugger APIs or support for arbitrary physical CPUs/ISA combinations.
+DS/ES/FS/GS selectors are now private; flat descriptors, null LDTR and disabled
+FSGSBASE keep bases zero, and boot resets inherited base/debug/fast-entry state.
+Pending unmasked x87 state and user/kernel #MF/#XM have dedicated fixtures.
+This is a bounded policy, not exhaustive FP/flag or larger-feature qualification.
 
 Seven stacks now have fourteen inaccessible page guards and measured usage; all
 guards and a multipage Rust frame have real CPU fault probes. See
 [KERNEL_STACKS.md](KERNEL_STACKS.md). The admitted CPU feature/ISA matrix has eighteen
 passing kernel cases; two physically absent-feature variants fail in the firmware
-before GenOS entry and remain unsupported. Complete process state, same-IST/NMI/fatal
+before GenOS entry and remain unsupported. Complete CPU-profile qualification, same-IST/NMI/fatal
 nesting, return faults and broader physical CPU profiles remain open. Retained
 reference-profile aliases now obey the physical permission policy; DMA/device
 and arbitrary firmware mappings have no comparable qualification.

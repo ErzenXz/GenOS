@@ -1,6 +1,8 @@
 BOOT_MODE validation
 BOOT_MEMORY_MAP_VALIDATED
 CPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float
+CPU_AUX_STATE_READY selectors=private fsbase=0 gsbase=0 kernelgsbase=0 debug=off ldt=off
+CPU_FAST_ENTRY_DISABLED syscall=off sysenter=off
 CPU_TLB_POLICY_READY pcid=off global=off
 KERNEL_IMAGE_PROTECTED text=rx rodata=r data=rw-nx
 KERNEL_STACK_GUARDS_READY stacks=7 guards=14 bytes=4096
@@ -11,7 +13,8 @@ NETWORK_DEVICE_READY driver=virtio-net-pci transport=modern-pci
 NETWORK_DHCP_READY address=10.0.2.15 gateway=10.0.2.2 dns=10.0.2.3
 USERMODE_READY
 USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true
-USER_XSTATE_PREEMPTIONS count=12
+USER_XSTATE_PREEMPTIONS count=14
+USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true
 USER_SOCKET_TRANSPORT_STARTED protocol=udp
 USER_SOCKET_TRANSPORT_COMPLETE protocol=udp
 USER_SOCKET_UDP_ASYNC_READY

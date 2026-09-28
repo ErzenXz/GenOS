@@ -116,7 +116,7 @@ GenOS now enables and verifies NX and CR0.WP, plus CPUID-supported SMEP/SMAP, af
 
 The allocator uses a bitmap for up to 8 GiB of usable memory across 64 ranges, with overlap/capacity refusal and lossless reclamation. Clone rollback is tested at every allocation in a host fixture; real process construction is tested at all ten allocation points. See [ADR 0004](docs/adr/0004-bitmap-frame-ownership-and-rollback.md).
 
-The system remains single-core and experimental. The admitted VM now has guarded and measured kernel stacks, sealed inherited aliases, bounded owner grants and per-owner quotas. Complete CPU state and nested-fault qualification, device/DMA lifetime, coverage-guided fuzzing and long-run validation, scalable memory/storage, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
+The system remains single-core and experimental. The admitted VM now has guarded and measured kernel stacks, sealed inherited aliases, bounded owner grants and per-owner quotas. Its CPU context preserves private segment selectors and pending x87 state alongside legacy FP/SIMD registers, with fixed zero FS/GS bases and disabled debug/fast-entry policy. Complete CPU-profile and nested-fault qualification, device/DMA lifetime, coverage-guided fuzzing and sustained validation, scalable memory/storage, production networking, identity/TLS, packages, userspace graphics and physical hardware remain open.
 
 ## Immediate engineering priority
 

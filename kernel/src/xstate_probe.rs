@@ -42,10 +42,15 @@ pub(super) fn run() -> bool {
                 Ok(process) => {
                     let pattern = State::probe_pattern(*seed);
                     let mmx_pattern = State::probe_mmx_pattern(*seed);
+                    let segments = kernel::segments::State::probe_pattern(*seed);
                     // SAFETY: this inactive process owns the mapped data page;
-                    // offsets 128..192 and 512..1024 fit the 4096-byte page.
+                    // offsets 96..104, 128..192 and 512..1024 fit its 4096 bytes.
                     // No Ring 3 execution or references to these bytes exist.
                     unsafe {
+                        core::ptr::write_unaligned(
+                            (process.data_frame + 96) as *mut kernel::segments::State,
+                            segments,
+                        );
                         core::ptr::copy_nonoverlapping(
                             pattern.bytes().as_ptr(),
                             (process.data_frame + 512) as *mut u8,
@@ -108,6 +113,9 @@ pub(super) fn run() -> bool {
     crate::serial::print("USER_XSTATE_PREEMPTIONS count=");
     crate::serial::print_u64(preemptions);
     crate::serial::println("");
+    crate::serial::println(
+        "USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true",
+    );
     true
 }
 
@@ -119,23 +127,45 @@ fn observed(process: &UserProcess, seed: u64) -> bool {
     // The fixture uses only these bounded offsets inside that page.
     let data = unsafe { core::slice::from_raw_parts(process.data_frame as *const u8, 4096) };
     let completion = if seed & 1 == 1 {
-        process.event == ProcessEvent::Fault && process.fault_vector == 6
+        process.event == ProcessEvent::Fault
+            && process.fault_vector == 16
+            && process.fault_error == 0
+            && process.fault_address == 0
     } else {
         process.event == ProcessEvent::Exit && process.exit_code == 0
     };
     let initial = State::initial().matches_saved(&data[1024..1536]);
     let x87 = pattern.matches_saved(&data[1536..2048]);
     let mmx = mmx_pattern.matches_saved_mmx(&data[2048..2560]);
-    let captured = mmx_pattern.matches_saved_mmx(process.xstate.bytes());
+    let pending = seed & 1 == 1;
+    let captured = if pending {
+        let saved = process.xstate.bytes();
+        let status = u16::from_le_bytes([saved[2], saved[3]]);
+        saved[..2] == 0x037eu16.to_le_bytes()
+            && status & 0x81 == 0x81 // invalid-operation and exception-summary bits
+            && saved[24..28] == mmx_pattern.bytes()[24..28]
+            && saved[160..416] == mmx_pattern.bytes()[160..416]
+            && process.xstate.matches_saved(&data[2576..3088])
+            && process.xstate.matches_saved(&data[3088..3600])
+    } else {
+        mmx_pattern.matches_saved_mmx(process.xstate.bytes())
+    };
+    let segment_pattern = kernel::segments::State::probe_pattern(seed);
+    let segments = kernel::segments::State::initial().matches_saved(&data[64..72])
+        && segment_pattern.matches_saved(&data[72..80])
+        && segment_pattern.matches_saved(&data[80..88])
+        && (!pending || segment_pattern.matches_saved(&data[88..96]))
+        && process.segments == segment_pattern;
     let passed = process.completed
         && completion
-        && process.preemptions >= 2
-        && process.yields == 1
+        && process.preemptions >= if pending { 3 } else { 2 }
+        && process.yields == if pending { 2 } else { 1 }
         && data[2560..2568] == 1u64.to_le_bytes()
         && initial
         && x87
         && mmx
-        && captured;
+        && captured
+        && segments;
     if !passed {
         // One bounded diagnostic per failed process, before unconditional
         // cleanup. Do not dump register payloads or turn a mismatch into success.
@@ -149,6 +179,7 @@ fn observed(process: &UserProcess, seed: u64) -> bool {
             (" x87=", u64::from(x87)),
             (" mmx=", u64::from(mmx)),
             (" captured=", u64::from(captured)),
+            (" segments=", u64::from(segments)),
         ] {
             crate::serial::print(label);
             crate::serial::print_u64(value);

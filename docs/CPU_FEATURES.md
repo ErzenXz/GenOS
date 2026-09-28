@@ -47,14 +47,17 @@ The following CPU modes remain disabled even when a larger CPU advertises them:
 | Direct FS/GS base writes | CR4.FSGSBASE = 0 | WRFSBASE and WRGSBASE raise #UD |
 | Debug-register access | CPL3 cannot execute MOV DR | #GP with normalized zero error |
 | Model-specific registers | CPL3 cannot execute RDMSR | #GP with normalized zero error |
+| SYSCALL | EFER.SCE = 0 | #UD; no inherited firmware entry |
+| SYSENTER | IA32_SYSENTER_CS/ESP/EIP = 0 when SEP exists | Intel 64-bit #GP(0); AMD long-mode #UD |
 
 These rules follow the control-register and instruction definitions in the
 [Intel architecture manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 Clearing these enables prevents untracked state from becoming available merely
-because firmware used a more capable CPU. It does not establish FS/GS selector
-virtualization, TLS APIs, debug-register virtualization or a complete register
-inventory. Those remain separate F1.2 work. No kernel syscall provides arbitrary
-MSR/debug/control-register writes.
+because firmware used a more capable CPU. Private DS/ES/FS/GS selectors, fixed
+zero bases, disabled debug control and the bounded reference register inventory
+are now described in [CPU_STATE.md](CPU_STATE.md). Nonzero TLS/debugger APIs,
+larger CPU profiles and general register virtualization remain outside that
+contract. No kernel syscall provides arbitrary MSR/debug/control-register writes.
 
 User RFLAGS.AC is not trusted: CPL3 can set it with POPFQ. Every IRQ, exception
 and syscall entry saves the user frame, clears DF and clears the live AC bit
@@ -77,18 +80,20 @@ python3 tools/test_cpu_features.py --lane firmware-limit
 The CPU harness requires a clean commit and retains an independent source
 archive, deliberate fixture diff, exact QEMU arguments, image hash, serial log
 and success/failure manifest for each case under `build/cpu-feature-evidence`.
-The matrix contains twenty cases: six missing-feature CPUs, all four SMEP/SMAP
-combinations, eight isolated unsupported/privileged instructions and two
-explicitly injected CPUID samples. The named lanes preserve all cases:
+The matrix contains twenty-three cases: six missing-feature CPUs, all four SMEP/SMAP
+combinations, ten isolated unsupported/privileged instructions, two explicitly
+injected CPUID samples and one inherited-state reset fixture. The named lanes
+preserve all cases:
 
-- `kernel` runs eighteen reproducible kernel checks: four actual missing-feature
-  CPUs, four SMEP/SMAP combinations, eight ISA instructions and two CPUID samples.
+- `kernel` runs twenty-one reproducible kernel checks: four actual missing-feature
+  CPUs, four SMEP/SMAP combinations, ten ISA instructions, two CPUID samples and
+  the inherited-state reset.
   Every case must pass; any failure makes the command return nonzero.
 - `firmware-limit` runs the two actual unsupported FXSR/SSE variants. On the
   pinned firmware these remain failed cases, with retained evidence and a
   nonzero command result. This is a separate platform-limitation investigation,
   not a passing kernel qualification lane.
-- `all` (also the default) attempts all twenty cases, retains every result and
+- `all` (also the default) attempts all twenty-three cases, retains every result and
   returns nonzero if any failed. It continues collecting after a failure; it
   neither drops firmware cases nor turns their resets into success.
 
@@ -120,10 +125,12 @@ application mapping, or admission decision. Its manifest says **injected CPUID
 sample**, and this evidence must never be described as a physical absent-feature
 boot. Run these explicitly with `--case sample-fxsr` and `--case sample-sse`.
 The actual `missing-fxsr`/`missing-sse` cases retain their strict kernel-marker
-requirement and fail on this firmware; even when all eighteen kernel checks
+requirement and fail on this firmware; even when all twenty-one kernel checks
 pass, the `all` command reports the two platform failures and returns nonzero.
 
-ISA cases use QEMU's `max` CPU as an explicitly named test variant. Each extension
+ISA cases use QEMU's `max` CPU as an explicitly named test variant. SYSENTER uses
+`max,vendor=GenuineIntel` to test Intel's 64-bit #GP contract; AMD long-mode #UD
+is a separate architectural rule. Each extension
 case checks its real CPUID feature bit before launching the faulting application;
 MOV DR instead uses the architectural privilege rule. The fixture replaces only
 the existing deliberate Ring 3 fault instruction and its expected result. It
@@ -131,6 +138,14 @@ keeps production entry, fault classification, process cleanup, process isolation
 and frame reclamation. Exactly one expected #UD/#GP, the faulting process's
 identity and all subsequent isolation/reclamation markers must match. Separate
 XSTATE stress faults are suppressed only in this disposable isolated fixture.
+
+The `aux-inherited` fixture uses the pinned reference CPU. After the production
+GDT/IDT installation it writes nonzero FS_BASE/GS_BASE/KERNEL_GS_BASE and enables
+a hardware execution breakpoint at the user-code address, checks real readback,
+then invokes the unchanged production reset. Ordered inherited/reset/normal-shell
+markers, no faults and the reset's own register readbacks are required. Its
+manifest identifies the injected inherited-state scope. It changes no descriptor,
+process constructor, trap classification or reset code.
 
 Host tests reject absent, forged, duplicate and reordered evidence, mismatched
 feature bits, missing hardware proof, wrong fault privilege/vector and missing

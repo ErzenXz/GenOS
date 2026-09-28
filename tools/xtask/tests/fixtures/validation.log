@@ -1,6 +1,8 @@
 BOOT_MODE validation
 BOOT_MEMORY_MAP_VALIDATED
 CPU_XSTATE_READY mode=fxsave64 bytes=512 user=x87,mmx,sse,sse2 kernel=soft-float
+CPU_AUX_STATE_READY selectors=private fsbase=0 gsbase=0 kernelgsbase=0 debug=off ldt=off
+CPU_FAST_ENTRY_DISABLED syscall=off sysenter=off
 RECOVERY_BOUNDARY_OK
 PAGING_READY root=0x1000 tables=1029
 CPU_TLB_POLICY_READY pcid=off global=off
@@ -26,10 +28,11 @@ USER_PREEMPT_OK
 USER_FAULT_ISOLATED
 USER_ISOLATION_OK
 USERMODE_READY
-USER_FAULT_TERMINATED pid=122 vector=6 error=0x0 rip=0x4000000010a4 cr2=0x0
-USER_FAULT_TERMINATED pid=122 vector=6 error=0x0 rip=0x4000000010a4 cr2=0x0
+USER_FAULT_TERMINATED pid=122 vector=16 error=0x0 rip=0x4000000010a4 cr2=0x0
+USER_FAULT_TERMINATED pid=122 vector=16 error=0x0 rip=0x4000000010a4 cr2=0x0
 USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true
-USER_XSTATE_PREEMPTIONS count=12
+USER_XSTATE_PREEMPTIONS count=14
+USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true
 USER_ELF_LAUNCH_OK pid=4 preemptions=1
 RAMFS_TEMP_CLEAN_OK
 RAMFS_TEMP_READY path=/TMP/SESSION.TXT
