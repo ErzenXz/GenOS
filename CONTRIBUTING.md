@@ -297,7 +297,7 @@ workflow assigns each guard/ELF case and the diagnostic snapshot its own job.
 Configured Linux jobs are portability checks; they do not claim the pinned macOS
 reference environment or successful remote execution before the workflow runs.
 
-The [entry/return containment harness](docs/FAULT_CONTAINMENT.md) runs seventeen
+The [entry/return containment harness](docs/FAULT_CONTAINMENT.md) runs nineteen
 independent real fault, NMI, machine-check and return-state cases; `--case irq-pf`
 selects one. It retains QMP transcripts as well as source/image/fault evidence.
 Nested termination, first kernel fatal handling and software process denial are

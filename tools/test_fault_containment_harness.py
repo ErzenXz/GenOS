@@ -24,12 +24,14 @@ def valid_log(case):
         lines += ['ENTRY_RETURN_SITE rip=0x400000']
     lines += [f'ENTRY_CASE_ARMED case={case}']
     if case in NESTED or case == 'double-fault':
-        if case in {'exception-pf', 'mce-gp', 'nmi-iret'}:
+        if case in {'exception-pf', 'mce-gp', 'nmi-iret', 'nmi-reentry'}:
             parent = NESTED[case][1]
             outer = exception_log('user' if case == 'exception-pf' else 'kernel', vector=parent, error=6 if parent == 14 else 0, cr2=0x40000000b000 if parent == 14 else 0)
             lines += [line for line in outer.splitlines() if line.startswith('EXCEPTION_FRAME')]
         if case in NESTED:
             lines += [f'ENTRY_WINDOW case={case}']
+        if case == 'nmi-reentry':
+            lines += ['ENTRY_NMI_UNBLOCKED']
         identities = [NESTED[case][:3]] if case in NESTED else [(8, 255, 0)]
         if case == 'nmi-iret':
             identities += [(2, 2, 0)]
@@ -43,7 +45,10 @@ def valid_log(case):
                       'EXCEPTION_TERMINAL_HALT']
     elif case in RETURNS or case in {'nmi-idle', 'mce-idle'}:
         vector, error = RETURNS.get(case, (2 if case == 'nmi-idle' else 18, 0))
-        lines += [line for line in exception_log('kernel', vector, error).splitlines() if line.startswith('EXCEPTION_FRAME') or line == 'EXCEPTION_FATAL_HALT']
+        frame_log = exception_log('kernel', vector, error)
+        if case in {'syscall-cs', 'irq-cs', 'irq-rsp'}:
+            frame_log = frame_log.replace('ss=0x10', 'ss=0x0')
+        lines += [line for line in frame_log.splitlines() if line.startswith('EXCEPTION_FRAME') or line == 'EXCEPTION_FATAL_HALT']
     elif case == 'initial-flags':
         lines += ['USER_RETURN_REJECTED origin=kernel policy=halt']
     else:
@@ -53,9 +58,9 @@ def valid_log(case):
 
 
 class ContainmentHarnessTests(unittest.TestCase):
-    def test_all_seventeen_fault_and_return_contracts(self):
-        self.assertEqual(len(CASES), 17)
-        self.assertEqual(len(set(CASES)), 17)
+    def test_all_nineteen_fault_and_return_contracts(self):
+        self.assertEqual(len(CASES), 19)
+        self.assertEqual(len(set(CASES)), 19)
         for case in CASES:
             with self.subTest(case=case):
                 validate_log(valid_log(case), case)
@@ -86,6 +91,11 @@ class ContainmentHarnessTests(unittest.TestCase):
             good = valid_log(case)
             with self.subTest(case=case), self.assertRaises(ValueError):
                 validate_log(good.replace('ENTRY_RETURN_SITE rip=0x400000', 'ENTRY_RETURN_SITE rip=0x400001'), case)
+
+    def test_interrupt_return_fault_has_exact_null_kernel_ss(self):
+        for case in ['syscall-cs', 'irq-cs']:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                validate_log(valid_log(case).replace('ss=0x0', 'ss=0x10'), case)
 
     def test_software_denial_never_counts_as_a_cpu_exception(self):
         for case in ['user-nt', 'initial-flags']:

@@ -76,6 +76,9 @@ jobs:
           - name: entry-nmi-iret
             script: test_fault_containment.py
             args: --case nmi-iret
+          - name: entry-nmi-reentry
+            script: test_fault_containment.py
+            args: --case nmi-reentry
           - name: entry-initial-cs
             script: test_fault_containment.py
             args: --case initial-cs
@@ -91,6 +94,9 @@ jobs:
           - name: entry-irq-rsp
             script: test_fault_containment.py
             args: --case irq-rsp
+          - name: entry-irq-cs
+            script: test_fault_containment.py
+            args: --case irq-cs
           - name: entry-double-fault
             script: test_fault_containment.py
             args: --case double-fault

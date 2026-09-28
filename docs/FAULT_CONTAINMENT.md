@@ -78,7 +78,7 @@ policy=halt` before entering Ring 3. Invalid captured user state reports
 `USER_RETURN_REJECTED origin=user policy=terminate`, records a process-local
 #GP identity and uses the existing termination/reclamation path. These are
 software denials, not fabricated CPU exception frames. Hardware fixtures
-deliberately corrupt return words after validation to prove real #GP/#SS at
+deliberately corrupt return words after validation to require real #GP/#SS at
 the actual IRETQ site. Public ABI and frame layouts are unchanged.
 
 ## Verification
@@ -89,9 +89,9 @@ python3 -m unittest discover -s tools -p test_fault_containment_harness.py
 python3 tools/test_fault_containment.py
 ```
 
-The immutable-source harness has seventeen cases: nested IRQ #PF, syscall #GP,
+The immutable-source harness has nineteen cases: nested IRQ #PF, syscall #GP,
 same-IST #PF, IRQ NMI/#MC, #MC-handler #GP, failed NMI IRET plus second NMI;
-five corrupt initial/syscall/IRQ returns; real #DF; initial flag denial; user NT
+six corrupt initial/syscall/IRQ returns; a successful IRET control with NMI re-entry; real #DF; initial flag denial; user NT
 denial with cleanup; and first NMI/#MC. External events use QEMU's documented
 [QMP NMI](https://www.qemu.org/docs/master/interop/qemu-qmp-ref.html#command-inject-nmi)
 and [monitor machine-check injection](https://www.qemu.org/docs/master/system/monitor.html).
@@ -102,6 +102,13 @@ and the #GP gate used to provoke a real #DF. Evidence checks exact fault/parent
 identity, stack geometry, active-window ordering, return instruction address,
 explicit halt and a still-running guest after containment. Reset, exit, paused
 guest, missing/duplicate/forged records or resumed dispatch fail qualification.
+The pinned TCG implementation leaves NMI blocked when IRET faults and admits
+noncanonical return RIP/RSP before their later fault. Those four strict cases
+remain qualification failures. A successful IRET control tests second-NMI entry
+without substituting for the failed-IRET requirement. Initial/syscall/IRQ corrupt
+CS cases independently test real return faults. Detailed failures and source
+analysis are retained in [VERIFICATION.md](VERIFICATION.md).
+
 Build logs, fixture diffs, hashes, commands, QMP transcripts and success/failure
 manifests remain under `build/fault-containment-evidence`. Configured CI jobs do
 not establish remote execution. See [Proposed ADR-0014](adr/0014-terminal-entry-ownership.md).
