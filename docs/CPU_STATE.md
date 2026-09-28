@@ -194,3 +194,23 @@ Instruction and selector semantics were checked against the
 [Intel FSGSBASE guidance](https://www.intel.com/content/www/us/en/developer/articles/technical/software-security-guidance/best-practices/guidance-enabling-fsgsbase.html)
 and [AMD's system-programming manual](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/programmer-references/24593.pdf).
 Executed evidence and exact tested source belong in [VERIFICATION.md](VERIFICATION.md).
+
+### SIMD exception qualification limit
+
+On the pinned QEMU 11.1.1 TCG reference, the strict user and kernel #XM
+fixtures **fail**: DIVSS 0/0 returns instead of trapping with the invalid-operation
+mask cleared. A separate diagnostic ELF verifies MXCSR `0x1f00` immediately
+before and `0x1f01` after the instruction; its disassembly verifies LDMXCSR,
+STMXCSR, XORPS and DIVSS. Kernel CR4 readback already establishes OSXMMEXCPT.
+The existing dispatch policy would terminate user vector 19 and halt kernel
+vector 19, but these runs cannot prove delivery or containment of an actual #XM.
+
+The strict fixtures, failed manifests and configured matrix jobs remain; a
+returned probe or latched MXCSR flag is never accepted as exception success.
+Another qualified emulator/accelerator or physical x86 CPU is needed to close
+this part of F1.2. The reference profile and release gate were not changed to
+hide the failure. QEMU's [SSE implementation](https://github.com/qemu/qemu/blob/master/target/i386/ops_sse.h)
+and [FP helpers](https://github.com/qemu/qemu/blob/master/target/i386/tcg/fpu_helper.c)
+support the emulator-limit diagnosis, but those upstream files are not an exact
+source attribution for the locally installed binary. The retained runtime
+readbacks are the direct evidence for this host.

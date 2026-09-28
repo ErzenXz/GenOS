@@ -62,13 +62,19 @@ preemption/syscall/fault/reuse evidence and its limits. It does not establish
 nonzero TLS/debugger APIs or support for arbitrary physical CPUs/ISA combinations.
 DS/ES/FS/GS selectors are now private; flat descriptors, null LDTR and disabled
 FSGSBASE keep bases zero, and boot resets inherited base/debug/fast-entry state.
-Pending unmasked x87 state and user/kernel #MF/#XM have dedicated fixtures.
+Pending unmasked x87 state and user/kernel #MF have local proofs. The strict
+user/kernel #XM fixtures fail on pinned QEMU TCG: MXCSR records an unmasked
+invalid operation, but DIVSS returns without a trap. SIMD exception delivery
+and containment require another qualified platform; retained failures remain
+in [VERIFICATION.md](VERIFICATION.md).
 This is a bounded policy, not exhaustive FP/flag or larger-feature qualification.
 
 Seven stacks now have fourteen inaccessible page guards and measured usage; all
 guards and a multipage Rust frame have real CPU fault probes. See
-[KERNEL_STACKS.md](KERNEL_STACKS.md). The admitted CPU feature/ISA matrix has eighteen
-passing kernel cases; two physically absent-feature variants fail in the firmware
+[KERNEL_STACKS.md](KERNEL_STACKS.md). All twenty-one current CPU admission/ISA/reset
+cases have passing isolated evidence; one WRPKRU campaign attempt failed its
+fault-before-peer-exit requirement, then passed unchanged in isolation. Two
+physically absent-feature variants fail in the firmware
 before GenOS entry and remain unsupported. Complete CPU-profile qualification, same-IST/NMI/fatal
 nesting, return faults and broader physical CPU profiles remain open. Retained
 reference-profile aliases now obey the physical permission policy; DMA/device

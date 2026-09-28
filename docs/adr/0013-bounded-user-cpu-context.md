@@ -83,6 +83,9 @@ Exact campaign commits, results and retained failures are recorded in
 [VERIFICATION.md](../VERIFICATION.md). Full F1.2/physical qualification and F1.4
 are not established merely by configuring these tests. The workflow matrix adds
 the FP cases but still needs authorized publication and remote execution.
+The pinned TCG user/kernel #XM probes return without trapping and are retained
+as failures. MXCSR readback and the diagnostic ELF establish the emulator limit;
+no vector-19 containment proof or release promotion is claimed.
 
 ## References
 
