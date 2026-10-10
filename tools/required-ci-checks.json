@@ -88,6 +88,10 @@
       "app_id": 15368
     },
     {
+      "context": "Foundation allocation-irq-deferred",
+      "app_id": 15368
+    },
+    {
       "context": "Foundation boot-stack-guard",
       "app_id": 15368
     },
@@ -205,6 +209,22 @@
     },
     {
       "context": "Foundation irq-stack-guard",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation memory-before-init",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation memory-init-if",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation memory-init-repeat",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation memory-reentrant",
       "app_id": 15368
     },
     {

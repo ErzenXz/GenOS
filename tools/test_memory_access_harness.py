@@ -10,8 +10,10 @@ def valid_log(case):
     lines = ['BOOT_MODE validation', 'BOOT_MEMORY_MAP_VALIDATED', 'RECOVERY_BOUNDARY_OK']
     if case != 'before-init':
         lines.append(BITMAP)
+    if case in {'irq-deferred', 'init-if-enabled'}:
+        lines.append('IRQ_HARDWARE_ON')
     if case == 'irq-deferred':
-        lines += ['IRQ_HARDWARE_ON', ARMED, DEFERRED, READY]
+        lines += [ARMED, DEFERRED, READY]
     else:
         lines += [f'MEMORY_ACCESS_WINDOW case={case}', HALTS[case]]
     return '\n'.join(lines) + '\n'

@@ -27,6 +27,7 @@ HALTS = {
     'before-init': 'MEMORY_PHASE_REJECTED reason=uninitialized policy=halt',
     'init-repeat': 'MEMORY_PHASE_REJECTED reason=already-initialized policy=halt',
     'reentrant': 'MEMORY_ACCESS_REJECTED policy=halt',
+    'init-if-enabled': 'MEMORY_CONTEXT_REJECTED reason=initialization-if policy=halt',
 }
 CASES = [*HALTS, 'irq-deferred']
 ARMED = 'MEMORY_ALLOC_IRQ_WINDOW if=clear'
@@ -112,6 +113,9 @@ def patch_fixture(root: Path, case: str) -> str:
         action = '    memory::allocated_frames();\n' if case == 'before-init' else anchor + '\n'
         prefix = '' if case == 'before-init' else anchor + '\n'
         after[main] = replace_once(after[main], anchor, prefix + window + action + returned)
+    elif case == 'init-if-enabled':
+        after[main] = replace_once(after[main], '    interrupts::enable();',
+            '    interrupts::enable();\n' + window + '    memory::init(boot_info);\n' + returned)
     elif case == 'reentrant':
         anchor = 'pub fn alloc_frame(owner: Owner, kind: Kind) -> Option<Grant> {\n    with_ready_state(|state| {'
         injection = window + '        allocated_frames();\n' + returned
@@ -137,7 +141,7 @@ def validate_log(log: str, case: str) -> None:
     if case != 'before-init':
         proofs.append(BITMAP)
     tail = [ARMED, DEFERRED, READY] if case == 'irq-deferred' else [f'MEMORY_ACCESS_WINDOW case={case}', HALTS[case]]
-    if case == 'irq-deferred':
+    if case in {'irq-deferred', 'init-if-enabled'}:
         proofs.append('IRQ_HARDWARE_ON')
     proofs += tail
     if any(lines.count(proof) != 1 for proof in proofs):

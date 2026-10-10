@@ -234,6 +234,10 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
   one scoped IRQ/coordinator adapter, including read observations. A real delayed
   keyboard delivery fixture exercises borrow retirement and caller IF preservation;
   wider global classification and ownership remain open.
+  The [physical memory adapter](docs/MEMORY_ACCESS.md) now scopes bitmap,
+  grant-ledger and allocation-fault state together, with one-time initialization,
+  phase/reentry refusal and a real delayed-IRQ allocation fixture. Remaining
+  coordinator/device objects still need the complete audit.
 - [x] **F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.
   Neutral text/geometry types replaced authority-module imports from display; a checked dependency rule rejects forbidden imports and mutable authority borrows in presentation. The normal reference boot passed on `3e55272`; [module contract](docs/MODULE_DEPENDENCIES.md). This does not close F4.2/F4.4.
 - [ ] **F4.4:** review caller obligations, aliasing, synchronization, assembly clobbers and failure containment at every unsafe boundary, including unsafe Send/Sync. Inventory presence alone does not close this review.
