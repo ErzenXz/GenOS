@@ -1356,3 +1356,92 @@ the unchanged frozen 11.1.1 profile. No strict CPU requirement was relaxed, and
 the remote ATA timeout remains unresolved. Complete ownership/decomposition,
 interrupt timing, CPU/reference qualification, independent review and later
 roadmap work remain open: **51/100**, Experimental, with PR #9 draft/unmerged.
+
+## October 11 scoped network and storage coordinators
+
+`323ae1d607fe03a6fc674fce4b8b1a9133688c13` replaces raw global protocol access
+with an owned `ScopedCell<NetworkStack>` and groups storage scratch space, ATA
+port authority and mount phase behind another scoped cell. All global network
+reads/mutations and production storage mount/commit paths use higher-ranked
+callbacks. ATA PIO helpers receive the borrowed port pair explicitly. The one
+new unsafe Sync implementation requires Send values, protects its single value
+dereference with acquire/release exclusion, and rejects contenders before value
+access. It does not wait, poison, roll back or alter caller IF. Host unwinding
+retires the borrow while retaining prior mutations. Seven host/Miri cases and
+two new compile-fail checks exercise that contract. The safety rationale and
+hardware caller obligations are in [coordinator access](COORDINATOR_ACCESS.md).
+
+Network initialization and storage mount may start once per boot; unsuccessful
+discovery consumes that attempt too. Reentry and repeated initialization/mount
+halt with distinct production refusal records before another access or I/O.
+Network IRQ readiness publication remains available during scopes, and bounded
+storage PIO preserves caller IF. One BSP, synchronous coordination, no ordinary
+IRQ borrowing of these states and fatal emergency isolation remain mandatory.
+The scoped cell does not establish device/DMA retirement or hardware SMP safety.
+ABI, image budgets, protocol/storage behavior and frozen reference remain unchanged.
+The reviewed lexical inventory records **401 sites across 102 sources**: 29 fewer
+unsafe blocks and one additional unsafe impl, for a net reduction of 28 sites.
+This scoped review does not close the full F4 unsafe-boundary audit.
+
+- **331 workspace unit tests**, **four compile-fail doctests**, **135 Python tests**
+  and strict kernel host/normal/validation target lint passed. Logs remain at
+  `build/coordinator-cell-host-tests.log`, `build/coordinator-cell-python-final.log`
+  and `build/coordinator-cell-*-clippy.log`.
+- Four independent live software fixtures passed on clean `323ae1d`, under
+  `build/coordinator-access-evidence/1791673212136649000/`: `network-borrow`,
+  `network-repeat`, `storage-borrow` and `storage-repeat`. Each preserves the
+  production cell, adapter and fatal reporter and requires exact refusal ordering,
+  no continuation/fault, pre-start QMP subscription and a live final VM status.
+  These do not inject CPU or device faults. No NIC/data disk is required for the
+  unavailable-discovery and ownership-only tests. Archive/fixture/image/log/QMP
+  hashes and exact environment remain in individual manifests.
+- The production fresh-volume write-failure regression passed on clean `323ae1d`
+  at `build/storage-startup-evidence/1791673212136727000/manifest.json`. It exercises
+  the new storage scratch/port scope through original quarantine and shell
+  behavior; the fixture anchor follows the explicitly passed ATA port authority.
+- Pinned strict-provenance Miri passed **85 selected tests**, including all seven
+  new scoped-cell cases, and native allocator stress passed on clean `323ae1d`.
+  Complete source/archive/toolchain identity, commands, deadlines and per-module
+  logs/hashes remain at
+  `build/pure-rust-evidence/1791673212136592000/manifest.json`.
+  One fixed-seed interpreted execution is not exhaustive concurrency exploration;
+  privileged CPU/device behavior remains outside Miri. The unchanged bounded
+  ownership-model lane was not rerun.
+
+The complete system suite passed all **eighteen** manifests on clean `323ae1d`:
+storage creation/restore/read-only/recovery/failure, serial, network/no-HTTP,
+external SDK, memory preflight/ten allocation cutoffs, six actual protection
+probes and normal debug/release process/file workflows. Source remained unchanged
+throughout the campaign. Paths/hashes are indexed in
+`build/323ae1d-system-evidence-index.json`; combined output remains at
+`build/coordinator-cell-system-tests.log`. A final local evidence check verified
+the source/status and retained hashes for these manifests, the four coordinator
+cases, fresh-volume regression and interpreted module logs.
+
+Four independently scheduled coordinator jobs raise the versioned contract and
+main protection to **73 required GitHub Actions app-bound checks**. Fresh readback
+verifies that all other fields remain unchanged, comparing only the context/check
+array ordering canonically. Before/request/response/after records and hashes remain
+at `build/ci-policy-evidence/coordinator-access-policy-1791673224430611000/`.
+
+The previous published head `bec495983ab626ed4f503ce55ecbea0201fbcac4` completed
+all **69 then-required checks: 65 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38092684786) passed every
+job, including the complete remote system suite. All five memory phase/borrow/
+allocation-IRQ jobs and the production storage-create-failure regression passed
+in [foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38092684783).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38092684860)
+still failed. Retained artifacts remain under `build/remote-evidence/bec4959/`,
+with paths/hashes indexed in `evidence-index.json`. The historical exact-head
+policy/execution audit at `build/ci-policy-evidence/bec4959-final-audit/` records
+those 69 executed checks and does not certify green verification. Required-success
+replay fails at `build/ci-policy-evidence/bec4959-required-success/`. Both predate
+the 73-check upgrade; the new coordinator head needs separate remote execution.
+
+Local QEMU 11.1.2 and retained firmware identity remain portability evidence
+against the unchanged frozen 11.1.1 profile. The four strict CPU requirements
+remain enforced; the remote ATA timeout's underlying cause remains unresolved.
+Complete ownership/decomposition, IRQ timing and nesting, CPU/reference
+qualification, independent review, sustained workloads and later roadmap work
+remain open. Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged.
