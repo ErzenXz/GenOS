@@ -142,7 +142,8 @@ def request(monitor: QmpMonitor, command: dict, deadline: float) -> dict:
         return reply
 
 
-def boot(root: Path, evidence: Path, timeout: int) -> None:
+def boot(root: Path, evidence: Path, timeout: int, *, armed_marker: str = ARMED,
+         ready_marker: str = READY, validate_serial=validate_log) -> None:
     with tempfile.TemporaryDirectory(prefix='genos-input-irq-') as temporary:
         qmp_path = Path(temporary) / 'qmp.sock'
         uart_path = Path(temporary) / 'uart.sock'
@@ -181,20 +182,20 @@ def boot(root: Path, evidence: Path, timeout: int) -> None:
                             except socket.timeout:
                                 pass
                             text = log.decode(errors='replace')
-                            if ARMED + '\n' in text and not injected:
+                            if armed_marker + '\n' in text and not injected:
                                 if request(monitor, KEY_COMMAND, deadline) != {'return': {}, 'id': KEY_ID}:
                                     raise ValueError('key event was not accepted')
                                 uart.sendall(b'!')
                                 (evidence / 'serial-sent.bin').write_bytes(b'!')
                                 injected = True
-                            if READY + '\n' in text:
+                            if ready_marker + '\n' in text:
                                 if not injected:
                                     raise ValueError('probe completed without key injection')
                                 request(monitor, {'execute': 'query-status', 'id': STATUS_ID}, deadline)
                                 while b'\n' in monitor.pending:
                                     monitor.read(deadline)
                                 validate_qmp(monitor.messages)
-                                validate_log(text)
+                                validate_serial(text)
                                 if process.poll() is not None:
                                     raise RuntimeError('QEMU exited after completion')
                                 return

@@ -3,54 +3,108 @@ pub use kernel::frame_grant::{Grant, Kind, Owner};
 use kernel::frame_grant::{Ledger, GRANT_CAPACITY};
 use kernel::physmem::{scrub_page, FrameAllocator, KERNEL_BITMAP_WORDS, PAGE_SIZE};
 
-static mut GRANTS: Ledger<GRANT_CAPACITY> = Ledger::new();
-static mut ALLOCATOR: FrameAllocator<KERNEL_BITMAP_WORDS> = FrameAllocator::new();
-#[cfg(feature = "memory-test-faults")]
-static mut FAIL_AFTER: Option<usize> = None;
+// Permanent in-place storage avoids copying the bitmap/ledger onto a stack.
+// The admitted BSP owns it; only with_state creates references to it.
+struct MemoryState {
+    allocator: FrameAllocator<KERNEL_BITMAP_WORDS>,
+    grants: Ledger<GRANT_CAPACITY>,
+    boot_started: bool,
+    ready: bool,
+    #[cfg(feature = "memory-test-faults")]
+    fail_after: Option<usize>,
+}
+
+static mut STATE: MemoryState = MemoryState {
+    allocator: FrameAllocator::new(),
+    grants: Ledger::new(),
+    boot_started: false,
+    ready: false,
+    #[cfg(feature = "memory-test-faults")]
+    fail_after: None,
+};
+static ACCESS: kernel::context_slot::ContextSlot<MemoryState> =
+    kernel::context_slot::ContextSlot::new();
+
+fn reject(message: &str) -> ! {
+    crate::arch::disable_interrupts();
+    crate::serial::println(message);
+    crate::arch::halt_loop();
+}
+
+// Private, non-escaping callbacks cannot enable interrupts, switch contexts or
+// reenter memory. Both slot guards retire before prior IF is restored.
+fn with_state<R>(operation: impl for<'a> FnOnce(&'a mut MemoryState) -> R) -> R {
+    crate::arch::without_interrupts(|| {
+        let pointer = core::ptr::NonNull::new(core::ptr::addr_of_mut!(STATE)).unwrap();
+        // SAFETY: BSP admission excludes other CPUs; local IRQs are masked.
+        // STATE is permanent/stationary, with no owner reference or other access.
+        // Emergency/NMI entries cannot enter memory Rust code. The slot refuses
+        // reentry before dereference, and the HRTB prevents a state borrow escaping.
+        let result = unsafe { ACCESS.run(pointer, || ACCESS.with_current(operation)) };
+        match result {
+            Ok(Ok(Some(value))) => value,
+            _ => reject("MEMORY_ACCESS_REJECTED policy=halt"),
+        }
+    })
+}
+
+fn with_ready_state<R>(operation: impl for<'a> FnOnce(&'a mut MemoryState) -> R) -> R {
+    with_state(|state| {
+        if !state.ready {
+            reject("MEMORY_PHASE_REJECTED reason=uninitialized policy=halt");
+        }
+        operation(state)
+    })
+}
 
 pub fn init(boot_info: &BootInfo) {
-    // SAFETY: BSP initialization with interrupts disabled is the only owner.
-    // Initialize in static storage to avoid copying the 256-KiB bitmap.
-    let allocator = unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) };
-    let Ok(regions) = genos_abi::boot_memory::validate_map(&boot_info.memory_map) else {
-        crate::serial::println("FRAME_ALLOCATOR_MAP_REJECTED invalid_handoff=true");
-        crate::arch::halt_loop();
-    };
-    for region in regions {
-        if region.kind == MemoryRegionKind::Usable && !allocator.add_region(*region) {
-            crate::serial::println("FRAME_ALLOCATOR_MAP_REJECTED overlap_or_capacity=true");
-            crate::arch::halt_loop();
-        }
+    if crate::arch::interrupts_enabled() {
+        reject("MEMORY_CONTEXT_REJECTED reason=initialization-if policy=halt");
     }
-    let total = allocator.usable_bytes();
-    let regions = allocator.region_count();
+    let (total, regions) = with_state(|state| {
+        if state.boot_started {
+            reject("MEMORY_PHASE_REJECTED reason=already-initialized policy=halt");
+        }
+        state.boot_started = true;
+        let Ok(regions) = genos_abi::boot_memory::validate_map(&boot_info.memory_map) else {
+            reject("FRAME_ALLOCATOR_MAP_REJECTED invalid_handoff=true");
+        };
+        for region in regions {
+            if region.kind == MemoryRegionKind::Usable && !state.allocator.add_region(*region) {
+                reject("FRAME_ALLOCATOR_MAP_REJECTED overlap_or_capacity=true");
+            }
+        }
+        assert!(state.allocator.is_consistent());
+        state.ready = true;
+        // Return copies; serial output does not retain the allocator borrow.
+        (
+            state.allocator.usable_bytes(),
+            state.allocator.region_count(),
+        )
+    });
     crate::serial::print("Usable memory bytes: ");
     crate::serial::print_u64(total);
     crate::serial::print(" regions=");
     crate::serial::print_u64(regions as u64);
     crate::serial::println("");
-    assert!(allocator.is_consistent());
     crate::serial::println("FRAME_ALLOCATOR_BITMAP_READY capacity_gib=8");
 }
 
-/// All allocator access is confined to an IRQ-masked BSP critical section.
-/// The closure cannot return an allocator borrow. NMI/fatal handlers must not
-/// call this module; the boot admission gate excludes other CPUs.
-fn with_allocator<R>(operation: impl FnOnce(&mut FrameAllocator<KERNEL_BITMAP_WORDS>) -> R) -> R {
+/// All allocator/ledger access shares one IRQ-masked, reentry-checked scope.
+/// Emergency paths cannot call it; local IRQ masking is not an SMP lock.
+fn with_allocator<R>(
+    operation: impl for<'a> FnOnce(&'a mut FrameAllocator<KERNEL_BITMAP_WORDS>) -> R,
+) -> R {
     with_memory(|allocator, _| operation(allocator))
 }
 
 fn with_memory<R>(
-    operation: impl FnOnce(&mut FrameAllocator<KERNEL_BITMAP_WORDS>, &mut Ledger<GRANT_CAPACITY>) -> R,
+    operation: impl for<'a> FnOnce(
+        &'a mut FrameAllocator<KERNEL_BITMAP_WORDS>,
+        &'a mut Ledger<GRANT_CAPACITY>,
+    ) -> R,
 ) -> R {
-    crate::arch::without_interrupts(|| {
-        // SAFETY: the admitted BSP is the sole owner. Local IRQs are masked
-        // before creating this exclusive reference and no borrow escapes it.
-        operation(
-            unsafe { &mut *core::ptr::addr_of_mut!(ALLOCATOR) },
-            unsafe { &mut *core::ptr::addr_of_mut!(GRANTS) },
-        )
-    })
+    with_ready_state(|state| operation(&mut state.allocator, &mut state.grants))
 }
 
 #[allow(dead_code)]
@@ -60,18 +114,19 @@ pub fn usable_bytes() -> u64 {
 
 /// Return an exclusively granted, zero-filled identity-mapped physical frame.
 pub fn alloc_frame(owner: Owner, kind: Kind) -> Option<Grant> {
-    with_memory(|allocator, grants| {
+    with_ready_state(|state| {
         #[cfg(feature = "memory-test-faults")]
-        // SAFETY: the same IRQ-masked BSP section protects fault configuration.
-        unsafe {
-            if let Some(remaining) = *core::ptr::addr_of!(FAIL_AFTER) {
+        {
+            if let Some(remaining) = state.fail_after {
                 if remaining == 0 {
                     return None;
                 }
-                core::ptr::addr_of_mut!(FAIL_AFTER).write(Some(remaining - 1));
+                state.fail_after = Some(remaining - 1);
             }
         }
-        let grant = grants.allocate(owner, kind, || allocator.alloc_frame())?;
+        let grant = state
+            .grants
+            .allocate(owner, kind, || state.allocator.alloc_frame())?;
         let frame = grant.address();
         // SAFETY: the bitmap just granted this usable, aligned page exclusively.
         // Firmware/retained supervisor identity mappings cover managed RAM.
@@ -85,12 +140,7 @@ pub fn alloc_frame(owner: Owner, kind: Kind) -> Option<Grant> {
 
 #[cfg(feature = "memory-test-faults")]
 pub fn fail_after(allocations: Option<usize>) {
-    crate::arch::without_interrupts(|| {
-        // SAFETY: fault configuration shares the allocator's BSP/IRQ ownership.
-        unsafe {
-            core::ptr::addr_of_mut!(FAIL_AFTER).write(allocations);
-        }
-    });
+    with_ready_state(|state| state.fail_after = allocations);
 }
 
 /// Validate allocation identity and mapping pins before touching the page.
