@@ -748,3 +748,90 @@ No R1/R2/R3 or engineering release level advances. **F1.4 remains unchecked** an
 the frozen checklist remains **50/100**. Physical corruption, terminal-stack/UART
 failure, unrecoverable CPU shutdown, second #MC with MCIP active, arbitrary storms,
 SMP and general NMI/machine-check recovery remain excluded.
+
+## October 10 CPU/scheduler extraction and published verification
+
+Clean source `d603c555b08490d204a04bf5af554c0bc89080bd` extracts the native
+twenty-word CPU frame/initialization/return admission into `cpu_context`, and the
+bounded process/socket round-robin policy into `scheduler`. Process-owned bounds,
+active-root checks, dispatch and cleanup stay with the coordinator. Five context
+tests cover exact assembly offsets, fresh registers, all 65,536 selector values,
+each flag bit and executable/stack boundaries. Five scheduling tests cover every
+ready subset, bounded equal service, idle/invalid selections, wakeup batches and
+empty/singleton/overflow boundaries. No ABI or frame layout changed.
+
+Local results on Rust 1.97.0/macOS arm64:
+
+- **288 workspace tests passed**, including 206 kernel tests. The standalone
+  parser CLI tests passed; seed zero completed 100,000 mutations plus the twelve
+  retained seeds and 693 truncations. These remain mutation stress, not
+  coverage-guided fuzzing.
+- Strict lint passed for host tooling/ABI, bootloader, kernel normal and validation
+  features, and userspace normal/validation targets. Normal release and validation
+  images linked. Formatting, module dependencies, documentation links and the
+  unchanged 443-site unsafe inventory passed.
+- `cargo xtask test-release` and the **complete `cargo xtask test` suite passed**:
+  interactive normal debug/release boots; file/serial and storage recovery/failure
+  paths; network and no-HTTP policy; external SDK execution; allocation rollback;
+  and all six CPU page-protection probes. Per-run manifests remain under
+  `build/normal-evidence/`, `build/validation-evidence/` and
+  `build/exception-evidence/`; combined logs are retained in
+  `build/october10-foundation/`.
+- The complete nineteen-case containment matrix had **seventeen passes and two
+  failures**, `nmi-iret` and `initial-rip`, with all per-case manifests/logs/patches
+  under `build/fault-containment-evidence/1791664971063150000/`. The separate user
+  #XM run timed out after its probe returned and the isolation check failed;
+  its evidence remains under
+  `build/exception-evidence/user-xm/1791664863842719000/`. These are retained
+  qualification failures, not green results.
+
+These VM runs used **QEMU 11.1.2**, with the pinned machine/CPU arguments and
+matching firmware digest. Every manifest records `reference_environment_match=false`
+and `reference_mismatches=qemu_version`. The actual reference preflight rejected
+this version. These are portability results; the `genos-q35-tcg-v3` profile was not
+changed and no new exact-reference qualification is claimed.
+
+The OAuth credential now has `workflow` scope. The branch was published as
+[draft PR #9](https://github.com/ErzenXz/GenOS/pull/9). All **sixty GitHub Actions
+checks completed on exact head `d603c55`: 56 passed and four failed**:
+
+- [CI](https://github.com/ErzenXz/GenOS/actions/runs/38084730259) passed all sixteen
+  jobs, including the complete build/boot lane and all six independent boot-map
+  cases.
+- [Exception entry](https://github.com/ErzenXz/GenOS/actions/runs/38084730268)
+  passed its source/evidence jobs and ten exception cases; user/kernel #XM both
+  failed their exact exception-delivery deadlines.
+- [Foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38084730265)
+  passed 28 cases; `initial-rip` reported failed containment and `nmi-iret` timed
+  out without its required second-NMI result. All matrix jobs ran independently.
+
+Check-run metadata binds these results to PR head `d603c55`; the archived source
+manifests correctly identify GitHub's synthetic merge commit
+`0f11f21f709d432d2e1a99718ba545ad55dfa428`. Its parents are the unchanged `main`
+`a4432b8` and `d603c55`. Both the synthetic merge and reviewed head have tree
+`fdf1299b4bdce3a35d33c89d85a14de1f4a6d61b`; a fetched `refs/pull/9/merge` and
+`git diff --exit-code d603c55 FETCH_HEAD` independently confirmed identical source
+content. This is exact reviewed-tree evidence with two explicit commit identities.
+The follow-up workflow change checks out the PR head explicitly, records actual
+HEAD/tree separately from the event commit, and retains the full per-run QEMU
+manifests. Its next-head remote results must be tracked separately.
+
+The failed remote logs and their downloadable fixture/serial/manifest artifacts
+remain retained. Linux jobs are independent clean portability builds, not another
+reviewer's reproduction of the pinned macOS reference environment.
+
+`main` now requires all sixty context names bound to GitHub Actions App ID 15368,
+strict base freshness and administrator enforcement. Force pushes/deletion are
+disabled; no approval-count rule was added. The API mutation was read back and
+compared field-for-field. The [versioned policy and read-only audit](CI_POLICY.md)
+preserve this contract, exact-head execution and failure outcomes; negative tests
+reject weakening, missing/duplicate/stale/wrong-app/skipped results and overwrites.
+The execution audit at `build/ci-policy-evidence/d603c55-complete-audit/` reports
+`required=60 executed=60 failed=4`; `--require-success` fails on those four lanes.
+This closes **F0.3 only**, moving the original checklist to **51/100**.
+
+F0.1 remains open: no merge, green candidate, independent reference review, R1/R2/R3
+designation or engineering release promotion occurred. The remaining F1 CPU
+qualification failures, F3/F4/F5 ownership work, coverage/soak runs, storage and
+application/console roadmap requirements still apply. Historical missing-workflow
+statements above describe earlier attempts and are superseded by this dated result.

@@ -23,6 +23,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Activate pinned Rust toolchain
@@ -72,6 +73,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Activate pinned Rust toolchain
@@ -96,6 +98,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Activate pinned Rust toolchain
@@ -125,6 +128,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Validate repository-local Markdown links
@@ -139,6 +143,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Install system dependencies
@@ -160,7 +165,8 @@ jobs:
         run: |
           mkdir -p build
           {
-            echo "commit=${GITHUB_SHA}"
+            echo "event_commit=${GITHUB_SHA}"
+            git log -1 --format='commit=%H%ntree=%T'
             echo "runner_os=${RUNNER_OS}"
             echo "runner_arch=${RUNNER_ARCH}"
             rustc -Vv || true
@@ -184,6 +190,10 @@ jobs:
           path: |
             build/ci-manifest.txt
             build/serial*.log
+            build/*manifest.txt
+            build/validation-evidence/
+            build/normal-evidence/
+            build/exception-evidence/
           if-no-files-found: warn
           retention-days: 14
 
@@ -194,6 +204,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Check retained source and review context
         run: python3 tools/check_unsafe.py --check
@@ -220,6 +231,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Run production parsers and socket invariants
         shell: bash
@@ -242,6 +254,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Install reference VM dependencies
         run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
@@ -266,6 +279,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Install reference VM dependencies
         run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
@@ -289,6 +303,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       # Distribution QEMU/OVMF supplies portability evidence. Each manifest
       # records its actual identity; this is not reference qualification.

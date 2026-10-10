@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "repository": "ErzenXz/GenOS",
+  "branch": "main",
+  "checks": [
+    {
+      "context": "Boot memory admission (cmdline)",
+      "app_id": 15368
+    },
+    {
+      "context": "Boot memory admission (count)",
+      "app_id": 15368
+    },
+    {
+      "context": "Boot memory admission (initrd-usable)",
+      "app_id": 15368
+    },
+    {
+      "context": "Boot memory admission (kernel-usable)",
+      "app_id": 15368
+    },
+    {
+      "context": "Boot memory admission (loader-version)",
+      "app_id": 15368
+    },
+    {
+      "context": "Boot memory admission (overlap)",
+      "app_id": 15368
+    },
+    {
+      "context": "Build and boot",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (kernel, de)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (kernel, gp)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (kernel, mf)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (kernel, pf)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (kernel, ud)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (kernel, xm)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (user, de)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (user, gp)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (user, mf)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (user, pf)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (user, ud)",
+      "app_id": 15368
+    },
+    {
+      "context": "CPU fault (user, xm)",
+      "app_id": 15368
+    },
+    {
+      "context": "Documentation",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation boot-stack-guard",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation elf-entry-data",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation elf-overlap",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation elf-program-range",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation elf-segment-overflow",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation elf-truncation",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation elf-writable-code",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation emergency-stack-guard",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-double-fault",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-exception-pf",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-initial-cs",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-initial-flags",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-initial-rip",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-initial-rsp-reject",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-initial-ss-reject",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-irq-cs",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-irq-mce",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-irq-nmi",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-irq-pf",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-mce-gp",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-mce-idle",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-nmi-idle",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-nmi-iret",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-nmi-reentry",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-syscall-cs",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-syscall-gp",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation entry-user-nt",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation irq-stack-guard",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation memory-snapshot",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation privilege-stack-guard",
+      "app_id": 15368
+    },
+    {
+      "context": "Host tests",
+      "app_id": 15368
+    },
+    {
+      "context": "Normal debug and release boot",
+      "app_id": 15368
+    },
+    {
+      "context": "Parser mutation stress (0)",
+      "app_id": 15368
+    },
+    {
+      "context": "Parser mutation stress (0x47454e4f53)",
+      "app_id": 15368
+    },
+    {
+      "context": "Release target checks",
+      "app_id": 15368
+    },
+    {
+      "context": "Single-core admission",
+      "app_id": 15368
+    },
+    {
+      "context": "Static analysis",
+      "app_id": 15368
+    },
+    {
+      "context": "Unsafe source inventory",
+      "app_id": 15368
+    },
+    {
+      "context": "evidence-parser",
+      "app_id": 15368
+    },
+    {
+      "context": "source-snapshot",
+      "app_id": 15368
+    }
+  ]
+}
