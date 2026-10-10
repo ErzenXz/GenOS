@@ -30,6 +30,7 @@ pub mod physmem;
 pub mod protection;
 pub mod recovery;
 pub mod request;
+pub mod rx_queue;
 pub mod scheduler;
 pub mod scoped_cell;
 pub mod segments;

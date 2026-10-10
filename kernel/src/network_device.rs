@@ -4,9 +4,12 @@ use core::{
 };
 
 use crate::{arch, serial};
-use kernel::tx_queue::{TxQueue, TX_RING_SIZE};
+use kernel::{
+    rx_queue::{RxBatch, RxCompletion, RX_BUFFER_BYTES, RX_HEADER_BYTES, RX_MAX_FRAME},
+    tx_queue::{TxQueue, TX_RING_SIZE},
+};
 
-pub const MAX_FRAME: usize = 1518;
+pub const MAX_FRAME: usize = RX_MAX_FRAME;
 
 const PCI_CONFIG_ADDRESS: u16 = 0x0cf8;
 const PCI_CONFIG_DATA: u16 = 0x0cfc;
@@ -30,11 +33,11 @@ const VIRTIO_F_VERSION_1: u32 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
 // VirtIO 1.x always includes the little-endian num_buffers field. The older
 // 10-byte layout exists only for a legacy interface without mergeable buffers.
-const VIRTIO_NET_HEADER_BYTES: usize = 12;
+const VIRTIO_NET_HEADER_BYTES: usize = RX_HEADER_BYTES;
 const VIRTQUEUE_SIZE: usize = TX_RING_SIZE;
 #[cfg(feature = "network-test-faults")]
 pub const VIRTIO_QUEUE_CAPACITY: usize = VIRTQUEUE_SIZE;
-const VIRTIO_BUFFER_BYTES: usize = 2048;
+const VIRTIO_BUFFER_BYTES: usize = RX_BUFFER_BYTES;
 const VIRTIO_RX_QUEUE: u16 = 0;
 const VIRTIO_TX_QUEUE: u16 = 1;
 const VIRTIO_POLL_LIMIT: usize = 800_000;
@@ -360,10 +363,8 @@ pub struct VirtioNet {
     tx_notify: u64,
     mac: [u8; 6],
     rx_available: u16,
-    rx_used: u16,
-    rx_batch_end: u16,
+    rx: RxBatch<VIRTQUEUE_SIZE>,
     rx_batch_interrupt: bool,
-    rx_faulted: bool,
     tx: TxQueue,
     rx_idle_checks: usize,
 }
@@ -376,10 +377,8 @@ impl VirtioNet {
             tx_notify: 0,
             mac: [0; 6],
             rx_available: 0,
-            rx_used: 0,
-            rx_batch_end: 0,
+            rx: RxBatch::new(0),
             rx_batch_interrupt: false,
-            rx_faulted: false,
             tx: TxQueue::new(),
             rx_idle_checks: 0,
         }
@@ -458,10 +457,8 @@ impl VirtioNet {
             VIRTQUEUE_SIZE as u16,
         );
         self.rx_available = VIRTQUEUE_SIZE as u16;
-        self.rx_used = 0;
-        self.rx_batch_end = 0;
+        self.rx = RxBatch::new(0);
         self.rx_batch_interrupt = false;
-        self.rx_faulted = false;
     }
 
     unsafe fn notify(address: u64, queue_index: u16) {
@@ -590,7 +587,7 @@ impl FrameDevice for VirtioNet {
     }
 
     fn transmit(&mut self, frame: &[u8]) -> bool {
-        if self.rx_faulted || self.tx.is_quarantined() || frame.len() > MAX_FRAME {
+        if self.rx.is_quarantined() || self.tx.is_quarantined() || frame.len() > MAX_FRAME {
             return false;
         }
         let wire_length = frame.len().max(60);
@@ -671,59 +668,60 @@ impl FrameDevice for VirtioNet {
     }
 
     fn receive(&mut self, packet: &mut PacketBuffer) -> bool {
-        if self.rx_faulted || self.tx.is_quarantined() {
+        if self.rx.is_quarantined() || self.tx.is_quarantined() {
             return false;
         }
         unsafe {
             let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
-            let notified = VIRTIO_INTERRUPT_PENDING.swap(false, Ordering::AcqRel);
+            let pending = self.rx.pending();
+            // Preserve new interrupt readiness while draining the admitted
+            // snapshot. Replacing it could mix completions from before/after
+            // a descriptor repost and hide duplicate IDs in the old batch.
+            let notified = !pending && VIRTIO_INTERRUPT_PENDING.swap(false, Ordering::AcqRel);
             self.rx_idle_checks = self.rx_idle_checks.wrapping_add(1);
             let recovery = self
                 .rx_idle_checks
                 .is_multiple_of(VIRTIO_RECOVERY_POLL_INTERVAL);
-            let pending = self.rx_used != self.rx_batch_end;
-            if !notified && !pending && !recovery {
+            if !pending && !notified && !recovery {
                 return false;
             }
-            if notified || !pending {
+            if !pending {
                 if !notified {
                     VIRTIO_RECOVERY_POLLS.fetch_add(1, Ordering::Relaxed);
                 }
-                fence(Ordering::Acquire);
                 let used_index = read_volatile(addr_of!((*queue).used.index));
-                if used_index.wrapping_sub(self.rx_used) > VIRTQUEUE_SIZE as u16 {
-                    self.rx_faulted = true;
+                fence(Ordering::Acquire);
+                let count = usize::from(used_index.wrapping_sub(self.rx.used_index()));
+                if count > VIRTQUEUE_SIZE {
+                    self.rx.quarantine();
                     serial::println("VIRTIO_NET_RX_INVALID_USED_ADVANCE");
                     return self.fail();
                 }
-                // A single MSI-X delivery can cover an entire used-ring batch.
-                // Retain readiness until that bounded snapshot is drained;
-                // consuming one frame must not strand its siblings until a
-                // recovery poll or count them as lost-interrupt completions.
-                self.rx_batch_end = used_index;
+                let mut entries = [RxCompletion::EMPTY; VIRTQUEUE_SIZE];
+                for (offset, entry) in entries[..count].iter_mut().enumerate() {
+                    let slot =
+                        self.rx.used_index().wrapping_add(offset as u16) as usize % VIRTQUEUE_SIZE;
+                    let element = read_volatile(addr_of!((*queue).used.ring[slot]));
+                    *entry = RxCompletion {
+                        descriptor: element.id,
+                        length: element.length,
+                    };
+                }
+                // Validate every ID, duplicate and extent before the first
+                // packet copy or descriptor return to the live device.
+                if self.rx.admit(used_index, &entries[..count]).is_err() {
+                    serial::println("VIRTIO_NET_RX_INVALID_COMPLETION queue=quarantined");
+                    return self.fail();
+                }
                 self.rx_batch_interrupt = notified;
             }
-            if self.rx_used == self.rx_batch_end {
+            let Some(element) = self.rx.take() else {
                 return false;
-            }
-            let interrupt_driven = self.rx_batch_interrupt;
-            let element = read_volatile(addr_of!(
-                (*queue).used.ring[self.rx_used as usize % VIRTQUEUE_SIZE]
-            ));
-            self.rx_used = self.rx_used.wrapping_add(1);
-            let descriptor = element.id as usize;
-            let valid = descriptor < VIRTQUEUE_SIZE
-                && element.length as usize >= VIRTIO_NET_HEADER_BYTES
-                && element.length as usize <= VIRTIO_BUFFER_BYTES;
-            let frame_length = if valid {
-                element.length as usize - VIRTIO_NET_HEADER_BYTES
-            } else {
-                0
             };
-            if !valid || frame_length > MAX_FRAME {
-                serial::println("VIRTIO_NET_RX_INVALID_BUFFER");
-            }
-            if valid && frame_length <= MAX_FRAME {
+            let descriptor = element.descriptor as usize;
+            let frame_length = element.length as usize - VIRTIO_NET_HEADER_BYTES;
+            let within_profile = frame_length <= MAX_FRAME;
+            if within_profile {
                 packet.owner = PacketOwner::Driver;
                 let buffers = addr_of!(VIRTIO_RX_BUFFERS.0) as *const [u8; VIRTIO_BUFFER_BYTES];
                 core::ptr::copy_nonoverlapping(
@@ -736,27 +734,26 @@ impl FrameDevice for VirtioNet {
                 );
                 packet.len = frame_length;
                 packet.owner = PacketOwner::Stack;
-                if interrupt_driven {
+                if self.rx_batch_interrupt {
                     VIRTIO_RX_INTERRUPT_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
                 } else {
                     VIRTIO_RECOVERY_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
                 }
                 VIRTIO_RX_FRAMES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                // Ownership is valid, but this frame exceeds the stack's
+                // unchanged packet budget. Drop and repost without a copy.
+                serial::println("VIRTIO_NET_RX_INVALID_BUFFER");
             }
-
-            if descriptor < VIRTQUEUE_SIZE {
-                write_volatile(
-                    addr_of_mut!(
-                        (*queue).available.ring[self.rx_available as usize % VIRTQUEUE_SIZE]
-                    ),
-                    descriptor as u16,
-                );
-                fence(Ordering::Release);
-                self.rx_available = self.rx_available.wrapping_add(1);
-                write_volatile(addr_of_mut!((*queue).available.index), self.rx_available);
-                Self::notify(self.rx_notify, VIRTIO_RX_QUEUE);
-            }
-            valid && frame_length <= MAX_FRAME
+            write_volatile(
+                addr_of_mut!((*queue).available.ring[self.rx_available as usize % VIRTQUEUE_SIZE]),
+                descriptor as u16,
+            );
+            fence(Ordering::Release);
+            self.rx_available = self.rx_available.wrapping_add(1);
+            write_volatile(addr_of_mut!((*queue).available.index), self.rx_available);
+            Self::notify(self.rx_notify, VIRTIO_RX_QUEUE);
+            within_profile
         }
     }
 }
@@ -1233,17 +1230,31 @@ mod completion_tests {
         let mut packet = PacketBuffer::empty();
         assert!(device.receive(&mut packet));
         assert_eq!(packet.bytes[0], 1);
+        // A new completion/IRQ arrives after descriptor zero was reposted.
+        // Finish the immutable old batch before admitting that next snapshot.
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            (*queue).used.ring[2] = VirtqUsedElement { id: 0, length: 72 };
+            (*queue).used.index = 3;
+            let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+            (&mut (*buffers)[0])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(3);
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
         assert!(
             device.receive(&mut packet),
             "a coalesced completion must not wait for recovery polling"
         );
         assert_eq!(packet.bytes[0], 2);
-        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 2);
+        assert!(
+            device.receive(&mut packet),
+            "new IRQ readiness survives the old batch drain"
+        );
+        assert_eq!(packet.bytes[0], 3);
+        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 3);
         assert_eq!(VIRTIO_RECOVERY_COMPLETIONS.load(Ordering::Relaxed), 0);
         assert!(!device.receive(&mut packet));
         // The same contract holds when the 16-bit used index wraps.
-        device.rx_used = u16::MAX;
-        device.rx_batch_end = u16::MAX;
+        device.rx = RxBatch::new(u16::MAX);
         // SAFETY: exclusively owned fixture queue, as above.
         unsafe {
             let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
@@ -1254,7 +1265,7 @@ mod completion_tests {
         VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
         assert!(device.receive(&mut packet));
         assert!(device.receive(&mut packet));
-        assert_eq!(device.rx_used, 1);
+        assert_eq!(device.rx.used_index(), 1);
         assert!(!device.receive(&mut packet));
         // A device cannot claim more completions than it owns descriptors.
         unsafe {
@@ -1262,7 +1273,87 @@ mod completion_tests {
         }
         VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
         assert!(!device.receive(&mut packet));
-        assert!(device.rx_faulted);
+        assert!(device.rx.is_quarantined());
+
+        // Reject the entire captured prefix before copying or reposting its
+        // first valid descriptor. This remains the only DMA-fixture host test.
+        for bad in [
+            VirtqUsedElement { id: 0, length: 72 },
+            VirtqUsedElement { id: 8, length: 72 },
+            VirtqUsedElement { id: 1, length: 11 },
+            VirtqUsedElement {
+                id: 1,
+                length: 2049,
+            },
+        ] {
+            let mut device = VirtioNet::new();
+            device.rx_notify = addr_of_mut!(notification) as u64;
+            packet.bytes.fill(0xaa);
+            packet.len = 7;
+            packet.owner = PacketOwner::Stack;
+            let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);
+            let frames_before = VIRTIO_RX_FRAMES.load(Ordering::Relaxed);
+            unsafe {
+                let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+                queue.write(VirtqueueMemory::empty());
+                device.prepare_receive_queue();
+                (*queue).used.ring[0] = VirtqUsedElement { id: 0, length: 72 };
+                (*queue).used.ring[1] = bad;
+                (*queue).used.index = 2;
+                let available_before = (*queue).available.ring;
+                VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+                assert!(!device.receive(&mut packet));
+                assert!(device.rx.is_quarantined());
+                assert_eq!(device.rx.used_index(), 0);
+                assert_eq!((*queue).available.index, VIRTQUEUE_SIZE as u16);
+                assert_eq!((*queue).available.ring, available_before);
+                // A later apparently valid completion cannot undo quarantine.
+                (*queue).used.ring[0] = VirtqUsedElement { id: 0, length: 72 };
+                (*queue).used.index = 1;
+                VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+                assert!(!device.receive(&mut packet));
+                assert!(!device.transmit(&[0x99; 60]));
+                assert_eq!((*queue).available.index, VIRTQUEUE_SIZE as u16);
+                assert_eq!((*queue).available.ring, available_before);
+            }
+            assert_eq!(packet.bytes, [0xaa; MAX_FRAME]);
+            assert_eq!(packet.len, 7);
+            assert!(packet.owner == PacketOwner::Stack);
+            assert_eq!(
+                VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed),
+                notifications_before
+            );
+            assert_eq!(VIRTIO_RX_FRAMES.load(Ordering::Relaxed), frames_before);
+        }
+
+        // An oversized packet inside a valid DMA extent retains the existing
+        // drop/repost policy, preserving caller bytes without quarantining RX.
+        for length in [1531, VIRTIO_BUFFER_BYTES as u32] {
+            let mut device = VirtioNet::new();
+            device.rx_notify = addr_of_mut!(notification) as u64;
+            let frames_before = VIRTIO_RX_FRAMES.load(Ordering::Relaxed);
+            let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);
+            unsafe {
+                let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+                queue.write(VirtqueueMemory::empty());
+                device.prepare_receive_queue();
+                (*queue).used.ring[0] = VirtqUsedElement { id: 0, length };
+                (*queue).used.index = 1;
+                VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+                assert!(!device.receive(&mut packet));
+                assert!(!device.rx.is_quarantined());
+                assert_eq!(device.rx.used_index(), 1);
+                assert_eq!((*queue).available.index, VIRTQUEUE_SIZE as u16 + 1);
+            }
+            assert_eq!(packet.bytes, [0xaa; MAX_FRAME]);
+            assert_eq!(packet.len, 7);
+            assert!(packet.owner == PacketOwner::Stack);
+            assert_eq!(VIRTIO_RX_FRAMES.load(Ordering::Relaxed), frames_before);
+            assert_eq!(
+                VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed),
+                notifications_before + 1
+            );
+        }
 
         // Exercise the production TX path, including its real polling timeout.
         // Queue/buffer storage is still exclusive to this single host fixture;

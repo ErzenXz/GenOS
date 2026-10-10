@@ -59,6 +59,10 @@ are recorded in [the verification ledger](VERIFICATION.md).
 The pure state machine supplies no physical-buffer capability or hardware proof.
 The coordinator still provides CPU-side exclusivity; the actual driver still
 trusts coherent x86 device behavior and admitted mappings. Raw permanent DMA
-globals, RX descriptor identity/repetition policy, PCI/MMIO admission, reset
+globals, broader RX/device ownership, PCI/MMIO admission, reset
 completion, device removal, IOMMU isolation and SMP require further work. This
 fix does not close F3.2, F4.2, F4.4, F6.4 or H-DMA, or change the frozen VM profile.
+
+The subsequent [RX batch boundary](RX_QUEUE_OWNERSHIP.md) validates a complete
+captured prefix before any packet copy or descriptor return. It does not add
+DMA isolation or reset/reuse authority.
