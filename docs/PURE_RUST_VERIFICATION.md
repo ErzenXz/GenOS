@@ -34,6 +34,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| Owned PS/2 decoding, pointer bounds and bounded event queue | 6 |
 | CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
 | Scoped current-process access | 7 |
@@ -45,7 +46,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **72** |
+| **Total** | **78** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,

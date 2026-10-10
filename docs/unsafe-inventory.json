@@ -5,9 +5,9 @@
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 281,
+    "unsafe_block": 276,
     "unsafe_extern": 7,
-    "unsafe_fn": 72,
+    "unsafe_fn": 71,
     "unsafe_impl": 2,
     "unsafe_trait": 1
   },
@@ -185,12 +185,17 @@
     {
       "lines": 529,
       "path": "kernel/src/input.rs",
-      "sha256": "c77f780f59a7d94cb596b7a4a46b5e8e2ffc834694c532bdae41ed2ef8d12e0f"
+      "sha256": "ac44ca5489b90041ed34d3b72215a86daf8c70d80bac359ff903d13b8d9458c0"
     },
     {
-      "lines": 156,
+      "lines": 165,
       "path": "kernel/src/input_hw.rs",
-      "sha256": "db80ae37fd1880931964cf19a2e348dcc065efed933af5e2273c1c3902751918"
+      "sha256": "ac3d38fc10b539e2e158a728a81f753d64083567647d70701a9eb1fef31989f3"
+    },
+    {
+      "lines": 212,
+      "path": "kernel/src/input_state.rs",
+      "sha256": "f64bbef73bde9ab31ea2cc701918fa4b52631dcac132f4f57fe8012ceedb745c"
     },
     {
       "lines": 187,
@@ -218,9 +223,9 @@
       "sha256": "de208b2f6116d487e6c2a2b91416cf6b9b29689096b9a163dc482edeebbb17ba"
     },
     {
-      "lines": 81,
+      "lines": 82,
       "path": "kernel/src/lib.rs",
-      "sha256": "b707e8de8db3289504f1910c3600640a75d12c0244d5600a96e014db234cb9f0"
+      "sha256": "8edf8a7453e264813276a1958a8628ec44d6dd807cf9f1bc52a2a4ffcfc2a511"
     },
     {
       "lines": 292,
@@ -1688,143 +1693,83 @@
       "path": "kernel/src/entry_guard.S"
     },
     {
-      "column": 5,
-      "construct_sha256": "0d3605f9af641b5ba618d7cb180cdc73970dea047f34830865e1ccbfdaa11f0c",
-      "context": "\n#[allow(dead_code)]\npub fn init(width: i32, height: i32) {\n    unsafe {\n        MAX_X = width.saturating_sub(1).max(0);\n        MAX_Y = height.saturating_sub(1).max(0);\n        MOUSE_STATE = MouseState::new(Point::new(width / 2, height / 2));",
-      "context_start_line": 15,
-      "end_line": 23,
+      "column": 22,
+      "construct_sha256": "fdaf38a93db3730ae54706d35e15d7971c244ce1002b4e9e3acdf6982288b740",
+      "context": "        // access. Only this private adapter creates a reference. Emergency/NMI\n        // entries do not enter Rust input paths. ContextSlot refuses nested\n        // publication/access before dereference, and HRTB prevents borrow escape.\n        let result = unsafe { ACCESS.run(pointer, || ACCESS.with_current(access)) };\n        match result {\n            Ok(Ok(Some(value))) => value,\n            _ => {",
+      "context_start_line": 22,
+      "end_line": 25,
       "kind": "unsafe_block",
-      "line": 18,
+      "line": 25,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 5,
-      "construct_sha256": "7c22be5468ddaba12de0fa025a5fe522813dd2bde7b4afd41d88d165872d5fb7",
-      "context": "}\n\npub fn keyboard_irq() {\n    unsafe {\n        let status = arch::inb(0x64);\n        if status & 1 != 0 && status & 0x20 == 0 {\n            let scancode = arch::inb(0x60);",
-      "context_start_line": 24,
-      "end_line": 35,
+      "construct_sha256": "64b4199ef6840158839283b60a4ba15688d199297ba9a4b2df41d149642ff3ee",
+      "context": "    with_input(|state| state.configure_pointer(width, height));\n    // SAFETY: the BSP owns PS/2 configuration with IF clear, and no state borrow\n    // is held during these bounded controller/ACK waits. This is not runtime IRQ work.\n    unsafe { enable_ps2_mouse() };\n}\n\n// Read at most one ready byte. IRQ callers cannot consume the other device's",
+      "context_start_line": 48,
+      "end_line": 51,
       "kind": "unsafe_block",
-      "line": 27,
+      "line": 51,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 5,
-      "construct_sha256": "6ecbeb11d20e9aa700dd723eb368b861710ff18eb4d3b9023f3fd06d80d27f54",
-      "context": "}\n\npub fn mouse_irq() {\n    unsafe {\n        let status = arch::inb(0x64);\n        if status & 1 != 0 && status & 0x20 != 0 {\n            let byte = arch::inb(0x60);",
-      "context_start_line": 36,
-      "end_line": 50,
+      "construct_sha256": "9f7e337ce074c3007ed53146c95a5b6a11ae575b31988ca50f842c760f50a35b",
+      "context": "fn read_controller(mouse: Option<bool>) -> Option<(u8, u8)> {\n    // SAFETY: callers hold the private masked input scope on the admitted BSP.\n    // These byte ports belong to the legacy PS/2 controller; no blocking wait.\n    unsafe {\n        let status = arch::inb(0x64);\n        if status & 1 == 0 || mouse.is_some_and(|mouse| mouse != (status & 0x20 != 0)) {\n            None",
+      "context_start_line": 56,
+      "end_line": 66,
       "kind": "unsafe_block",
-      "line": 39,
-      "path": "kernel/src/input_hw.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "836a0eb27d58a8ad9a21d7f8c42262e5f146a6d0bbe769f480150c5fb862c4da",
-      "context": "\n#[allow(dead_code)]\npub fn poll() {\n    unsafe {\n        let mut guard = 0;\n        while arch::inb(0x64) & 1 != 0 && guard < 8 {\n            let status = arch::inb(0x64);",
-      "context_start_line": 52,
-      "end_line": 75,
-      "kind": "unsafe_block",
-      "line": 55,
-      "path": "kernel/src/input_hw.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "ca7d55262facf445e0480dca0dad7eaa6f7bc2590da52f864cc7c7fedea45997",
-      "context": "\n#[allow(dead_code)]\npub fn pop_event() -> Option<InputEvent> {\n    unsafe { (*core::ptr::addr_of_mut!(QUEUE)).pop() }\n}\n\n#[allow(dead_code)]",
-      "context_start_line": 77,
-      "end_line": 80,
-      "kind": "unsafe_block",
-      "line": 80,
-      "path": "kernel/src/input_hw.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "e7b4d74a7503db22f1445b8205f69075828af054e854bcd54b029dd93794872e",
-      "context": "\n#[allow(dead_code)]\npub fn peek_event() -> Option<InputEvent> {\n    unsafe { (*core::ptr::addr_of!(QUEUE)).peek() }\n}\n\n#[allow(dead_code)]",
-      "context_start_line": 82,
-      "end_line": 85,
-      "kind": "unsafe_block",
-      "line": 85,
-      "path": "kernel/src/input_hw.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "e72f724c440ec7c888008c3869e4abc0518e8b64b4bab97149cb0cb8a5ec778b",
-      "context": "\n#[allow(dead_code)]\npub fn event_depth() -> usize {\n    unsafe { (*core::ptr::addr_of!(QUEUE)).len() }\n}\n\n#[allow(dead_code)]",
-      "context_start_line": 87,
-      "end_line": 90,
-      "kind": "unsafe_block",
-      "line": 90,
-      "path": "kernel/src/input_hw.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "ae97723d5e225dd8649040915015533f7bf1fa987b0afc927b98e27e32b5661f",
-      "context": "\n#[allow(dead_code)]\npub fn mouse_state() -> MouseState {\n    unsafe { MOUSE_STATE }\n}\n\nunsafe fn apply_mouse_event(event: InputEvent) {",
-      "context_start_line": 92,
-      "end_line": 95,
-      "kind": "unsafe_block",
-      "line": 95,
-      "path": "kernel/src/input_hw.rs"
-    },
-    {
-      "column": 1,
-      "construct_sha256": "9c0d9f9947358543e1288528f526f153306feee74b89f608c9ee6ada847912b9",
-      "context": "    unsafe { MOUSE_STATE }\n}\n\nunsafe fn apply_mouse_event(event: InputEvent) {\n    match event {\n        InputEvent::MouseMove { dx, dy, buttons } => {\n            (*core::ptr::addr_of_mut!(MOUSE_STATE)).apply_move(dx, dy, MAX_X, MAX_Y, buttons);",
-      "context_start_line": 95,
-      "end_line": 108,
-      "kind": "unsafe_fn",
-      "line": 98,
+      "line": 59,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 1,
       "construct_sha256": "80b9ad13b41cda496ef5072ab5e0e0b1ecb5c241c9afcc4a44a2b2c8e13b9e17",
       "context": "}\n\n#[allow(dead_code)]\nunsafe fn enable_ps2_mouse() {\n    wait_write();\n    arch::outb(0x64, 0xa8);\n    wait_write();",
-      "context_start_line": 108,
-      "end_line": 126,
+      "context_start_line": 117,
+      "end_line": 135,
       "kind": "unsafe_fn",
-      "line": 111,
+      "line": 120,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 1,
       "construct_sha256": "934de42d48a9f8dd7e2813444fceff0fdb0fc0a024dff4568f707f150d9e19a0",
       "context": "}\n\n#[allow(dead_code)]\nunsafe fn mouse_write(byte: u8) {\n    wait_write();\n    arch::outb(0x64, 0xd4);\n    wait_write();",
-      "context_start_line": 126,
-      "end_line": 134,
+      "context_start_line": 135,
+      "end_line": 143,
       "kind": "unsafe_fn",
-      "line": 129,
+      "line": 138,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 1,
       "construct_sha256": "6c9afb38129d7488fcd176ae18327ffbcebc60e6600ca2104f523c7ac4bd01c6",
       "context": "}\n\n#[allow(dead_code)]\nunsafe fn mouse_read_ack() -> u8 {\n    wait_read();\n    arch::inb(0x60)\n}",
-      "context_start_line": 134,
-      "end_line": 140,
+      "context_start_line": 143,
+      "end_line": 149,
       "kind": "unsafe_fn",
-      "line": 137,
+      "line": 146,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 1,
       "construct_sha256": "b5516aaa98d252436c9449e89413dcdb151298a909e84b044c496f79d5a1ea9e",
       "context": "}\n\n#[allow(dead_code)]\nunsafe fn wait_write() {\n    let mut spins = 100_000;\n    while spins > 0 && arch::inb(0x64) & 0x02 != 0 {\n        spins -= 1;",
-      "context_start_line": 140,
-      "end_line": 148,
+      "context_start_line": 149,
+      "end_line": 157,
       "kind": "unsafe_fn",
-      "line": 143,
+      "line": 152,
       "path": "kernel/src/input_hw.rs"
     },
     {
       "column": 1,
       "construct_sha256": "cee53fa56d1ab610755eaa897df5cae19481fe73439f84c6c516f4a39c3ee9b9",
       "context": "}\n\n#[allow(dead_code)]\nunsafe fn wait_read() {\n    let mut spins = 100_000;\n    while spins > 0 && arch::inb(0x64) & 0x01 == 0 {\n        spins -= 1;",
-      "context_start_line": 148,
-      "end_line": 156,
+      "context_start_line": 157,
+      "end_line": 165,
       "kind": "unsafe_fn",
-      "line": 151,
+      "line": 160,
       "path": "kernel/src/input_hw.rs"
     },
     {
@@ -1991,60 +1936,60 @@
       "column": 9,
       "construct_sha256": "c310339d010c2c279dec79e3d8bdc635ba9247882638991d300a61bbe205ffc0",
       "context": "\n#[cfg(test)]\nmod arch {\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
-      "context_start_line": 52,
-      "end_line": 57,
+      "context_start_line": 53,
+      "end_line": 58,
       "kind": "unsafe_fn",
-      "line": 55,
+      "line": 56,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "17c7b12b790576fd937eb7f726ddfd58cd1f981940ec1fb7386e9d0084b8af7f",
       "context": "    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {",
-      "context_start_line": 55,
-      "end_line": 60,
+      "context_start_line": 56,
+      "end_line": 61,
       "kind": "unsafe_fn",
-      "line": 58,
+      "line": 59,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "3f568f289ddbf53aced0e01a8c08b8663d90f40db51a5e1be26743d1cdb1909d",
       "context": "    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {",
-      "context_start_line": 58,
-      "end_line": 63,
+      "context_start_line": 59,
+      "end_line": 64,
       "kind": "unsafe_fn",
-      "line": 61,
+      "line": 62,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "00dea65152448b96d0d5ddf452abeaf12431daf027379b4aebfe7ac7e715a65b",
       "context": "    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {",
-      "context_start_line": 61,
-      "end_line": 66,
+      "context_start_line": 62,
+      "end_line": 67,
       "kind": "unsafe_fn",
-      "line": 64,
+      "line": 65,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "1a6c18dc0212beeffb26ec78ecbc3d296d3fd9d71a685cb427653cb62ab59fa2",
       "context": "    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {",
-      "context_start_line": 64,
-      "end_line": 69,
+      "context_start_line": 65,
+      "end_line": 70,
       "kind": "unsafe_fn",
-      "line": 67,
+      "line": 68,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "238b04576c64e3b2b07a66a69a9a15c9f6c008fa62d62f5039892dedddb70d60",
       "context": "    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n}",
-      "context_start_line": 67,
-      "end_line": 72,
+      "context_start_line": 68,
+      "end_line": 73,
       "kind": "unsafe_fn",
-      "line": 70,
+      "line": 71,
       "path": "kernel/src/lib.rs"
     },
     {

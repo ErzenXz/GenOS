@@ -81,6 +81,11 @@ within it. They are not a claim that every shared global has been audited.
   interrupt. Descriptor validation, buffer transfer and protocol state
   mutation remain coordinator work. An IRQ handler must not wait on a lock
   held by interrupted normal code, allocate unbounded work, or block.
+- Legacy PS/2 IRQs and coordinator observations now share one masked,
+  non-escaping input scope. IRQs consume at most one byte and polling at most
+  eight; all borrows end before caller IF restoration. See
+  [input ownership](INPUT_OWNERSHIP.md) for boot-only configuration and emergency
+  exclusions. This does not close the remaining device/global-state audit.
 - Emergency entries have dedicated guarded stacks. The assembly
   [entry ownership guard](FAULT_CONTAINMENT.md) redirects every IST while an
   entry is active and halts nested entries before Rust. NMI/#MC are fatal;

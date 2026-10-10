@@ -41,6 +41,7 @@ entry halts and provides no recoverable unwinding promise.
 | --- | --- | --- |
 | `INIT_IMAGE` / `SHELL_IMAGE` | Boot publisher, then immutable boot-lifetime bytes | One atomic publication; no replacement, mutable borrow or integer pointer reconstruction |
 | `CPU_PAGING` | One record for the admitted BSP | Permanent supervisor root, irreversible bootstrap/sealed phase; active-root copies published after CR3 readback with IF clear |
+| PS/2 `STATE` / `ACCESS` | IRQ-shared on the admitted BSP | One masked, non-escaping scope for decoders, queue, bounds and all observations; borrow/publication end before IF restores |
 | `CURRENT_PROCESS` binding | One admitted BSP; per-slice publication | Owner reference suspended; kernel root restored before publication clears; IF restored last |
 | Slot access flag | One synchronous entry callback | Set before dereference; nested access denied; private scope guard releases before assembly resumes |
 | `UserProcess` fields | Coordinator outside a slice; scoped entry borrow during a slice | No owner access while published; reclaim occurs only after leaving the slice |

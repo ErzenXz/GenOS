@@ -1,110 +1,119 @@
-// The serial-first kernel still compiles the legacy framebuffer and PS/2 path.
-// ROADMAP F4 tracks isolating or removing that path.
+// Legacy PS/2 input remains compiled while the console is serial-first.
+// One admitted BSP owns the state; NMI/emergency entries cannot call this module.
 
-use kernel::geometry::Point;
-use kernel::input::{EventQueue, InputEvent, KeyboardDecoder, MouseDecoder, MouseState};
+use core::ptr::NonNull;
+use kernel::context_slot::ContextSlot;
+use kernel::input::{InputEvent, MouseState};
+use kernel::input_state::InputState;
 
 use crate::arch;
 
-static mut QUEUE: EventQueue = EventQueue::new();
-static mut KEYBOARD: KeyboardDecoder = KeyboardDecoder::new();
-static mut MOUSE_DECODER: MouseDecoder = MouseDecoder::new();
-static mut MOUSE_STATE: MouseState = MouseState::new(Point::new(640, 400));
-static mut MAX_X: i32 = 1279;
-static mut MAX_Y: i32 = 799;
+static mut STATE: InputState = InputState::new();
+static ACCESS: ContextSlot<InputState> = ContextSlot::new();
+const POLL_BYTE_BUDGET: usize = 8;
+
+// Private callbacks are bounded, never enable IRQs or switch contexts, and
+// return owned values. Publication and borrow guards drop before IF restores.
+fn with_input<R>(access: impl for<'a> FnOnce(&'a mut InputState) -> R) -> R {
+    arch::without_interrupts(|| {
+        let pointer = NonNull::new(core::ptr::addr_of_mut!(STATE)).unwrap();
+        // SAFETY: BSP admission excludes other CPUs; local IRQs are masked.
+        // STATE is permanent/stationary and has no owner reference or external
+        // access. Only this private adapter creates a reference. Emergency/NMI
+        // entries do not enter Rust input paths. ContextSlot refuses nested
+        // publication/access before dereference, and HRTB prevents borrow escape.
+        let result = unsafe { ACCESS.run(pointer, || ACCESS.with_current(access)) };
+        match result {
+            Ok(Ok(Some(value))) => value,
+            _ => {
+                crate::serial::println("INPUT_ACCESS_REJECTED policy=halt");
+                arch::halt_loop();
+            }
+        }
+    })
+}
+
+fn require_masked() {
+    if arch::interrupts_enabled() {
+        arch::disable_interrupts();
+        crate::serial::println("INPUT_CONTEXT_REJECTED policy=halt");
+        arch::halt_loop();
+    }
+}
 
 #[allow(dead_code)]
 pub fn init(width: i32, height: i32) {
+    // Controller configuration is boot-only, before ordinary IRQ delivery.
+    require_masked();
+    with_input(|state| state.configure_pointer(width, height));
+    // SAFETY: the BSP owns PS/2 configuration with IF clear, and no state borrow
+    // is held during these bounded controller/ACK waits. This is not runtime IRQ work.
+    unsafe { enable_ps2_mouse() };
+}
+
+// Read at most one ready byte. IRQ callers cannot consume the other device's
+// pending byte; the coordinator poll accepts either source.
+fn read_controller(mouse: Option<bool>) -> Option<(u8, u8)> {
+    // SAFETY: callers hold the private masked input scope on the admitted BSP.
+    // These byte ports belong to the legacy PS/2 controller; no blocking wait.
     unsafe {
-        MAX_X = width.saturating_sub(1).max(0);
-        MAX_Y = height.saturating_sub(1).max(0);
-        MOUSE_STATE = MouseState::new(Point::new(width / 2, height / 2));
-        enable_ps2_mouse();
+        let status = arch::inb(0x64);
+        if status & 1 == 0 || mouse.is_some_and(|mouse| mouse != (status & 0x20 != 0)) {
+            None
+        } else {
+            Some((status, arch::inb(0x60)))
+        }
     }
 }
 
 pub fn keyboard_irq() {
-    unsafe {
-        let status = arch::inb(0x64);
-        if status & 1 != 0 && status & 0x20 == 0 {
-            let scancode = arch::inb(0x60);
-            if let Some(key) = (*core::ptr::addr_of_mut!(KEYBOARD)).decode(scancode) {
-                (*core::ptr::addr_of_mut!(QUEUE)).push(InputEvent::Key(key));
-            }
-        }
-    }
+    require_masked();
+    consume_irq(false);
 }
 
 pub fn mouse_irq() {
-    unsafe {
-        let status = arch::inb(0x64);
-        if status & 1 != 0 && status & 0x20 != 0 {
-            let byte = arch::inb(0x60);
-            if let Some(event) =
-                (*core::ptr::addr_of_mut!(MOUSE_DECODER)).push_byte(byte, MOUSE_STATE.position)
-            {
-                apply_mouse_event(event);
-                (*core::ptr::addr_of_mut!(QUEUE)).push(event);
-            }
+    require_masked();
+    consume_irq(true);
+}
+
+fn consume_irq(mouse: bool) {
+    with_input(|state| {
+        if let Some((status, byte)) = read_controller(Some(mouse)) {
+            state.accept_byte(status, byte);
         }
-    }
+    });
 }
 
 #[allow(dead_code)]
 pub fn poll() {
-    unsafe {
-        let mut guard = 0;
-        while arch::inb(0x64) & 1 != 0 && guard < 8 {
-            let status = arch::inb(0x64);
-            if status & 0x20 != 0 {
-                let byte = arch::inb(0x60);
-                if let Some(event) =
-                    (*core::ptr::addr_of_mut!(MOUSE_DECODER)).push_byte(byte, MOUSE_STATE.position)
-                {
-                    apply_mouse_event(event);
-                    (*core::ptr::addr_of_mut!(QUEUE)).push(event);
-                }
-            } else {
-                let scancode = arch::inb(0x60);
-                if let Some(key) = (*core::ptr::addr_of_mut!(KEYBOARD)).decode(scancode) {
-                    (*core::ptr::addr_of_mut!(QUEUE)).push(InputEvent::Key(key));
-                }
-            }
-            guard += 1;
+    with_input(|state| {
+        for _ in 0..POLL_BYTE_BUDGET {
+            let Some((status, byte)) = read_controller(None) else {
+                break;
+            };
+            state.accept_byte(status, byte);
         }
-    }
+    });
 }
 
 #[allow(dead_code)]
 pub fn pop_event() -> Option<InputEvent> {
-    unsafe { (*core::ptr::addr_of_mut!(QUEUE)).pop() }
+    with_input(InputState::pop)
 }
 
 #[allow(dead_code)]
 pub fn peek_event() -> Option<InputEvent> {
-    unsafe { (*core::ptr::addr_of!(QUEUE)).peek() }
+    with_input(|state| state.peek())
 }
 
 #[allow(dead_code)]
 pub fn event_depth() -> usize {
-    unsafe { (*core::ptr::addr_of!(QUEUE)).len() }
+    with_input(|state| state.depth())
 }
 
 #[allow(dead_code)]
 pub fn mouse_state() -> MouseState {
-    unsafe { MOUSE_STATE }
-}
-
-unsafe fn apply_mouse_event(event: InputEvent) {
-    match event {
-        InputEvent::MouseMove { dx, dy, buttons } => {
-            (*core::ptr::addr_of_mut!(MOUSE_STATE)).apply_move(dx, dy, MAX_X, MAX_Y, buttons);
-        }
-        InputEvent::MouseButton { buttons, .. } => {
-            MOUSE_STATE.buttons = buttons;
-        }
-        InputEvent::Key(_) => {}
-    }
+    with_input(|state| state.mouse())
 }
 
 #[allow(dead_code)]

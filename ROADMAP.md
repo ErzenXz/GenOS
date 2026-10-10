@@ -230,6 +230,10 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
   slices now replace raw global address/length pairs and validate both images
   before publication; wider process decomposition remains open.
 - [ ] **F4.2:** classify every mutable object as boot-only, coordinator-owned, IRQ-shared or emergency-safe; replace raw global mutation with scoped access that cannot leak mutable borrows.
+  [PS/2 input state](docs/INPUT_OWNERSHIP.md) now groups six raw globals behind
+  one scoped IRQ/coordinator adapter, including read observations. A real delayed
+  keyboard delivery fixture exercises borrow retirement and caller IF preservation;
+  wider global classification and ownership remain open.
 - [x] **F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.
   Neutral text/geometry types replaced authority-module imports from display; a checked dependency rule rejects forbidden imports and mutable authority borrows in presentation. The normal reference boot passed on `3e55272`; [module contract](docs/MODULE_DEPENDENCIES.md). This does not close F4.2/F4.4.
 - [ ] **F4.4:** review caller obligations, aliasing, synchronization, assembly clobbers and failure containment at every unsafe boundary, including unsafe Send/Sync. Inventory presence alone does not close this review.
