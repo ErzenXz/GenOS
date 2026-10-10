@@ -40,6 +40,7 @@ pub mod socket;
 pub mod stack;
 pub mod syscall;
 pub mod tasks;
+pub mod tx_queue;
 pub mod user_copy;
 pub mod vfs;
 pub mod vfs_snapshot;
