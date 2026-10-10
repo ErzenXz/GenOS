@@ -108,7 +108,8 @@ def validate_qmp(messages: list[dict]) -> None:
         raise ValueError('guest reset/stopped/exited around claimed containment')
 
 
-def boot(root: Path, evidence: Path, timeout: int) -> None:
+def boot(root: Path, evidence: Path, timeout: int, *, halt_marker: str = HALT,
+         validate_serial=validate_log) -> None:
     serial = evidence / 'serial.log'
     with tempfile.TemporaryDirectory(prefix='genos-root-qmp-') as temporary:
         channel = Path(temporary) / 'monitor.sock'
@@ -132,7 +133,7 @@ def boot(root: Path, evidence: Path, timeout: int) -> None:
                             if process.poll() is not None:
                                 raise RuntimeError('QEMU reset/exited instead of deliberate refusal')
                             log = serial.read_text(errors='replace') if serial.exists() else ''
-                            if HALT in log:
+                            if halt_marker in log:
                                 time.sleep(.5)
                                 if process.poll() is not None:
                                     raise RuntimeError('QEMU exited after claimed refusal')
@@ -152,7 +153,7 @@ def boot(root: Path, evidence: Path, timeout: int) -> None:
                                 while b'\n' in monitor.pending:
                                     monitor.read(deadline)
                                 validate_qmp(monitor.messages)
-                                validate_log(serial.read_text(errors='replace'))
+                                validate_serial(serial.read_text(errors='replace'))
                                 if process.poll() is not None:
                                     raise RuntimeError('QEMU exited during final containment checks')
                                 return
