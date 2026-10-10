@@ -72,6 +72,8 @@ def validate_log(log: str) -> None:
     positions = [lines.index(proof) for proof in proofs]
     if positions != sorted(positions):
         raise ValueError('root observation or refusal out of order')
+    if lines[lines.index(armed) + 1:] != [HALT]:
+        raise ValueError('resumed dispatch or unexpected output around root refusal')
     for forbidden in ['EXCEPTION_FRAME', 'EXCEPTION_TERMINAL', 'EXCEPTION_FATAL_HALT', 'USER_FAULT', 'KERNEL PANIC', 'BOOTLOADER_PANIC', '_FAILED',
                       'USERMODE_READY', 'USER_SHELL_READY', 'GENOS_READY', 'CPU_ROOT_PROBE_RETURNED']:
         if any(forbidden in line for line in lines):
@@ -147,8 +149,12 @@ def boot(root: Path, evidence: Path, timeout: int) -> None:
                                     if reply.get('id') != STATUS_ID:
                                         raise ValueError('unexpected QMP status response identity')
                                     break
+                                while b'\n' in monitor.pending:
+                                    monitor.read(deadline)
                                 validate_qmp(monitor.messages)
                                 validate_log(serial.read_text(errors='replace'))
+                                if process.poll() is not None:
+                                    raise RuntimeError('QEMU exited during final containment checks')
                                 return
                             if 'KERNEL PANIC' in log or '_FAILED' in log or 'GENOS_READY' in log:
                                 raise RuntimeError('guest faulted or continued instead of refusing root observation')
