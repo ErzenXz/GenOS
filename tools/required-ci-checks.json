@@ -112,6 +112,10 @@
       "app_id": 15368
     },
     {
+      "context": "Foundation coordinator-vfs-borrow",
+      "app_id": 15368
+    },
+    {
       "context": "Foundation elf-entry-data",
       "app_id": 15368
     },
