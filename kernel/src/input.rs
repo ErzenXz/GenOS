@@ -138,8 +138,8 @@ impl MouseState {
     pub fn apply_move(&mut self, dx: i32, dy: i32, max_x: i32, max_y: i32, buttons: MouseButtons) {
         let dx = accelerate_axis(dx);
         let dy = accelerate_axis(dy);
-        self.position.x = (self.position.x + dx).clamp(0, max_x.max(0));
-        self.position.y = (self.position.y - dy).clamp(0, max_y.max(0));
+        self.position.x = self.position.x.saturating_add(dx).clamp(0, max_x.max(0));
+        self.position.y = self.position.y.saturating_sub(dy).clamp(0, max_y.max(0));
         self.buttons = buttons;
     }
 }

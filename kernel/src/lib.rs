@@ -18,6 +18,7 @@ pub mod file_snapshot;
 pub mod frame_grant;
 pub mod geometry;
 pub mod input;
+pub mod input_state;
 pub mod ipc;
 pub mod ipv6;
 pub mod memory_report;
