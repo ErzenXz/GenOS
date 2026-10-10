@@ -58,7 +58,7 @@ impl TextRenderer {
     }
 
     pub fn draw_text(
-        fb: &mut FramebufferDevice,
+        fb: &mut FramebufferDevice<'_>,
         clip: Rect,
         origin: Point,
         text: &str,
@@ -76,14 +76,14 @@ impl TextRenderer {
         x - origin.x
     }
 
-    pub fn draw_cursor(fb: &mut FramebufferDevice, clip: Rect, at: Point, style: TextStyle) {
+    pub fn draw_cursor(fb: &mut FramebufferDevice<'_>, clip: Rect, at: Point, style: TextStyle) {
         let metrics = Self::metrics(style);
         let cursor = Rect::new(at.x, at.y + 2, 2, metrics.glyph_height);
         fb.fill_rect(cursor.intersect(clip), Color::ACCENT);
     }
 
     pub fn draw_char(
-        fb: &mut FramebufferDevice,
+        fb: &mut FramebufferDevice<'_>,
         clip: Rect,
         origin: Point,
         ch: char,

@@ -6,7 +6,7 @@ mod text;
 mod theme;
 
 pub use crate::geometry::{Point, Rect, Size};
-pub use framebuffer::FramebufferDevice;
+pub use framebuffer::{FramebufferDevice, FramebufferError};
 pub use manager::{DisplayManager, WindowKind};
 pub use shell_buffer::{FixedText, LineKind, ShellBuffer, ShellLine};
 pub use text::{TextMetrics, TextRenderer, TextStyle};
