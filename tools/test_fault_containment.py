@@ -34,8 +34,8 @@ RETURNS = {'initial-cs': (13, 0x38), 'initial-rip': (13, 0),
            'syscall-cs': (13, 0x38), 'irq-cs': (13, 0x38)}
 SOFTWARE_KERNEL = {
     'initial-flags': ('rflags: 0x202,', 'rflags: 2,'),
-    'initial-rsp-reject': ('rsp: paging::USER_STACK_TOP,', 'rsp: 0x0000800000000000,'),
-    'initial-ss-reject': ('ss: arch::USER_DATA_SELECTOR as u64,', 'ss: 0x10,'),
+    'initial-rsp-reject': ('rsp: stack_top,', 'rsp: 0x0000800000000000,'),
+    'initial-ss-reject': ('ss: crate::segments::USER_DATA as u64,', 'ss: 0x10,'),
 }
 CASES = [*NESTED, *RETURNS, 'double-fault', *SOFTWARE_KERNEL, 'user-nt', 'nmi-idle', 'mce-idle']
 READY = 'EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5'
@@ -49,7 +49,7 @@ WAIT = 'crate::arch::halt_loop();'
 
 
 def patch_fixture(root: Path, case: str) -> str:
-    paths = ['kernel/src/main.rs', 'kernel/src/userspace.rs', 'kernel/src/interrupts.rs',
+    paths = ['kernel/src/main.rs', 'kernel/src/userspace.rs', 'kernel/src/cpu_context.rs', 'kernel/src/interrupts.rs',
              'kernel/src/interrupt_entry.S', 'userspace/init/src/main.rs']
     before = {name: (root / name).read_text() for name in paths}
 
@@ -62,7 +62,7 @@ def patch_fixture(root: Path, case: str) -> str:
         edit('userspace/init/src/main.rs', 'core::arch::asm!("cli", options(nostack));',
              'core::arch::asm!("pushfq", "or qword ptr [rsp], 0x4000", "popfq"); let _ = runtime::ping();')
     if case in SOFTWARE_KERNEL:
-        edit('kernel/src/userspace.rs', *SOFTWARE_KERNEL[case])
+        edit('kernel/src/cpu_context.rs', *SOFTWARE_KERNEL[case])
     if case in NESTED:
         if case.startswith('irq-'):
             action = PF if case == 'irq-pf' else WAIT

@@ -2370,7 +2370,7 @@ mod tests {
         assert!(runtime.contains("passive_owner_count"));
         assert!(runtime.contains("TCP_PASSIVE_OWNER_BUDGET_REFUSED"));
         assert!(userspace.contains("SOCKET_WAIT_WAKE_BUDGET: usize = 2"));
-        assert!(userspace.contains("socket_wait_cursor"));
+        assert!(userspace.contains("socket_wait_schedule: RoundRobin<MAX_ASYNC_PROCESSES>"));
         assert!(userspace.contains("BlockReason::Socket"));
         assert!(abi.contains("USER_ABI_VERSION: u64 = 18"));
         assert!(abi.contains("USER_SYSCALL_SOCKET_WAIT: u64 = 48"));

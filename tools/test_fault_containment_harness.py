@@ -104,7 +104,7 @@ class ContainmentHarnessTests(unittest.TestCase):
 
     def test_fixture_keeps_production_guard_and_policy_intact(self):
         source = Path(__file__).resolve().parents[1]
-        names = ['kernel/src/main.rs', 'kernel/src/userspace.rs', 'kernel/src/interrupts.rs',
+        names = ['kernel/src/main.rs', 'kernel/src/userspace.rs', 'kernel/src/cpu_context.rs', 'kernel/src/interrupts.rs',
                  'kernel/src/interrupt_entry.S', 'userspace/init/src/main.rs']
         for case in CASES:
             with self.subTest(case=case), TemporaryDirectory() as temporary:
@@ -117,6 +117,8 @@ class ContainmentHarnessTests(unittest.TestCase):
                 self.assertTrue(fixture)
                 self.assertNotIn('entry_guard.S', fixture)
                 self.assertNotIn('fn valid_return_context', fixture)
+                self.assertNotIn('pub const fn valid_return', fixture)
+                self.assertNotIn('kernel/src/scheduler.rs', fixture)
                 self.assertNotIn('fn terminate_process_fault', fixture)
                 self.assertNotIn('fn init_machine_check', fixture)
                 self.assertNotIn('genos_entry_release:', fixture)
