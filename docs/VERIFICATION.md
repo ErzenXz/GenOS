@@ -1,9 +1,9 @@
 # GenOS 0.56 verification record
 
-The latest campaign adds bounded nested-entry ownership and native return-state
-denial. See the [September 28 fault containment results](#september-28-nested-entry-and-return-containment)
-for exact source identities, passing gates and remaining emulator gaps. Earlier
-entries retain their original scope and dates.
+The latest October 10 campaign adds complete native image admission before
+allocation, with host/parser and live zero-budget evidence. The dated sections
+below retain exact commits, passing gates and the four strict CPU/IRET failures.
+Earlier entries retain their original scope and dates.
 
 ## Original integration — 2026-09-08
 
@@ -835,3 +835,78 @@ designation or engineering release promotion occurred. The remaining F1 CPU
 qualification failures, F3/F4/F5 ownership work, coverage/soak runs, storage and
 application/console roadmap requirements still apply. Historical missing-workflow
 statements above describe earlier attempts and are superseded by this dated result.
+
+## October 10 native image admission before allocation
+
+Kernel change `3648625722ed0a3067a85eb8cafb88d2f0972942` moves whole-image native
+ELF admission into the allocation-free `kernel::native_image::Plan`. Its private
+ten-page plan borrows exact file slices and validates every segment before
+`build_process` creates an owner or root. The paging adapter retains partial-root
+rollback for later allocation/mapping errors. Fixed addresses, the eight-page
+executable limit, sixteen initial ABI data bytes and executable-memory entry
+policy remain unchanged. This advances F4.1; process state, mapping/stack
+construction, lifecycle, syscalls and remaining handle decomposition stay open.
+
+Host checks cover the loader source and corrected harness. The complete VM
+suite used clean source `08552989539962a4bc7f8b6e45d57e6db7fa4fdf` (the same
+kernel plus a corrected evidence ordering rule):
+
+- **296 workspace tests passed**, including 214 kernel tests and eight new native
+  admission tests. All 107 Python tests and the two parser CLI tests passed.
+  Strict lint passed for the changed kernel host/bare-metal normal/validation,
+  xtask and parser targets. Formatting, documentation links, module direction
+  and the reviewed 443-site/96-source lexical inventory passed.
+- Seed zero passed **100,000 mutations**, fourteen retained corpus inputs and
+  **17,109 proper-prefix truncations**. The new `native-elf` target calls the
+  production admission API and checks borrowed slices, unique bounded pages,
+  W^X, executable/data limits and entry mapping. Valid and late-W+X seeds are
+  retained; both freshly linked INIT and shell images were accepted in replay.
+  This remains deterministic mutation stress; F6.2 coverage-guided work is open.
+- The **complete `cargo xtask test` suite passed**: storage create/restore and
+  read-only/recovery/failure phases, real serial input, network and no-HTTP
+  policy, external SDK execution, memory rollback, all six exact-address CPU
+  protection probes and interactive normal debug/release boots. The latter
+  exercise process launch/status/kill/reap and persistent file I/O. All eighteen
+  per-run manifests passed; their paths/hashes are indexed in
+  `build/native-image-evidence-index.json`. Combined output remains in
+  `build/native-image-system-tests-corrected.log`.
+- The memory manifest at
+  `build/validation-evidence/1791666492084345000/serial-memory/manifest.txt`
+  requires exact `NATIVE_IMAGE_PREFLIGHT_OK` results: late W+X rejection with
+  allocator budget zero, valid-image OOM with that same budget, and an unchanged
+  live-frame baseline. All ten later process-construction allocation cutoffs
+  still restore the baseline. Normal images exclude the new test marker.
+
+The first local run on `3648625` failed because the new harness ordering rule
+incorrectly placed preflight before memory hygiene. The guest emitted the genuine
+preflight result after hygiene/IRQ restoration, and the harness rejected that
+order. The failed manifest/log remain at
+`build/validation-evidence/1791666303709328000/serial-memory/`. The follow-up
+`0855298` fixes the order and tests omissions, duplicates, swaps, embedded proofs
+and forged fields; the complete rerun above passed. This was a harness defect,
+not a passed run or a relaxed guest budget.
+
+These local VM runs use QEMU 11.1.2 and matching firmware. Their manifests retain
+`reference_environment_match=false` for the QEMU version difference; the frozen
+11.1.1 profile remains unchanged. No new exact-reference qualification is claimed.
+
+Published head `9efd3faf4621e98da87d8567d0e76cc828db47e8` completed all sixty required
+checks: **56 passed, four failed**. Its failed fixture artifacts now identify that
+exact PR head directly; they are retained under `build/remote-evidence/9efd3fa/`.
+The read-only audit at `build/ci-policy-evidence/9efd3fa-complete-audit/` reports
+`required=60 executed=60 failed=4`; the retained required-success replay fails.
+
+For native-loader head `0855298`, [exception entry](https://github.com/ErzenXz/GenOS/actions/runs/38086301918)
+and [foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38086301911)
+again retain user/kernel #XM, `initial-rip` and `nmi-iret` failures. All four
+artifacts explicitly name `0855298` and remain under
+`build/remote-evidence/0855298/`. The main
+[CI workflow](https://github.com/ErzenXz/GenOS/actions/runs/38086301909) passed all
+sixteen jobs, including the complete remote QEMU suite. The final read-only audit
+at `build/ci-policy-evidence/0855298-final-audit/` reports all sixty required
+checks executed: **56 passed and four failed**. Its required-success replay fails;
+the earlier pending audit is retained separately. Passing remote QEMU artifacts
+remain under `build/remote-evidence/0855298/passing-qemu/`. These Linux runs are
+independent portability execution, not a pinned-reference reviewer sign-off.
+Draft PR #9 remains unmerged and the roadmap stays **51/100**, Experimental.
+No R1/R2/R3 or whole-roadmap completion is claimed.
