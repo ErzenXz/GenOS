@@ -31,6 +31,7 @@ pub mod protection;
 pub mod recovery;
 pub mod request;
 pub mod scheduler;
+pub mod scoped_cell;
 pub mod segments;
 pub mod serial_keys;
 pub mod serial_prompt;
@@ -53,6 +54,12 @@ use network_transport::{network_device, serial};
 
 #[cfg(test)]
 mod arch {
+    pub fn disable_interrupts() {
+        panic!("unexpected privileged IRQ control in host test")
+    }
+    pub fn halt_loop() -> ! {
+        panic!("unexpected privileged halt in host test")
+    }
     pub unsafe fn inb(_: u16) -> u8 {
         panic!("unexpected hardware I/O in driver test")
     }

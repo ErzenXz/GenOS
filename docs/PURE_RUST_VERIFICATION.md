@@ -38,6 +38,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
 | Scoped current-process access | 7 |
+| Non-waiting scoped network/storage cell | 7 |
 | Typed capability registry | 3 |
 | Request generation | 2 |
 | Canonical path policy and VFS use | 3 |
@@ -46,7 +47,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **78** |
+| **Total** | **85** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -57,6 +58,12 @@ run separately in the normal workspace test lane.
 The October 11 input-state addition exercises interleaved PS/2 decoding, bounded
 queue overflow and pointer bounds. Actual PIO, deferred hardware IRQ delivery
 and caller IF restoration execute separately in the input VM fixture.
+
+The scoped-cell addition exercises borrow retirement, synchronous reentry denial,
+unwind release, simultaneous host-thread contention and exclusive handoff of a
+Send-but-not-Sync value. The two additional compile-fail checks reject escaping
+borrows and sharing a cell containing a non-Send value. One interpreted schedule
+is evidence for those executions, not exhaustive concurrency qualification.
 
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an

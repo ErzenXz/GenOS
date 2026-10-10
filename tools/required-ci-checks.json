@@ -96,6 +96,22 @@
       "app_id": 15368
     },
     {
+      "context": "Foundation coordinator-network-borrow",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation coordinator-network-repeat",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation coordinator-storage-borrow",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation coordinator-storage-repeat",
+      "app_id": 15368
+    },
+    {
       "context": "Foundation elf-entry-data",
       "app_id": 15368
     },

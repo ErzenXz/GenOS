@@ -1,4 +1,4 @@
-use core::ptr::addr_of_mut;
+use kernel::scoped_cell::ScopedCell;
 
 use genos_abi::UserNetworkConfig;
 use kernel::{
@@ -246,6 +246,7 @@ pub enum PassiveTcpStreamProgress {
 }
 
 struct NetworkStack {
+    init_started: bool,
     device: NetworkDevice,
     available: bool,
     address: [u8; 4],
@@ -322,6 +323,7 @@ impl NetworkStack {
 
     const fn new() -> Self {
         Self {
+            init_started: false,
             device: NetworkDevice::new(),
             available: false,
             address: [0; 4],
@@ -2561,184 +2563,194 @@ impl TcpOwned {
     }
 }
 
-static mut NETWORK: NetworkStack = NetworkStack::new();
+static NETWORK: ScopedCell<NetworkStack> = ScopedCell::new(NetworkStack::new());
+
+fn reject_network(message: &str) -> ! {
+    crate::arch::disable_interrupts();
+    serial::println(message);
+    crate::arch::halt_loop();
+}
+
+// The one BSP coordinator owns protocol/device state. Hardware IRQs may run:
+// their handlers publish only atomic device readiness and never access NETWORK.
+// No kernel thread switch occurs inside this scope; emergency entries are fatal.
+fn with_network<R>(operation: impl for<'a> FnOnce(&'a mut NetworkStack) -> R) -> R {
+    NETWORK
+        .try_with(operation)
+        .unwrap_or_else(|_| reject_network("NETWORK_ACCESS_REJECTED policy=halt"))
+}
 
 pub fn init() {
-    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };
-    if !stack.device.discover() {
-        serial::println("NETWORK_DEVICE_UNAVAILABLE");
-        return;
-    }
-    serial::print("NETWORK_DEVICE_READY driver=");
-    serial::print(stack.device.driver_name());
-    serial::print(" transport=");
-    serial::println(stack.device.transport_name());
-    serial::print("PACKET_OWNERSHIP_READY buffers=");
-    serial::print_u64(stack.device.receive_buffer_count() as u64);
-    serial::println(" states=free,driver,stack");
-    if !stack.configure() {
-        serial::println("NETWORK_DHCP_FAILED");
-        return;
-    }
-    serial::print("NETWORK_DHCP_READY address=");
-    print_ip(stack.address);
-    serial::print(" gateway=");
-    print_ip(stack.gateway);
-    serial::print(" dns=");
-    print_ip(stack.dns);
-    serial::println("");
-    serial::println("ETHERNET_ARP_IPV4_UDP_READY");
-    if stack.ping(stack.gateway) {
-        serial::println("NETWORK_ICMP_ECHO_OK");
-    } else {
-        serial::println("NETWORK_ICMP_ECHO_FAILED");
-        stack.available = false;
-    }
-    serial::println("NETWORK_TIMEOUT_POLICY_READY retries=3 bounded_poll=true");
-    if stack.available {
-        stack.ipv6 = Some(ipv6::Host::new(stack.device.mac(), 0));
-        serial::println("IPV6_AUTOCONFIG_STARTED");
-    }
+    with_network(|stack| {
+        if stack.init_started {
+            reject_network("NETWORK_INIT_REJECTED policy=halt");
+        }
+        stack.init_started = true;
+        if !stack.device.discover() {
+            serial::println("NETWORK_DEVICE_UNAVAILABLE");
+            return;
+        }
+        serial::print("NETWORK_DEVICE_READY driver=");
+        serial::print(stack.device.driver_name());
+        serial::print(" transport=");
+        serial::println(stack.device.transport_name());
+        serial::print("PACKET_OWNERSHIP_READY buffers=");
+        serial::print_u64(stack.device.receive_buffer_count() as u64);
+        serial::println(" states=free,driver,stack");
+        if !stack.configure() {
+            serial::println("NETWORK_DHCP_FAILED");
+            return;
+        }
+        serial::print("NETWORK_DHCP_READY address=");
+        print_ip(stack.address);
+        serial::print(" gateway=");
+        print_ip(stack.gateway);
+        serial::print(" dns=");
+        print_ip(stack.dns);
+        serial::println("");
+        serial::println("ETHERNET_ARP_IPV4_UDP_READY");
+        if stack.ping(stack.gateway) {
+            serial::println("NETWORK_ICMP_ECHO_OK");
+        } else {
+            serial::println("NETWORK_ICMP_ECHO_FAILED");
+            stack.available = false;
+        }
+        serial::println("NETWORK_TIMEOUT_POLICY_READY retries=3 bounded_poll=true");
+        if stack.available {
+            stack.ipv6 = Some(ipv6::Host::new(stack.device.mac(), 0));
+            serial::println("IPV6_AUTOCONFIG_STARTED");
+        }
+    })
 }
 
 pub fn advance_control(tick: u64) {
-    // RuntimeCoordinator is the sole network owner; interrupt handlers only
-    // publish device readiness and never access this protocol state.
-    unsafe { &mut *addr_of_mut!(NETWORK) }.advance_control(tick);
+    with_network(|stack| {
+        // RuntimeCoordinator is the sole network owner; interrupt handlers only
+        // publish device readiness and never access this protocol state.
+        stack.advance_control(tick);
+    })
 }
 
 pub fn config() -> Option<UserNetworkConfig> {
-    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };
-    stack.available.then_some(UserNetworkConfig {
-        address: u32::from_be_bytes(stack.address),
-        subnet: u32::from_be_bytes(stack.subnet),
-        gateway: u32::from_be_bytes(stack.gateway),
-        dns: u32::from_be_bytes(stack.dns),
-        mac: stack.device.mac(),
-        reserved: [0; 2],
+    with_network(|stack| {
+        stack.available.then_some(UserNetworkConfig {
+            address: u32::from_be_bytes(stack.address),
+            subnet: u32::from_be_bytes(stack.subnet),
+            gateway: u32::from_be_bytes(stack.gateway),
+            dns: u32::from_be_bytes(stack.dns),
+            mac: stack.device.mac(),
+            reserved: [0; 2],
+        })
     })
 }
 
 pub fn udp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8]) -> Option<usize> {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.udp_exchange(
-        target.to_be_bytes(),
-        port,
-        request,
-        response,
-    )
+    with_network(|stack| stack.udp_exchange(target.to_be_bytes(), port, request, response))
 }
 
 pub fn tcp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8]) -> Option<usize> {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.tcp_exchange(
-        target.to_be_bytes(),
-        port,
-        request,
-        response,
-    )
+    with_network(|stack| stack.tcp_exchange(target.to_be_bytes(), port, request, response))
 }
 
 pub fn start_udp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.start_udp_async(
-        target.to_be_bytes(),
-        port,
-        request,
-        tick,
-    )
+    with_network(|stack| stack.start_udp_async(target.to_be_bytes(), port, request, tick))
 }
 
 pub fn poll_udp_async(tick: u64) -> AsyncUdpProgress {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_udp_async(tick)
+    with_network(|stack| stack.poll_udp_async(tick))
 }
 
 pub fn start_tcp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_async(
-        target.to_be_bytes(),
-        port,
-        request,
-        tick,
-    )
+    with_network(|stack| stack.start_tcp_async(target.to_be_bytes(), port, request, tick))
 }
 
 pub fn poll_tcp_async(tick: u64) -> AsyncTcpProgress {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_async(tick)
+    with_network(|stack| stack.poll_tcp_async(tick))
 }
 
 pub fn poll_tcp_passive(tick: u64) -> PassiveTcpProgress {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_passive(tick)
+    with_network(|stack| stack.poll_tcp_passive(tick))
 }
 
 pub fn start_tcp_passive(syn: PassiveTcpSyn, tick: u64) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive(syn, tick)
+    with_network(|stack| stack.start_tcp_passive(syn, tick))
 }
 
 pub fn reject_tcp_syn(syn: PassiveTcpSyn) {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.reject_tcp_syn(syn);
+    with_network(|stack| {
+        stack.reject_tcp_syn(syn);
+    })
 }
 
 pub fn reject_tcp_peer(peer: TcpServerPeer) {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.reject_tcp_peer(peer);
+    with_network(|stack| {
+        stack.reject_tcp_peer(peer);
+    })
 }
 
 pub fn cancel_tcp_passive(failure: PassiveTcpFailure) {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.cancel_tcp_passive(failure);
+    with_network(|stack| {
+        stack.cancel_tcp_passive(failure);
+    })
 }
 
 pub fn tcp_passive_active() -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }
-        .passive_tcp
-        .iter()
-        .any(Option::is_some)
+    with_network(|stack| stack.passive_tcp.iter().any(Option::is_some))
 }
 
 pub fn start_tcp_passive_stream(peer: TcpServerPeer, early: EarlyStreamData, tick: u64) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream(peer, early, tick)
+    with_network(|stack| stack.start_tcp_passive_stream(peer, early, tick))
 }
 
 pub fn poll_tcp_passive_stream(tick: u64) -> PassiveTcpStreamProgress {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_passive_stream(tick)
+    with_network(|stack| stack.poll_tcp_passive_stream(tick))
 }
 
 pub fn tcp_passive_stream_peers() -> [Option<TcpServerPeer>; PASSIVE_TCP_STREAM_SLOTS] {
-    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };
-    let mut peers = [None; PASSIVE_TCP_STREAM_SLOTS];
-    for (peer, slot) in peers.iter_mut().zip(stack.passive_streams.iter()) {
-        *peer = slot.map(|operation| operation.peer);
-    }
-    peers
+    with_network(|stack| {
+        let mut peers = [None; PASSIVE_TCP_STREAM_SLOTS];
+        for (peer, slot) in peers.iter_mut().zip(stack.passive_streams.iter()) {
+            *peer = slot.map(|operation| operation.peer);
+        }
+        peers
+    })
 }
 
 pub fn start_tcp_passive_stream_send(peer: TcpServerPeer, bytes: &[u8], tick: u64) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream_send(peer, bytes, tick)
+    with_network(|stack| stack.start_tcp_passive_stream_send(peer, bytes, tick))
 }
 
 pub fn consume_tcp_passive_stream_receive(peer: TcpServerPeer) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_stream_receive(peer)
+    with_network(|stack| stack.consume_tcp_passive_stream_receive(peer))
 }
 
 pub fn consume_tcp_passive_stream_send(peer: TcpServerPeer) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_stream_send(peer)
+    with_network(|stack| stack.consume_tcp_passive_stream_send(peer))
 }
 
 pub fn consume_tcp_passive_peer_close(peer: TcpServerPeer) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_peer_close(peer)
+    with_network(|stack| stack.consume_tcp_passive_peer_close(peer))
 }
 
 pub fn start_tcp_passive_stream_close(peer: TcpServerPeer, tick: u64) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream_close(peer, tick)
+    with_network(|stack| stack.start_tcp_passive_stream_close(peer, tick))
 }
 
 pub fn finish_tcp_passive_stream(peer: TcpServerPeer) -> bool {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.finish_tcp_passive_stream(peer)
+    with_network(|stack| stack.finish_tcp_passive_stream(peer))
 }
 
 pub fn cancel_tcp_passive_stream(peer: TcpServerPeer) {
-    unsafe { &mut *addr_of_mut!(NETWORK) }.cancel_tcp_passive_stream(peer);
+    with_network(|stack| {
+        stack.cancel_tcp_passive_stream(peer);
+    })
 }
 
 pub fn cancel_socket_async() {
-    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };
-    stack.async_udp = None;
-    stack.async_tcp = None;
+    with_network(|stack| {
+        stack.async_udp = None;
+        stack.async_tcp = None;
+    })
 }
 
 fn build_dhcp(
