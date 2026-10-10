@@ -61,6 +61,9 @@ jobs:
           - name: entry-syscall-gp
             script: test_fault_containment.py
             args: --case syscall-gp
+          - name: entry-syscall-borrow
+            script: test_fault_containment.py
+            args: --case syscall-borrow
           - name: entry-exception-pf
             script: test_fault_containment.py
             args: --case exception-pf

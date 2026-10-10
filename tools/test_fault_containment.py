@@ -37,7 +37,8 @@ SOFTWARE_KERNEL = {
     'initial-rsp-reject': ('rsp: stack_top,', 'rsp: 0x0000800000000000,'),
     'initial-ss-reject': ('ss: crate::segments::USER_DATA as u64,', 'ss: 0x10,'),
 }
-CASES = [*NESTED, *RETURNS, 'double-fault', *SOFTWARE_KERNEL, 'user-nt', 'nmi-idle', 'mce-idle']
+CASES = [*NESTED, *RETURNS, 'double-fault', *SOFTWARE_KERNEL, 'user-nt', 'nmi-idle', 'mce-idle', 'syscall-borrow']
+BORROW_HALT = 'CPU_LOCAL_ACCESS_REJECTED policy=halt'
 READY = 'EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5'
 TERMINAL = re.compile(r'^EXCEPTION_TERMINAL kind=(nested|double-fault) vector=0x([0-9a-f]+)'
                      r' parent=0x([0-9a-f]+) error=0x([0-9a-f]+) rip=0x([0-9a-f]+)'
@@ -63,6 +64,12 @@ def patch_fixture(root: Path, case: str) -> str:
              'core::arch::asm!("pushfq", "or qword ptr [rsp], 0x4000", "popfq"); let _ = runtime::ping();')
     if case in SOFTWARE_KERNEL:
         edit('kernel/src/cpu_context.rs', *SOFTWARE_KERNEL[case])
+    if case == 'syscall-borrow':
+        edit('kernel/src/userspace.rs',
+             'fn dispatch_syscall(frame: &mut UserContext, process: &mut UserProcess) -> u64 {',
+             'fn dispatch_syscall(frame: &mut UserContext, process: &mut UserProcess) -> u64 {\n'
+             '    crate::serial::println("ENTRY_WINDOW case=syscall-borrow");\n'
+             '    with_current_process(|_| crate::serial::println("ENTRY_PROBE_RETURNED"));')
     if case in NESTED:
         if case.startswith('irq-'):
             action = PF if case == 'irq-pf' else WAIT
@@ -172,7 +179,16 @@ def validate_log(log: str, case: str) -> None:
         raise ValueError('malformed terminal record')
     if any(lines.index(match.group(0)) <= armed for match in [*TERMINAL.finditer(log), *FRAME.finditer(log)]):
         raise ValueError('fault before arming')
-    if case in NESTED or case == 'double-fault':
+    if case == 'syscall-borrow':
+        window = 'ENTRY_WINDOW case=syscall-borrow'
+        if (lines.count(window) != 1 or lines.count(BORROW_HALT) != 1
+                or sum(window in line for line in lines) != 1
+                or sum('CPU_LOCAL_ACCESS_REJECTED' in line for line in lines) != 1
+                or not armed < lines.index(window) < lines.index(BORROW_HALT)
+                or frames or terminals
+                or any(line.startswith(('EXCEPTION_FRAME', 'EXCEPTION_TERMINAL', 'EXCEPTION_FATAL_HALT')) for line in lines)):
+            raise ValueError('missing exact scoped-borrow denial, wrong phase or fabricated CPU fault')
+    elif case in NESTED or case == 'double-fault':
         window = f'ENTRY_WINDOW case={case}'
         first = TERMINAL.search(log)
         if case in NESTED and (first is None or lines.count(window) != 1 or lines.index(window) <= armed
@@ -298,7 +314,7 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
                 if injected == 1 and ((case == 'nmi-iret' and 'EXCEPTION_TERMINAL_HALT' in log)
                                       or (case == 'nmi-reentry' and 'ENTRY_NMI_UNBLOCKED' in log)):
                     command({'execute': 'inject-nmi'}); injected = 2
-                marker = ('USERMODE_READY' if case == 'user-nt' else 'USER_RETURN_REJECTED origin=kernel policy=halt' if case in SOFTWARE_KERNEL
+                marker = (BORROW_HALT if case == 'syscall-borrow' else 'USERMODE_READY' if case == 'user-nt' else 'USER_RETURN_REJECTED origin=kernel policy=halt' if case in SOFTWARE_KERNEL
                           else 'EXCEPTION_TERMINAL_HALT' if case in NESTED or case == 'double-fault' else 'EXCEPTION_FATAL_HALT')
                 complete = log.count(marker) >= (2 if case == 'nmi-iret' else 1)
                 if complete:

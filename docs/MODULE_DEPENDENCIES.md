@@ -54,8 +54,10 @@ overflow boundaries. This is policy evidence, not whole-system fairness or an
 IRQ latency qualification.
 
 These are scoped F4.1 extractions. Process construction, ELF mapping, lifecycle,
-syscall coordination, typed process/file handles and current-process raw pointers
-still need their own decomposition and ownership review.
+syscall coordination, typed process/file handles
+still need their own decomposition and ownership review. The current-process
+binding now has a [scoped slot and explicit adapter contract](CPU_LOCAL.md);
+the wider shared-state audit remains open.
 
 ## Native image admission
 

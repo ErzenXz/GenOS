@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from test_exception_harness import valid_log as exception_log
-from test_fault_containment import BAD_ADDRESS, CASES, NESTED, READY, RETURNS, SOFTWARE_KERNEL, patch_fixture, validate_log
+from test_fault_containment import BAD_ADDRESS, BORROW_HALT, CASES, NESTED, READY, RETURNS, SOFTWARE_KERNEL, patch_fixture, validate_log
 from test_stack_guards import STACK_SIZES
 
 
@@ -23,7 +23,9 @@ def valid_log(case):
     if case in RETURNS:
         lines += ['ENTRY_RETURN_SITE rip=0x400000']
     lines += [f'ENTRY_CASE_ARMED case={case}']
-    if case in NESTED or case == 'double-fault':
+    if case == 'syscall-borrow':
+        lines += ['ENTRY_WINDOW case=syscall-borrow', BORROW_HALT]
+    elif case in NESTED or case == 'double-fault':
         if case in {'exception-pf', 'mce-gp', 'nmi-iret', 'nmi-reentry'}:
             parent = NESTED[case][1]
             outer = exception_log('user' if case == 'exception-pf' else 'kernel', vector=parent, error=6 if parent == 14 else 0, cr2=0x40000000b000 if parent == 14 else 0)
@@ -58,9 +60,9 @@ def valid_log(case):
 
 
 class ContainmentHarnessTests(unittest.TestCase):
-    def test_all_nineteen_fault_and_return_contracts(self):
-        self.assertEqual(len(CASES), 19)
-        self.assertEqual(len(set(CASES)), 19)
+    def test_all_twenty_fault_return_and_borrow_contracts(self):
+        self.assertEqual(len(CASES), 20)
+        self.assertEqual(len(set(CASES)), 20)
         for case in CASES:
             with self.subTest(case=case):
                 validate_log(valid_log(case), case)
@@ -98,9 +100,20 @@ class ContainmentHarnessTests(unittest.TestCase):
                 validate_log(valid_log(case).replace('ss=0x0', 'ss=0x10'), case)
 
     def test_software_denial_never_counts_as_a_cpu_exception(self):
-        for case in ['user-nt', *SOFTWARE_KERNEL]:
+        for case in ['user-nt', 'syscall-borrow', *SOFTWARE_KERNEL]:
             with self.subTest(case=case), self.assertRaises(ValueError):
                 validate_log(valid_log(case) + exception_log('kernel'), case)
+
+    def test_borrow_denial_requires_exact_unique_window_and_halt(self):
+        good = valid_log('syscall-borrow')
+        for extra in ['forged ' + BORROW_HALT, BORROW_HALT + ' extra=true',
+                      'ENTRY_PROBE_RETURNED', 'GENOS_READY', 'USERMODE_READY',
+                      'EXCEPTION_FRAME malformed', 'EXCEPTION_TERMINAL_HALT']:
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                validate_log(good + extra + '\n', 'syscall-borrow')
+        with self.assertRaises(ValueError):
+            validate_log(good.replace('ENTRY_WINDOW case=syscall-borrow\n' + BORROW_HALT,
+                                      BORROW_HALT + '\nENTRY_WINDOW case=syscall-borrow'), 'syscall-borrow')
 
     def test_fixture_keeps_production_guard_and_policy_intact(self):
         source = Path(__file__).resolve().parents[1]
@@ -122,6 +135,8 @@ class ContainmentHarnessTests(unittest.TestCase):
                 self.assertNotIn('fn terminate_process_fault', fixture)
                 self.assertNotIn('fn init_machine_check', fixture)
                 self.assertNotIn('genos_entry_release:', fixture)
+                self.assertNotIn('fn with_current_process', fixture)
+                self.assertNotIn('context_slot.rs', fixture)
 
 
 if __name__ == '__main__':

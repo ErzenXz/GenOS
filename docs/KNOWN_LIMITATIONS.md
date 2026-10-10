@@ -125,7 +125,9 @@ Endpoint authority, pathname rules, native saved CPU frames/return checks and
 bounded round-robin scheduling and whole-image native ELF admission now have
 production modules with executable host tests. Native admission precedes root
 allocation; paging, stack construction and process publication remain coordinated
-in userspace. Much process/loader/syscall/lifecycle coordination remains in
+in userspace. The [current-process slot](CPU_LOCAL.md) bounds entry borrows and
+rejects reentry; it does not synchronize other CPUs or complete the global audit.
+Much process/loader/syscall/lifecycle coordination remains in
 `kernel/src/userspace.rs`, and other shared globals need decomposition. Presentation
 now uses neutral text/geometry types and a dependency checker, but the generated
 [lexical inventory](unsafe-inventory.json)

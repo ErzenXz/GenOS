@@ -72,9 +72,11 @@ within it. They are not a claim that every shared global has been audited.
   protect only boot phases and confer no synchronization on later globals.
 - Interrupt gates clear IF on entry. The timer can save/preempt an armed
   userspace process, while ordinary kernel work is not a second scheduled
-  kernel thread. `run_slice` installs `CURRENT_PROCESS` and switches CR3 with
-  local IRQs masked, enters the saved user context, then returns to the kernel
-  root and clears current-process state before restoring the prior IF state.
+  kernel thread. `run_slice` publishes a scoped `CURRENT_PROCESS` binding and
+  switches CR3 with local IRQs masked. Entry callbacks use a non-escaping mutable
+  borrow with reentry denial. Kernel root restoration precedes unpublication and
+  prior IF restoration; [current-process ownership](CPU_LOCAL.md) states the
+  pointer lifetime, assembly access and exclusion obligations.
 - The VirtIO MSI-X handler records atomic readiness and acknowledges the
   interrupt. Descriptor validation, buffer transfer and protocol state
   mutation remain coordinator work. An IRQ handler must not wait on a lock
@@ -87,8 +89,7 @@ within it. They are not a claim that every shared global has been audited.
   floating-point/SIMD ownership is explicitly bounded by the
   [CPU state policy](CPU_STATE.md).
 
-There is no general lock hierarchy yet. Current-process and active-address-
-space globals, physical allocator ownership, scheduler-local state and some
+There is no general lock hierarchy yet. Active-address-space globals, physical allocator ownership, scheduler-local state and some
 runtime/device globals still require explicit ownership, IRQ-safe access and
 per-CPU abstractions. Before a second CPU can run, GenOS needs a reviewed AP
 startup/parking protocol, per-CPU GDT/TSS/stacks and process state, IRQ-safe
