@@ -115,6 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Install VM dependencies
         run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86

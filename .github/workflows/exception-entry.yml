@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Reject missing, forged and duplicate fault evidence
         run: python3 -m unittest discover -s tools -p test_exception_harness.py -v
@@ -30,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Export the exact tested source without Git credentials or untracked files
         run: |
@@ -58,6 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Install reference VM dependencies
         run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86

@@ -24,6 +24,7 @@ These documents describe the exact bounded behavior demonstrated by the current 
 - [Process CPU state and isolation](CPU_STATE.md)
 - [Exception nesting and return containment](FAULT_CONTAINMENT.md)
 - [Versioned reference VM and qualification](REFERENCE_VM.md)
+- [Required CI policy and exact-head execution audit](CI_POLICY.md)
 - [Networking contracts](NETWORKING.md)
 - [Normal and validation boot policies](BOOT_MODES.md)
 - [Single-core admission and interrupt contract](SINGLE_CORE.md)
