@@ -4,6 +4,7 @@ use core::{
 };
 
 use crate::{arch, serial};
+use kernel::tx_queue::{TxQueue, TX_RING_SIZE};
 
 pub const MAX_FRAME: usize = 1518;
 
@@ -30,7 +31,7 @@ const VIRTQ_DESC_F_WRITE: u16 = 2;
 // VirtIO 1.x always includes the little-endian num_buffers field. The older
 // 10-byte layout exists only for a legacy interface without mergeable buffers.
 const VIRTIO_NET_HEADER_BYTES: usize = 12;
-const VIRTQUEUE_SIZE: usize = 8;
+const VIRTQUEUE_SIZE: usize = TX_RING_SIZE;
 #[cfg(feature = "network-test-faults")]
 pub const VIRTIO_QUEUE_CAPACITY: usize = VIRTQUEUE_SIZE;
 const VIRTIO_BUFFER_BYTES: usize = 2048;
@@ -363,8 +364,7 @@ pub struct VirtioNet {
     rx_batch_end: u16,
     rx_batch_interrupt: bool,
     rx_faulted: bool,
-    tx_available: u16,
-    tx_used: u16,
+    tx: TxQueue,
     rx_idle_checks: usize,
 }
 
@@ -380,8 +380,7 @@ impl VirtioNet {
             rx_batch_end: 0,
             rx_batch_interrupt: false,
             rx_faulted: false,
-            tx_available: 0,
-            tx_used: 0,
+            tx: TxQueue::new(),
             rx_idle_checks: 0,
         }
     }
@@ -576,8 +575,7 @@ impl FrameDevice for VirtioNet {
             }
 
             self.prepare_receive_queue();
-            self.tx_available = 0;
-            self.tx_used = 0;
+            self.tx = TxQueue::new();
             self.rx_idle_checks = 0;
             status |= VIRTIO_STATUS_DRIVER_OK;
             mmio_write_u8(self.common, COMMON_DEVICE_STATUS, status);
@@ -592,7 +590,7 @@ impl FrameDevice for VirtioNet {
     }
 
     fn transmit(&mut self, frame: &[u8]) -> bool {
-        if self.rx_faulted || frame.len() > MAX_FRAME {
+        if self.rx_faulted || self.tx.is_quarantined() || frame.len() > MAX_FRAME {
             return false;
         }
         let wire_length = frame.len().max(60);
@@ -600,6 +598,11 @@ impl FrameDevice for VirtioNet {
         if total_length > VIRTIO_BUFFER_BYTES {
             return false;
         }
+        // Reserve before the first buffer/descriptor write. Neither a timeout
+        // nor a malformed completion can authorize another publication.
+        let Ok(publication) = self.tx.begin() else {
+            return false;
+        };
         unsafe {
             let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
             let mut observed_interrupt = VIRTIO_INTERRUPT_EPOCH.load(Ordering::Acquire);
@@ -620,12 +623,14 @@ impl FrameDevice for VirtioNet {
                 },
             );
             write_volatile(
-                addr_of_mut!((*queue).available.ring[self.tx_available as usize % VIRTQUEUE_SIZE]),
+                addr_of_mut!((*queue).available.ring[publication.ring_slot]),
                 0,
             );
             fence(Ordering::Release);
-            self.tx_available = self.tx_available.wrapping_add(1);
-            write_volatile(addr_of_mut!((*queue).available.index), self.tx_available);
+            write_volatile(
+                addr_of_mut!((*queue).available.index),
+                publication.available_index,
+            );
             Self::notify(self.tx_notify, VIRTIO_TX_QUEUE);
             for spin in 0..VIRTIO_POLL_LIMIT {
                 let interrupt = VIRTIO_INTERRUPT_EPOCH.load(Ordering::Acquire);
@@ -642,13 +647,13 @@ impl FrameDevice for VirtioNet {
                 }
                 fence(Ordering::Acquire);
                 let used = read_volatile(addr_of!((*queue).used.index));
-                if used != self.tx_used {
+                if used != self.tx.used_index() {
                     let element = read_volatile(addr_of!(
-                        (*queue).used.ring[self.tx_used as usize % VIRTQUEUE_SIZE]
+                        (*queue).used.ring[self.tx.used_index() as usize % VIRTQUEUE_SIZE]
                     ));
-                    self.tx_used = self.tx_used.wrapping_add(1);
-                    if element.id != 0 {
-                        serial::println("VIRTIO_NET_TX_INVALID_USED_ID");
+                    if self.tx.complete(used, element.id).is_err() {
+                        serial::println("VIRTIO_NET_TX_INVALID_COMPLETION queue=quarantined");
+                        return false;
                     }
                     if interrupt_driven {
                         VIRTIO_TX_INTERRUPT_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
@@ -656,16 +661,17 @@ impl FrameDevice for VirtioNet {
                         VIRTIO_RECOVERY_COMPLETIONS.fetch_add(1, Ordering::Relaxed);
                     }
                     VIRTIO_TX_FRAMES.fetch_add(1, Ordering::Relaxed);
-                    return element.id == 0;
+                    return true;
                 }
             }
         }
-        serial::println("VIRTIO_NET_TX_TIMEOUT");
+        self.tx.quarantine();
+        serial::println("VIRTIO_NET_TX_TIMEOUT queue=quarantined");
         false
     }
 
     fn receive(&mut self, packet: &mut PacketBuffer) -> bool {
-        if self.rx_faulted {
+        if self.rx_faulted || self.tx.is_quarantined() {
             return false;
         }
         unsafe {
@@ -1200,7 +1206,7 @@ mod completion_tests {
     use super::*;
 
     #[test]
-    fn one_interrupt_drains_every_completed_rx_descriptor_without_recovery_polling() {
+    fn dma_completion_ownership_rejects_reuse_after_timeout_or_invalid_tx() {
         let mut notification = 0u16;
         let mut device = VirtioNet::new();
         device.rx_notify = core::ptr::addr_of_mut!(notification) as u64;
@@ -1257,5 +1263,53 @@ mod completion_tests {
         VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
         assert!(!device.receive(&mut packet));
         assert!(device.rx_faulted);
+
+        // Exercise the production TX path, including its real polling timeout.
+        // Queue/buffer storage is still exclusive to this single host fixture;
+        // notification targets borrowed RAM, and no MMIO/PIO or DMA executes.
+        for (used, id, success) in [(1, 0, true), (1, 1, false), (2, 0, false), (0, 0, false)] {
+            let mut device = VirtioNet::new();
+            device.tx_notify = addr_of_mut!(notification) as u64;
+            unsafe {
+                let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
+                queue.write(VirtqueueMemory::empty());
+                (*queue).used.index = used;
+                (*queue).used.ring[0] = VirtqUsedElement { id, length: 0 };
+            }
+            let tx_before = VIRTIO_TX_FRAMES.load(Ordering::Relaxed);
+            assert_eq!(device.transmit(&[0x45; 60]), success);
+            assert_eq!(device.tx.is_quarantined(), !success);
+            assert_eq!(device.tx.used_index(), u16::from(success));
+            assert_eq!(
+                VIRTIO_TX_FRAMES.load(Ordering::Relaxed),
+                tx_before + u64::from(success)
+            );
+            if !success {
+                // Timeout or corrupt completion does not retire DMA ownership.
+                // A late plausible completion must not undo quarantine either.
+                unsafe {
+                    let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
+                    let buffer_before = addr_of!(VIRTIO_TX_BUFFER.0).read();
+                    let descriptor_before = (*queue).descriptors[0];
+                    let available_before = (*queue).available.index;
+                    let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);
+                    (*queue).used.index = 1;
+                    (*queue).used.ring[0] = VirtqUsedElement { id: 0, length: 0 };
+                    assert!(!device.transmit(&[0x99; 60]));
+                    assert!(!device.receive(&mut packet));
+                    assert_eq!(addr_of!(VIRTIO_TX_BUFFER.0).read(), buffer_before);
+                    let descriptor_after = (*queue).descriptors[0];
+                    assert_eq!(descriptor_after.address, descriptor_before.address);
+                    assert_eq!(descriptor_after.length, descriptor_before.length);
+                    assert_eq!(descriptor_after.flags, descriptor_before.flags);
+                    assert_eq!(descriptor_after.next, descriptor_before.next);
+                    assert_eq!((*queue).available.index, available_before);
+                    assert_eq!(
+                        VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed),
+                        notifications_before
+                    );
+                }
+            }
+        }
     }
 }

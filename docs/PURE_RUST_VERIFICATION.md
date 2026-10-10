@@ -34,6 +34,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| Single-buffer TX publication, completion and quarantine | 6 |
 | Owned PS/2 decoding, pointer bounds and bounded event queue | 6 |
 | CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
@@ -49,7 +50,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **101** |
+| **Total** | **107** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -77,6 +78,12 @@ numeric-admission tests, including volatile stores with allocation provenance.
 Its unsafe external-MMIO constructor/store and actual hardware mapping remain
 outside interpreter execution. Four additional compile-fail checks cover buffer
 exclusivity/lifetimes, unsafe construction and thread transfer.
+
+The TX queue addition interprets six production ownership-state tests, including
+timeout/late completion, malformed completion and wrapping indices. The separate
+production driver host fixture exercises TX polling and checks that quarantine
+prevents subsequent buffer/descriptor writes. Neither executes hardware DMA;
+see [the ownership boundary](TX_QUEUE_OWNERSHIP.md).
 
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an

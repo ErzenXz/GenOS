@@ -201,6 +201,9 @@ these remaining CPU-state and hardware obligations.
   [Private-field frame grants](docs/FRAME_GRANTS.md) now enforce owner/allocation identity and reject stale reuse. Explicit sharing and device pins remain open; user aliases are denied.
 - [ ] **F3.2:** retire references, mappings, translations and device use before scrubbing/reuse. Wrong-owner, stale-generation, duplicate, aliased and pinned releases must leave state and bytes unchanged.
   User PTE pins, inactive-root construction/teardown, CR3 retirement with PCID/global retention disabled, and unlink-before-release are implemented. Raw kernel references/direct aliases, DMA and SMP still require broader lifetime policy.
+  The single-buffer [VirtIO TX queue](docs/TX_QUEUE_OWNERSHIP.md) now quarantines
+  timeout/malformed completions before another buffer or descriptor write;
+  no DMA reset/release authority is inferred. Broader device retirement stays open.
 - [x] **F3.3:** define contiguous/ordered allocation and early-boot versus runtime allocation contracts; measure metadata overhead and maintain explicit RAM/region ceilings.
   Runtime grants are order-0 only, with no adjacency promise; firmware boot allocations and admitted runtime regions have separate owners. Metadata measures 591,504 bytes; usable coverage is bounded to 8 GiB/64 regions and live grants to 8192. Contiguous DMA allocation is not advertised.
 - [x] **F3.4:** audit existing constructors/destructors and failure boundaries, including page-table splitting, partial ELF load and handles. Recoverable failure must leave no leaked authority or frame. Apply the same gate when C1 later introduces heap/mapping growth; R1 does not require that later application feature.
