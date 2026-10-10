@@ -303,6 +303,11 @@ references, not an automatic filesystem selection. See [storage/platform researc
 
 - [x] Dual snapshot format, synchronous commits, host inspection/repair and read-only recovery have bounded local proofs.
 - [x] **S1.1:** reproduce unknown final-commit outcomes and enter read-only recovery. Explicit outcomes, sticky write quarantine, dirty-cache discard, last-acknowledged RAM rollback and visible remount status are implemented. The host regression proves either old or new complete media state after failed final flush; subsequent writes issue no device commands. Live reconciliation is not implemented.
+  An October 10 recovery-consumer fix also handles both complete quarantine
+  reports in the validation shell. A fresh-volume device-write failure now has
+  a retained production VM regression for persistent mutation denial, readable
+  RAM files and continued terminal service; see [storage evidence](docs/STORAGE.md).
+  The independently observed ATA timeout cause remains unresolved.
 - [x] **S1.2:** specify atomic visibility, acknowledged durability, cancellation and remount results separately. Inject cuts/errors before and after every logical write/flush, including the final commit record.
   [The storage contract](docs/STORAGE.md) separates synchronous acknowledgement, unacknowledged old/new recovery, pre-commit cancellation and read-only quarantine. The production seam exercises 176 before/after device-operation errors across writeback and writethrough.
 - [x] **S1.3:** test torn/reordered/lost sectors, corruption of either/both generations, full storage, counter overflow and a second failure during repair/recovery. Preserve unreadable media; never silently format it.

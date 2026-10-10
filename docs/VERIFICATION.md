@@ -910,3 +910,106 @@ remain under `build/remote-evidence/0855298/passing-qemu/`. These Linux runs are
 independent portability execution, not a pinned-reference reviewer sign-off.
 Draft PR #9 remains unmerged and the roadmap stays **51/100**, Experimental.
 No R1/R2/R3 or whole-roadmap completion is claimed.
+
+## October 10 scoped current-process access and storage quarantine
+
+Committed head `5ec29419f07e94018a6cae07a9c557328c9dffd6` replaces the raw global
+mutable-process reference with a scoped `ContextSlot` publication and borrow
+boundary. The admitted BSP suspends its owner reference through the user slice;
+assembly field pointers preserve that publication pointer's provenance. Rust
+entry callbacks require IF clear and reject reentrant access before dereference.
+Syscall action handling is separate from the entry adapter. This advances part
+of F4.1/F4.2/F5.3; it does not audit every mutable global or enable SMP.
+
+- All **303 workspace unit tests**, plus a compile-fail borrow-escape doctest,
+  **108 Python tests** and strict lint for the affected host/target builds passed.
+  The reviewed lexical inventory records **454 sites across 97 sources**.
+- The complete pinned Miri campaign passed **60 selected tests**, including seven
+  scoped-slot cases with strict provenance and assembly-field pointer sequencing.
+  Native allocator stress also passed. The clean-source manifest is
+  `build/pure-rust-evidence/1791667448914843000/manifest.json`; hardware/assembly
+  and the wider kernel are outside its scope. The ownership model was unchanged
+  and was not rerun in this Miri-only campaign.
+- Real Ring 3 syscall reentry reached exactly one production
+  `CPU_LOCAL_ACCESS_REJECTED policy=halt`, without executing the nested callback,
+  resuming boot, faulting or stopping the VM. The passing manifest is
+  `build/fault-containment-evidence/1791667450075041000/syscall-borrow/manifest.json`.
+  This is software ownership denial. Its first manifest used an overly broad
+  generic CPU-fault scope label; the harness metadata has since been corrected.
+- The complete `cargo xtask test` suite passed all eighteen per-run manifests on
+  clean `5ec2941`. The index and hashes are in `build/5ec2941-system-evidence-index.json`;
+  combined output is `build/context-slot-system-tests.log`. Storage/serial,
+  network/no-HTTP, SDK, memory preflight/ten rollback cutoffs, six CPU protections,
+  and normal debug/release terminal/process/file workflows all executed.
+
+Actual `main` protection was strengthened from sixty to **sixty-one** required,
+App-bound checks without changing any other protection. The readback is retained
+at `build/ci-policy-evidence/context-slot-policy-1791667447650837000/`.
+[Remote CI](https://github.com/ErzenXz/GenOS/actions/runs/38087489395),
+[exception entry](https://github.com/ErzenXz/GenOS/actions/runs/38087489386) and
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38087489400)
+completed all sixty-one required lanes on `5ec2941`: **56 passed, five failed**.
+The new borrow lane passed; existing user/kernel #XM, `initial-rip` and `nmi-iret`
+qualification still failed. Selected success/failure artifacts remain under
+`build/remote-evidence/5ec2941/`; the retained audit at
+`build/ci-policy-evidence/5ec2941-first-audit/` verifies enforcement/execution,
+not a green candidate.
+
+The fifth failure, build/boot, exposed a distinct recovery-consumer bug. On a
+fresh volume, a real `ATA_COMMAND_TIMEOUT phase=complete` caused production
+`PERSISTENT_STORAGE_QUARANTINED outcome=not-published`. The kernel correctly
+published a 75-byte read-only report; the validation shell accepted only short
+legacy records and exited 243. Exact failed serial/image/source evidence remains
+at `build/remote-evidence/5ec2941/first-ci-qemu/validation-evidence/1791667524460902066/serial-persistence-create/`.
+The later shell fix recognizes both complete quarantine outcomes and checks
+persistent write/manage/namespace denial plus RAM-file readability, without
+requiring seed files that fresh-volume creation never acknowledged. Three host
+parser tests reject incomplete, unknown, duplicate and inconsistent records.
+Kernel quarantine and ATA polling budgets are unchanged; the timeout's underlying
+cause is not fixed by this consumer correction.
+
+The new independent storage-create-failure fixture injects an error only at
+`AtaIo::write`. Actual branch protection was strengthened to **sixty-two** required
+checks; full before/after readback, request and response hashes remain at
+`build/ci-policy-evidence/storage-startup-policy-1791668406611523000/`.
+Its first local attempt on `cb380ab` failed before boot because the plain archive
+had no Git metadata required by the serial runner. That failed manifest remains
+at `build/storage-startup-evidence/1791668393276058000/manifest.json`; it is not
+runtime failure or passing qualification. The disposable checkout correction
+retains the archived commit identity and tests that uncommitted/untracked caller
+content cannot enter the fixture.
+
+Local QEMU remains 11.1.2 with matching firmware and explicit reference mismatch;
+these are portability runs, not pinned-reference or independent-review sign-off.
+The roadmap remains **51/100**, Experimental, with draft PR #9 unmerged.
+
+On clean shell-fix head `cb380ab976dd99c459d7413502d927e1bfa8dee3`, all
+**306 workspace unit tests** plus the borrow-escape doctest passed; the complete
+system suite again passed all eighteen per-run manifests. The latter are indexed
+with hashes in `build/cb380ab-system-evidence-index.json`, with combined output
+in `build/storage-startup-system-tests.log`. Strict host, normal shell and
+validation shell/kernel lint passed. The reviewed inventory now contains
+**454 sites across 98 sources**, with no additional unsafe construct in this fix.
+
+The disposable-checkout correction on `18fc1d5` booted successfully and its inner
+serial runner passed, but the outer wrapper incorrectly rejected the validation
+boot's three deliberate earlier CPU faults. Its failed manifest remains at
+`build/storage-startup-evidence/1791668666156778000/manifest.json`. The corrected
+wrapper validates exactly the expected user #PF and two pending-x87 #MF frames,
+matching termination identities and order, all before the storage injection;
+any extra, malformed, reordered or later fault fails. The original failures
+are retained rather than relabeled as passes. **114 Python tests** now pass,
+including immutable checkout identity and these deliberate-fault boundaries.
+
+A fresh run passed on clean
+`f00c130f022b7ac2e123da7d43b6a67c8675ffa6`. Its manifest is
+`build/storage-startup-evidence/1791668762445626000/manifest.json` and retains the
+single-method fixture diff, archive hash, environment, command, per-run image
+hashes, serial log and fresh runner nonce. The guest proves one failed fresh-volume
+write, not-published quarantine, persistent mutation denial, readable session RAM,
+completed headless validation and a responsive Ring 3 terminal. No healthy durable
+creation/restore or later fault is accepted. A separate live scoped-borrow rerun
+passed on `18fc1d5` with the corrected software-denial scope label at
+`build/fault-containment-evidence/1791668667329612000/syscall-borrow/manifest.json`.
+These are bounded regressions, not physical-device, complete CPU or release
+qualification.
