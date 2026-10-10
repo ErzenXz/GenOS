@@ -73,6 +73,18 @@ jobs:
           - name: allocation-irq-deferred
             script: test_memory_access.py
             args: --case irq-deferred
+          - name: coordinator-network-borrow
+            script: test_coordinator_access.py
+            args: --case network-borrow
+          - name: coordinator-network-repeat
+            script: test_coordinator_access.py
+            args: --case network-repeat
+          - name: coordinator-storage-borrow
+            script: test_coordinator_access.py
+            args: --case storage-borrow
+          - name: coordinator-storage-repeat
+            script: test_coordinator_access.py
+            args: --case storage-repeat
           - name: storage-create-failure
             script: test_storage_startup.py
             args: ''
@@ -166,6 +178,7 @@ jobs:
             build/cpu-paging-evidence/
             build/input-irq-evidence/
             build/memory-access-evidence/
+            build/coordinator-access-evidence/
             build/fault-containment-evidence/
           if-no-files-found: warn
           retention-days: 14

@@ -5,10 +5,10 @@
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 272,
+    "unsafe_block": 243,
     "unsafe_extern": 7,
     "unsafe_fn": 71,
-    "unsafe_impl": 2,
+    "unsafe_impl": 3,
     "unsafe_trait": 1
   },
   "files": [
@@ -223,9 +223,9 @@
       "sha256": "de208b2f6116d487e6c2a2b91416cf6b9b29689096b9a163dc482edeebbb17ba"
     },
     {
-      "lines": 82,
+      "lines": 89,
       "path": "kernel/src/lib.rs",
-      "sha256": "8edf8a7453e264813276a1958a8628ec44d6dd807cf9f1bc52a2a4ffcfc2a511"
+      "sha256": "ba560a71c015e832bcb93b31e431718d2f0c34bdc3433aca2d75f13d079a8e7e"
     },
     {
       "lines": 292,
@@ -253,9 +253,9 @@
       "sha256": "8ad459ff0711df7e8462db22fddeb1107b904f8d57404966d1c7f6f0ae2e7a4d"
     },
     {
-      "lines": 2854,
+      "lines": 2866,
       "path": "kernel/src/network.rs",
-      "sha256": "fb634a7bf17dccc39ab1b41504c368901dc204d654c14913d686b19270139eb1"
+      "sha256": "0a97f40bef7e800a400961603c77b8e4d068dc30d87c6dde943c69445f0705ab"
     },
     {
       "lines": 1261,
@@ -328,6 +328,11 @@
       "sha256": "a29908b3b9986a6bb987d594968d7f6d5f9b47b2781760fcc2301e17a4e1348e"
     },
     {
+      "lines": 190,
+      "path": "kernel/src/scoped_cell.rs",
+      "sha256": "a3e490cd17ae68db45acc80b39f66b2a8abf9047e01fa5a24bbebe2a8444a356"
+    },
+    {
       "lines": 74,
       "path": "kernel/src/segments.rs",
       "sha256": "b69464c23b30ecc0ac1de112adaf3348ac6ce61a3568871749d580cb6618c879"
@@ -368,9 +373,9 @@
       "sha256": "c18a18eb2576c3e004154e216ab6c40545b455f7b0b2ba3954e27870571d4694"
     },
     {
-      "lines": 1128,
+      "lines": 1159,
       "path": "kernel/src/storage.rs",
-      "sha256": "a002808f6a62558d06cf73cad6591a87ad716a3d27dc8050347eb4d81566cdc7"
+      "sha256": "23e3f4f37cc4cbc0ba4d6cec98f864dc07afa148fbe245afcc2a06e731f98353"
     },
     {
       "lines": 957,
@@ -1935,61 +1940,61 @@
     {
       "column": 9,
       "construct_sha256": "c310339d010c2c279dec79e3d8bdc635ba9247882638991d300a61bbe205ffc0",
-      "context": "\n#[cfg(test)]\nmod arch {\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
-      "context_start_line": 53,
-      "end_line": 58,
+      "context": "    pub fn halt_loop() -> ! {\n        panic!(\"unexpected privileged halt in host test\")\n    }\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
+      "context_start_line": 60,
+      "end_line": 65,
       "kind": "unsafe_fn",
-      "line": 56,
+      "line": 63,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "17c7b12b790576fd937eb7f726ddfd58cd1f981940ec1fb7386e9d0084b8af7f",
       "context": "    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {",
-      "context_start_line": 56,
-      "end_line": 61,
+      "context_start_line": 63,
+      "end_line": 68,
       "kind": "unsafe_fn",
-      "line": 59,
+      "line": 66,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "3f568f289ddbf53aced0e01a8c08b8663d90f40db51a5e1be26743d1cdb1909d",
       "context": "    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {",
-      "context_start_line": 59,
-      "end_line": 64,
+      "context_start_line": 66,
+      "end_line": 71,
       "kind": "unsafe_fn",
-      "line": 62,
+      "line": 69,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "00dea65152448b96d0d5ddf452abeaf12431daf027379b4aebfe7ac7e715a65b",
       "context": "    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {",
-      "context_start_line": 62,
-      "end_line": 67,
+      "context_start_line": 69,
+      "end_line": 74,
       "kind": "unsafe_fn",
-      "line": 65,
+      "line": 72,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "1a6c18dc0212beeffb26ec78ecbc3d296d3fd9d71a685cb427653cb62ab59fa2",
       "context": "    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {",
-      "context_start_line": 65,
-      "end_line": 70,
+      "context_start_line": 72,
+      "end_line": 77,
       "kind": "unsafe_fn",
-      "line": 68,
+      "line": 75,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "238b04576c64e3b2b07a66a69a9a15c9f6c008fa62d62f5039892dedddb70d60",
       "context": "    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n}",
-      "context_start_line": 68,
-      "end_line": 73,
+      "context_start_line": 75,
+      "end_line": 80,
       "kind": "unsafe_fn",
-      "line": 71,
+      "line": 78,
       "path": "kernel/src/lib.rs"
     },
     {
@@ -2101,266 +2106,6 @@
       "kind": "unsafe_block",
       "line": 294,
       "path": "kernel/src/memory.rs"
-    },
-    {
-      "column": 17,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "static mut NETWORK: NetworkStack = NetworkStack::new();\n\npub fn init() {\n    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };\n    if !stack.device.discover() {\n        serial::println(\"NETWORK_DEVICE_UNAVAILABLE\");\n        return;",
-      "context_start_line": 2564,
-      "end_line": 2567,
-      "kind": "unsafe_block",
-      "line": 2567,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "pub fn advance_control(tick: u64) {\n    // RuntimeCoordinator is the sole network owner; interrupt handlers only\n    // publish device readiness and never access this protocol state.\n    unsafe { &mut *addr_of_mut!(NETWORK) }.advance_control(tick);\n}\n\npub fn config() -> Option<UserNetworkConfig> {",
-      "context_start_line": 2604,
-      "end_line": 2607,
-      "kind": "unsafe_block",
-      "line": 2607,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 17,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn config() -> Option<UserNetworkConfig> {\n    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };\n    stack.available.then_some(UserNetworkConfig {\n        address: u32::from_be_bytes(stack.address),\n        subnet: u32::from_be_bytes(stack.subnet),",
-      "context_start_line": 2608,
-      "end_line": 2611,
-      "kind": "unsafe_block",
-      "line": 2611,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn udp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8]) -> Option<usize> {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.udp_exchange(\n        target.to_be_bytes(),\n        port,\n        request,",
-      "context_start_line": 2620,
-      "end_line": 2623,
-      "kind": "unsafe_block",
-      "line": 2623,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn tcp_exchange(target: u32, port: u16, request: &[u8], response: &mut [u8]) -> Option<usize> {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.tcp_exchange(\n        target.to_be_bytes(),\n        port,\n        request,",
-      "context_start_line": 2629,
-      "end_line": 2632,
-      "kind": "unsafe_block",
-      "line": 2632,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn start_udp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.start_udp_async(\n        target.to_be_bytes(),\n        port,\n        request,",
-      "context_start_line": 2638,
-      "end_line": 2641,
-      "kind": "unsafe_block",
-      "line": 2641,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn poll_udp_async(tick: u64) -> AsyncUdpProgress {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_udp_async(tick)\n}\n\npub fn start_tcp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {",
-      "context_start_line": 2647,
-      "end_line": 2650,
-      "kind": "unsafe_block",
-      "line": 2650,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn start_tcp_async(target: u32, port: u16, request: &[u8], tick: u64) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_async(\n        target.to_be_bytes(),\n        port,\n        request,",
-      "context_start_line": 2651,
-      "end_line": 2654,
-      "kind": "unsafe_block",
-      "line": 2654,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn poll_tcp_async(tick: u64) -> AsyncTcpProgress {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_async(tick)\n}\n\npub fn poll_tcp_passive(tick: u64) -> PassiveTcpProgress {",
-      "context_start_line": 2660,
-      "end_line": 2663,
-      "kind": "unsafe_block",
-      "line": 2663,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn poll_tcp_passive(tick: u64) -> PassiveTcpProgress {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_passive(tick)\n}\n\npub fn start_tcp_passive(syn: PassiveTcpSyn, tick: u64) -> bool {",
-      "context_start_line": 2664,
-      "end_line": 2667,
-      "kind": "unsafe_block",
-      "line": 2667,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn start_tcp_passive(syn: PassiveTcpSyn, tick: u64) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive(syn, tick)\n}\n\npub fn reject_tcp_syn(syn: PassiveTcpSyn) {",
-      "context_start_line": 2668,
-      "end_line": 2671,
-      "kind": "unsafe_block",
-      "line": 2671,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn reject_tcp_syn(syn: PassiveTcpSyn) {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.reject_tcp_syn(syn);\n}\n\npub fn reject_tcp_peer(peer: TcpServerPeer) {",
-      "context_start_line": 2672,
-      "end_line": 2675,
-      "kind": "unsafe_block",
-      "line": 2675,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn reject_tcp_peer(peer: TcpServerPeer) {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.reject_tcp_peer(peer);\n}\n\npub fn cancel_tcp_passive(failure: PassiveTcpFailure) {",
-      "context_start_line": 2676,
-      "end_line": 2679,
-      "kind": "unsafe_block",
-      "line": 2679,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn cancel_tcp_passive(failure: PassiveTcpFailure) {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.cancel_tcp_passive(failure);\n}\n\npub fn tcp_passive_active() -> bool {",
-      "context_start_line": 2680,
-      "end_line": 2683,
-      "kind": "unsafe_block",
-      "line": 2683,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn tcp_passive_active() -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }\n        .passive_tcp\n        .iter()\n        .any(Option::is_some)",
-      "context_start_line": 2684,
-      "end_line": 2687,
-      "kind": "unsafe_block",
-      "line": 2687,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn start_tcp_passive_stream(peer: TcpServerPeer, early: EarlyStreamData, tick: u64) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream(peer, early, tick)\n}\n\npub fn poll_tcp_passive_stream(tick: u64) -> PassiveTcpStreamProgress {",
-      "context_start_line": 2691,
-      "end_line": 2694,
-      "kind": "unsafe_block",
-      "line": 2694,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn poll_tcp_passive_stream(tick: u64) -> PassiveTcpStreamProgress {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.poll_tcp_passive_stream(tick)\n}\n\npub fn tcp_passive_stream_peers() -> [Option<TcpServerPeer>; PASSIVE_TCP_STREAM_SLOTS] {",
-      "context_start_line": 2695,
-      "end_line": 2698,
-      "kind": "unsafe_block",
-      "line": 2698,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 17,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn tcp_passive_stream_peers() -> [Option<TcpServerPeer>; PASSIVE_TCP_STREAM_SLOTS] {\n    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };\n    let mut peers = [None; PASSIVE_TCP_STREAM_SLOTS];\n    for (peer, slot) in peers.iter_mut().zip(stack.passive_streams.iter()) {\n        *peer = slot.map(|operation| operation.peer);",
-      "context_start_line": 2699,
-      "end_line": 2702,
-      "kind": "unsafe_block",
-      "line": 2702,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn start_tcp_passive_stream_send(peer: TcpServerPeer, bytes: &[u8], tick: u64) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream_send(peer, bytes, tick)\n}\n\npub fn consume_tcp_passive_stream_receive(peer: TcpServerPeer) -> bool {",
-      "context_start_line": 2708,
-      "end_line": 2711,
-      "kind": "unsafe_block",
-      "line": 2711,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn consume_tcp_passive_stream_receive(peer: TcpServerPeer) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_stream_receive(peer)\n}\n\npub fn consume_tcp_passive_stream_send(peer: TcpServerPeer) -> bool {",
-      "context_start_line": 2712,
-      "end_line": 2715,
-      "kind": "unsafe_block",
-      "line": 2715,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn consume_tcp_passive_stream_send(peer: TcpServerPeer) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_stream_send(peer)\n}\n\npub fn consume_tcp_passive_peer_close(peer: TcpServerPeer) -> bool {",
-      "context_start_line": 2716,
-      "end_line": 2719,
-      "kind": "unsafe_block",
-      "line": 2719,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn consume_tcp_passive_peer_close(peer: TcpServerPeer) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.consume_tcp_passive_peer_close(peer)\n}\n\npub fn start_tcp_passive_stream_close(peer: TcpServerPeer, tick: u64) -> bool {",
-      "context_start_line": 2720,
-      "end_line": 2723,
-      "kind": "unsafe_block",
-      "line": 2723,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn start_tcp_passive_stream_close(peer: TcpServerPeer, tick: u64) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.start_tcp_passive_stream_close(peer, tick)\n}\n\npub fn finish_tcp_passive_stream(peer: TcpServerPeer) -> bool {",
-      "context_start_line": 2724,
-      "end_line": 2727,
-      "kind": "unsafe_block",
-      "line": 2727,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn finish_tcp_passive_stream(peer: TcpServerPeer) -> bool {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.finish_tcp_passive_stream(peer)\n}\n\npub fn cancel_tcp_passive_stream(peer: TcpServerPeer) {",
-      "context_start_line": 2728,
-      "end_line": 2731,
-      "kind": "unsafe_block",
-      "line": 2731,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn cancel_tcp_passive_stream(peer: TcpServerPeer) {\n    unsafe { &mut *addr_of_mut!(NETWORK) }.cancel_tcp_passive_stream(peer);\n}\n\npub fn cancel_socket_async() {",
-      "context_start_line": 2732,
-      "end_line": 2735,
-      "kind": "unsafe_block",
-      "line": 2735,
-      "path": "kernel/src/network.rs"
-    },
-    {
-      "column": 17,
-      "construct_sha256": "9ae96c358132b3683b7fca0c792f59211061feb70b0291b50ed10856d91972c9",
-      "context": "}\n\npub fn cancel_socket_async() {\n    let stack = unsafe { &mut *addr_of_mut!(NETWORK) };\n    stack.async_udp = None;\n    stack.async_tcp = None;\n}",
-      "context_start_line": 2736,
-      "end_line": 2739,
-      "kind": "unsafe_block",
-      "line": 2739,
-      "path": "kernel/src/network.rs"
     },
     {
       "column": 26,
@@ -3403,6 +3148,26 @@
       "path": "kernel/src/runtime.rs"
     },
     {
+      "column": 1,
+      "construct_sha256": "97bbb891061e184c5456ffa0b9f87f1b98b582d4dbcdec6379b50dc6bd018d07",
+      "context": "// Shared callers can transfer exclusive T access between threads, requiring\n// T: Send, but never share &T concurrently, so T: Sync is unnecessary. Fields\n// are private; the higher-ranked callback cannot leak a reference to the value.\nunsafe impl<T: Send> Sync for ScopedCell<T> {}\n\nimpl<T> ScopedCell<T> {\n    pub const fn new(value: T) -> Self {",
+      "context_start_line": 19,
+      "end_line": 22,
+      "kind": "unsafe_impl",
+      "line": 22,
+      "path": "kernel/src/scoped_cell.rs"
+    },
+    {
+      "column": 22,
+      "construct_sha256": "15e44997820434223b24b72df487280dc66ed48ec1b8e788fbb1b097d7734635",
+      "context": "        // SAFETY: the successful acquire grants this callback exclusive value\n        // access. Its borrow ends before Borrow releases the flag, including\n        // unwinding. &self keeps storage live; no other value accessor exists.\n        Ok(operation(unsafe { &mut *self.value.get() }))\n    }\n}\n",
+      "context_start_line": 53,
+      "end_line": 56,
+      "kind": "unsafe_block",
+      "line": 56,
+      "path": "kernel/src/scoped_cell.rs"
+    },
+    {
       "column": 5,
       "construct_sha256": "8692c342d4ee49ed3812a07a3a0e6760e2347acfb025afc0978d316340d62195",
       "context": "const COM1: u16 = 0x3f8;\n\npub fn init() {\n    unsafe {\n        outb(COM1 + 1, 0x00);\n        outb(COM1 + 3, 0x80);\n        outb(COM1, 0x03);",
@@ -3433,143 +3198,103 @@
       "path": "kernel/src/serial.rs"
     },
     {
-      "column": 22,
-      "construct_sha256": "4dbb0683addb2f1b6655f1f0e7684c0da3df2f02e625e1d2203cf85c0b91be2c",
-      "context": "        // SAFETY: boot and the single-BSP runtime exclusively own storage, call\n        // it synchronously, and never access SLOT_BUFFER from an interrupt.\n        // No buffer reference escapes this call or aliases the VFS rollback.\n        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };\n        self.sync_with(vfs, restore, &mut AtaIo, buffer)\n    }\n",
-      "context_start_line": 287,
-      "end_line": 290,
-      "kind": "unsafe_block",
-      "line": 290,
-      "path": "kernel/src/storage.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "451f55dca5e83f9b979bb2961c8e816b74441ebd8f768d08c08c62971314a468",
-      "context": "            return unavailable(vfs);\n        }\n    };\n    unsafe {\n        ATA_IO_BASE = controller.io_base;\n        ATA_CONTROL_BASE = controller.control_base;\n    }",
-      "context_start_line": 437,
-      "end_line": 443,
-      "kind": "unsafe_block",
-      "line": 440,
-      "path": "kernel/src/storage.rs"
-    },
-    {
-      "column": 18,
-      "construct_sha256": "4dbb0683addb2f1b6655f1f0e7684c0da3df2f02e625e1d2203cf85c0b91be2c",
-      "context": "    serial::println(\"BLOCK_DEVICE_READY driver=ata-pio sector_bytes=512\");\n    // SAFETY: mount is single-BSP, synchronous, and precedes runtime\n    // publication; interrupt handlers cannot access this scratch buffer.\n    let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };\n    mount_device_with(vfs, &mut AtaIo, buffer)\n}\n",
-      "context_start_line": 455,
-      "end_line": 458,
-      "kind": "unsafe_block",
-      "line": 458,
-      "path": "kernel/src/storage.rs"
-    },
-    {
       "column": 5,
       "construct_sha256": "9b9fb0a37b350e17a9e226b40cf0a59d1d20a7fc967580bcf97dcec692857417",
       "context": "        | (device as u32) << 11\n        | (function as u32) << 8\n        | u32::from(offset & 0xfc);\n    unsafe {\n        arch::outl(PCI_CONFIG_ADDRESS, address);\n        arch::inl(PCI_CONFIG_DATA)\n    }",
-      "context_start_line": 653,
-      "end_line": 659,
+      "context_start_line": 680,
+      "end_line": 686,
       "kind": "unsafe_block",
-      "line": 656,
+      "line": 683,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 5,
       "construct_sha256": "e6df77d0221046a67acc99f17d50ef095960fec40924a527d0addc5dc1deda00",
       "context": "        | (device as u32) << 11\n        | (function as u32) << 8\n        | u32::from(offset & 0xfc);\n    unsafe {\n        arch::outl(PCI_CONFIG_ADDRESS, address);\n        arch::outl(PCI_CONFIG_DATA, value);\n    }",
-      "context_start_line": 665,
-      "end_line": 671,
+      "context_start_line": 692,
+      "end_line": 698,
       "kind": "unsafe_block",
-      "line": 668,
-      "path": "kernel/src/storage.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "f880ef145fc64ce7e6e0f1ae0321eee4427b9a91831b7a78d14cfe0a6305b578",
-      "context": "}\n\nfn ata_port(offset: u16) -> u16 {\n    unsafe { ATA_IO_BASE + offset }\n}\n\nfn discover_partition(",
-      "context_start_line": 672,
-      "end_line": 675,
-      "kind": "unsafe_block",
-      "line": 675,
+      "line": 695,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 20,
-      "construct_sha256": "f7aad15eb184f2d249ee99f454dbfcc5a4c38e3dfe7003c1a3c0f309ec4d9bdb",
-      "context": "fn ata_read_sector(lba: u32, sector: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {\n    select_sector(lba, ATA_COMMAND_READ)?;\n    for index in 0..256 {\n        let word = unsafe { arch::inw(ata_port(0)) }.to_le_bytes();\n        sector[index * 2] = word[0];\n        sector[index * 2 + 1] = word[1];\n    }",
-      "context_start_line": 936,
-      "end_line": 939,
+      "construct_sha256": "b6c2e28b1a512b697b865c2d2605574ae1464e1fe87e45ec36085a6c267c4765",
+      "context": ") -> Result<(), StorageError> {\n    select_sector(io, lba, ATA_COMMAND_READ)?;\n    for index in 0..256 {\n        let word = unsafe { arch::inw(ata_port(io, 0)) }.to_le_bytes();\n        sector[index * 2] = word[0];\n        sector[index * 2 + 1] = word[1];\n    }",
+      "context_start_line": 967,
+      "end_line": 970,
       "kind": "unsafe_block",
-      "line": 939,
+      "line": 970,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
-      "construct_sha256": "564a1a835ea4c47119c5a007c99323ca38ce7fcad1a95e5362177b92d2f88768",
-      "context": "fn ata_write_sector(lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {\n    select_sector(lba, ATA_COMMAND_WRITE)?;\n    for chunk in sector.chunks_exact(2) {\n        unsafe { arch::outw(ata_port(0), u16::from_le_bytes([chunk[0], chunk[1]])) };\n    }\n    ata_settle();\n    wait_not_busy()",
-      "context_start_line": 947,
-      "end_line": 950,
+      "construct_sha256": "be0ff1069cb8aa9aa3f1837195abc696b4e51ce4a5c99a228282a3d8b7ba0c2b",
+      "context": "fn ata_write_sector(io: &AtaIo, lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {\n    select_sector(io, lba, ATA_COMMAND_WRITE)?;\n    for chunk in sector.chunks_exact(2) {\n        unsafe { arch::outw(ata_port(io, 0), u16::from_le_bytes([chunk[0], chunk[1]])) };\n    }\n    ata_settle(io);\n    wait_not_busy(io)",
+      "context_start_line": 978,
+      "end_line": 981,
       "kind": "unsafe_block",
-      "line": 950,
+      "line": 981,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
-      "construct_sha256": "d35c5a2a1cfef918cefc94df992226233bec35c80e9eec60f88aa32be2163262",
-      "context": "    fn status(&mut self) -> u8 {\n        // SAFETY: the single-BSP storage owner reads the discovered IDE status\n        // port; no other command or interrupt handler accesses this channel.\n        unsafe { arch::inb(ata_port(7)) }\n    }\n    fn error(&mut self) -> u8 {\n        // SAFETY: the same exclusively owned controller supplies this error",
-      "context_start_line": 970,
-      "end_line": 973,
+      "construct_sha256": "39fb5b3290e3deb9acbbd6a8e26f746c506be1b7e1ab2fa3d390cf4ba47f7c96",
+      "context": "    fn status(&mut self) -> u8 {\n        // SAFETY: the single-BSP storage owner reads the discovered IDE status\n        // port; no other command or interrupt handler accesses this channel.\n        unsafe { arch::inb(ata_port(self.0, 7)) }\n    }\n    fn error(&mut self) -> u8 {\n        // SAFETY: the same exclusively owned controller supplies this error",
+      "context_start_line": 1001,
+      "end_line": 1004,
       "kind": "unsafe_block",
-      "line": 973,
+      "line": 1004,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
-      "construct_sha256": "7d8a9ba4f7cfa593e6ad76ae853923996b325be387f903a391eefd0f7345b800",
-      "context": "    fn error(&mut self) -> u8 {\n        // SAFETY: the same exclusively owned controller supplies this error\n        // register after status indicated a failed command; no RAM is aliased.\n        unsafe { arch::inb(ata_port(1)) }\n    }\n    fn command(&mut self, command: u8) {\n        // SAFETY: the storage owner has observed an idle data phase on this",
-      "context_start_line": 975,
-      "end_line": 978,
+      "construct_sha256": "57668df09e4419fd137d79a80108670d73d892a55c5c87556868dc71179ef9c6",
+      "context": "    fn error(&mut self) -> u8 {\n        // SAFETY: the same exclusively owned controller supplies this error\n        // register after status indicated a failed command; no RAM is aliased.\n        unsafe { arch::inb(ata_port(self.0, 1)) }\n    }\n    fn command(&mut self, command: u8) {\n        // SAFETY: the storage owner has observed an idle data phase on this",
+      "context_start_line": 1006,
+      "end_line": 1009,
       "kind": "unsafe_block",
-      "line": 978,
+      "line": 1009,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
-      "construct_sha256": "5cfa79cc8232dc8bf4d9cb58a3c164f6f3b7bbe83577ec2fac01855547d968a6",
-      "context": "    fn command(&mut self, command: u8) {\n        // SAFETY: the storage owner has observed an idle data phase on this\n        // discovered controller. Only a bounded supported command is submitted.\n        unsafe { arch::outb(ata_port(7), command) };\n    }\n    fn settle(&mut self) {\n        ata_settle();",
-      "context_start_line": 980,
-      "end_line": 983,
-      "kind": "unsafe_block",
-      "line": 983,
-      "path": "kernel/src/storage.rs"
-    },
-    {
-      "column": 9,
-      "construct_sha256": "05ddc362753c494382067ceaffbfb8835e106e8cd9ec6531d55d0dcc3eaedbc0",
-      "context": "    // timing contract) exceed ATA's 400 ns command/selection settling interval.\n    // Ignored reads do not acknowledge IRQs or access memory; one BSP owns I/O.\n    for _ in 0..4 {\n        unsafe { arch::inb(ATA_CONTROL_BASE) };\n    }\n}\n",
-      "context_start_line": 993,
-      "end_line": 996,
-      "kind": "unsafe_block",
-      "line": 996,
-      "path": "kernel/src/storage.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "06d4a39f5bc270dd4b92896b39b49402404be0f2c544d7791301d3752ac9a303",
-      "context": "    wait_not_busy()?;\n    // SAFETY: one BSP owns the discovered IDE channel. Polling mode suppresses\n    // device interrupts; selecting the master changes no memory ownership.\n    unsafe {\n        arch::outb(ATA_CONTROL_BASE, 2);\n        arch::outb(ata_port(6), 0xe0 | ((lba >> 24) as u8 & 0x0f));\n    }",
+      "construct_sha256": "69e9b0e41c4923ab3ec47571a4b7949ea03e27c6ed7c0b5b2fd6a3aa6019c41b",
+      "context": "    fn command(&mut self, command: u8) {\n        // SAFETY: the storage owner has observed an idle data phase on this\n        // discovered controller. Only a bounded supported command is submitted.\n        unsafe { arch::outb(ata_port(self.0, 7), command) };\n    }\n    fn settle(&mut self) {\n        ata_settle(self.0);",
       "context_start_line": 1011,
-      "end_line": 1017,
+      "end_line": 1014,
       "kind": "unsafe_block",
       "line": 1014,
       "path": "kernel/src/storage.rs"
     },
     {
-      "column": 5,
-      "construct_sha256": "316067ec478a3be7b545a8f912adea1f3b4cecc32f8f2b2bc8cce87c84c08d52",
-      "context": "    ata_settle();\n    // SAFETY: the selected device has settled; these bounded LBA28/count/command\n    // values address one sector on the exclusively owned controller.\n    unsafe {\n        arch::outb(ata_port(2), 1);\n        arch::outb(ata_port(3), lba as u8);\n        arch::outb(ata_port(4), (lba >> 8) as u8);",
-      "context_start_line": 1018,
+      "column": 9,
+      "construct_sha256": "a9b28101e81cf6379c8314e8c45282db5b0aafc0d88a01d16cdef6025009797e",
+      "context": "    // timing contract) exceed ATA's 400 ns command/selection settling interval.\n    // Ignored reads do not acknowledge IRQs or access memory; one BSP owns I/O.\n    for _ in 0..4 {\n        unsafe { arch::inb(io.control_base) };\n    }\n}\n",
+      "context_start_line": 1024,
       "end_line": 1027,
       "kind": "unsafe_block",
-      "line": 1021,
+      "line": 1027,
+      "path": "kernel/src/storage.rs"
+    },
+    {
+      "column": 5,
+      "construct_sha256": "1c3568d37ec78c26a09ee4e8a3519cb61e5ac7b0a63206fe913df634ad113fcc",
+      "context": "    wait_not_busy(io)?;\n    // SAFETY: one BSP owns the discovered IDE channel. Polling mode suppresses\n    // device interrupts; selecting the master changes no memory ownership.\n    unsafe {\n        arch::outb(io.control_base, 2);\n        arch::outb(ata_port(io, 6), 0xe0 | ((lba >> 24) as u8 & 0x0f));\n    }",
+      "context_start_line": 1042,
+      "end_line": 1048,
+      "kind": "unsafe_block",
+      "line": 1045,
+      "path": "kernel/src/storage.rs"
+    },
+    {
+      "column": 5,
+      "construct_sha256": "53d123d711d1896a0c03dd213641e2fac1f7c90f667e0df01a4d7274f01cdace",
+      "context": "    ata_settle(io);\n    // SAFETY: the selected device has settled; these bounded LBA28/count/command\n    // values address one sector on the exclusively owned controller.\n    unsafe {\n        arch::outb(ata_port(io, 2), 1);\n        arch::outb(ata_port(io, 3), lba as u8);\n        arch::outb(ata_port(io, 4), (lba >> 8) as u8);",
+      "context_start_line": 1049,
+      "end_line": 1058,
+      "kind": "unsafe_block",
+      "line": 1052,
       "path": "kernel/src/storage.rs"
     },
     {

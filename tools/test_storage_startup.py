@@ -25,7 +25,7 @@ from test_exception_entry import FRAME, firmware_path, replace_once, require_cle
 from reference_vm import environment
 
 WRITE = """    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
-        ata_write_sector(lba, data)
+        ata_write_sector(self, lba, data)
     }"""
 FAIL_WRITE = """    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
         let _ = (lba, data);

@@ -1,4 +1,4 @@
-use core::ptr::addr_of_mut;
+use kernel::scoped_cell::ScopedCell;
 
 use kernel::vfs::{NodeKind, RamVfs};
 
@@ -40,9 +40,34 @@ pub const PERSISTENT_PAYLOAD: &[u8] = b"GenOS persistent storage survived a rebo
 pub const KEEP_PAYLOAD: &[u8] = b"unrelated file remains intact";
 pub const TEMP_PAYLOAD: &[u8] = b"session-only RAM data";
 
-static mut SLOT_BUFFER: [u8; SLOT_BYTES] = [0; SLOT_BYTES];
-static mut ATA_IO_BASE: u16 = 0;
-static mut ATA_CONTROL_BASE: u16 = 0;
+struct StorageState {
+    buffer: [u8; SLOT_BYTES],
+    io: AtaIo,
+    mount_started: bool,
+}
+
+static STORAGE: ScopedCell<StorageState> = ScopedCell::new(StorageState {
+    buffer: [0; SLOT_BYTES],
+    io: AtaIo {
+        io_base: 0,
+        control_base: 0,
+    },
+    mount_started: false,
+});
+
+fn reject_storage(message: &str) -> ! {
+    arch::disable_interrupts();
+    serial::println(message);
+    arch::halt_loop();
+}
+
+// Synchronous BSP coordinator access; ordinary IRQ handlers never access this
+// state. IRQs remain available during bounded PIO and callbacks cannot reenter.
+fn with_storage<R>(operation: impl for<'a> FnOnce(&'a mut StorageState) -> R) -> R {
+    STORAGE
+        .try_with(operation)
+        .unwrap_or_else(|_| reject_storage("STORAGE_ACCESS_REJECTED policy=halt"))
+}
 
 #[derive(Clone, Copy)]
 struct PciIdeController {
@@ -95,19 +120,22 @@ trait BlockIo {
     fn flush(&mut self) -> Result<(), StorageError>;
 }
 
-struct AtaIo;
+struct AtaIo {
+    io_base: u16,
+    control_base: u16,
+}
 
 impl BlockIo for AtaIo {
     fn read(&mut self, lba: u32, output: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {
-        ata_read_sector(lba, output)
+        ata_read_sector(self, lba, output)
     }
 
     fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
-        ata_write_sector(lba, data)
+        ata_write_sector(self, lba, data)
     }
 
     fn flush(&mut self) -> Result<(), StorageError> {
-        ata_flush()
+        ata_flush(self)
     }
 }
 
@@ -284,11 +312,7 @@ impl PersistentFs {
     }
 
     pub fn sync(&mut self, vfs: &mut RamVfs, restore: impl FnOnce(&mut RamVfs)) -> CommitOutcome {
-        // SAFETY: boot and the single-BSP runtime exclusively own storage, call
-        // it synchronously, and never access SLOT_BUFFER from an interrupt.
-        // No buffer reference escapes this call or aliases the VFS rollback.
-        let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
-        self.sync_with(vfs, restore, &mut AtaIo, buffer)
+        with_storage(|state| self.sync_with(vfs, restore, &mut state.io, &mut state.buffer))
     }
 
     fn sync_with(
@@ -430,33 +454,36 @@ pub fn init_session_ramfs(vfs: &mut RamVfs) -> bool {
 }
 
 pub fn mount_or_create(vfs: &mut RamVfs) -> (PersistentBootState, PersistentFs) {
-    let controller = match discover_pci_ide_controller() {
-        Ok(controller) => controller,
-        Err(_) => {
-            serial::println("PCI_STORAGE_CONTROLLER_UNAVAILABLE");
-            return unavailable(vfs);
+    with_storage(|state| {
+        if state.mount_started {
+            reject_storage("STORAGE_MOUNT_REJECTED policy=halt");
         }
-    };
-    unsafe {
-        ATA_IO_BASE = controller.io_base;
-        ATA_CONTROL_BASE = controller.control_base;
-    }
-    serial::print("PCI_STORAGE_CONTROLLER_READY vendor=0x");
-    serial::print_hex(controller.vendor as u64);
-    serial::print(" device=0x");
-    serial::print_hex(controller.device as u64);
-    serial::print(" prog_if=0x");
-    serial::print_hex(controller.programming_interface as u64);
-    serial::print(" io=0x");
-    serial::print_hex(controller.io_base as u64);
-    serial::print(" control=0x");
-    serial::print_hex(controller.control_base as u64);
-    serial::println("");
-    serial::println("BLOCK_DEVICE_READY driver=ata-pio sector_bytes=512");
-    // SAFETY: mount is single-BSP, synchronous, and precedes runtime
-    // publication; interrupt handlers cannot access this scratch buffer.
-    let buffer = unsafe { &mut *addr_of_mut!(SLOT_BUFFER) };
-    mount_device_with(vfs, &mut AtaIo, buffer)
+        state.mount_started = true;
+        let controller = match discover_pci_ide_controller() {
+            Ok(controller) => controller,
+            Err(_) => {
+                serial::println("PCI_STORAGE_CONTROLLER_UNAVAILABLE");
+                return unavailable(vfs);
+            }
+        };
+        state.io = AtaIo {
+            io_base: controller.io_base,
+            control_base: controller.control_base,
+        };
+        serial::print("PCI_STORAGE_CONTROLLER_READY vendor=0x");
+        serial::print_hex(controller.vendor as u64);
+        serial::print(" device=0x");
+        serial::print_hex(controller.device as u64);
+        serial::print(" prog_if=0x");
+        serial::print_hex(controller.programming_interface as u64);
+        serial::print(" io=0x");
+        serial::print_hex(controller.io_base as u64);
+        serial::print(" control=0x");
+        serial::print_hex(controller.control_base as u64);
+        serial::println("");
+        serial::println("BLOCK_DEVICE_READY driver=ata-pio sector_bytes=512");
+        mount_device_with(vfs, &mut state.io, &mut state.buffer)
+    })
 }
 
 fn mount_device_with(
@@ -671,8 +698,8 @@ fn pci_write(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
     }
 }
 
-fn ata_port(offset: u16) -> u16 {
-    unsafe { ATA_IO_BASE + offset }
+fn ata_port(io: &AtaIo, offset: u16) -> u16 {
+    io.io_base + offset
 }
 
 fn discover_partition(
@@ -933,28 +960,32 @@ fn checksum(bytes: &[u8]) -> u32 {
     hash
 }
 
-fn ata_read_sector(lba: u32, sector: &mut [u8; SECTOR_BYTES]) -> Result<(), StorageError> {
-    select_sector(lba, ATA_COMMAND_READ)?;
+fn ata_read_sector(
+    io: &AtaIo,
+    lba: u32,
+    sector: &mut [u8; SECTOR_BYTES],
+) -> Result<(), StorageError> {
+    select_sector(io, lba, ATA_COMMAND_READ)?;
     for index in 0..256 {
-        let word = unsafe { arch::inw(ata_port(0)) }.to_le_bytes();
+        let word = unsafe { arch::inw(ata_port(io, 0)) }.to_le_bytes();
         sector[index * 2] = word[0];
         sector[index * 2 + 1] = word[1];
     }
-    ata_settle();
-    wait_not_busy()
+    ata_settle(io);
+    wait_not_busy(io)
 }
 
-fn ata_write_sector(lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
-    select_sector(lba, ATA_COMMAND_WRITE)?;
+fn ata_write_sector(io: &AtaIo, lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
+    select_sector(io, lba, ATA_COMMAND_WRITE)?;
     for chunk in sector.chunks_exact(2) {
-        unsafe { arch::outw(ata_port(0), u16::from_le_bytes([chunk[0], chunk[1]])) };
+        unsafe { arch::outw(ata_port(io, 0), u16::from_le_bytes([chunk[0], chunk[1]])) };
     }
-    ata_settle();
-    wait_not_busy()
+    ata_settle(io);
+    wait_not_busy(io)
 }
 
-fn ata_flush() -> Result<(), StorageError> {
-    ata_flush_with(&mut AtaControlPorts, ATA_POLL_LIMIT)
+fn ata_flush(io: &AtaIo) -> Result<(), StorageError> {
+    ata_flush_with(&mut AtaControlPorts(io), ATA_POLL_LIMIT)
 }
 
 trait AtaControl {
@@ -964,36 +995,36 @@ trait AtaControl {
     fn settle(&mut self);
 }
 
-struct AtaControlPorts;
+struct AtaControlPorts<'a>(&'a AtaIo);
 
-impl AtaControl for AtaControlPorts {
+impl AtaControl for AtaControlPorts<'_> {
     fn status(&mut self) -> u8 {
         // SAFETY: the single-BSP storage owner reads the discovered IDE status
         // port; no other command or interrupt handler accesses this channel.
-        unsafe { arch::inb(ata_port(7)) }
+        unsafe { arch::inb(ata_port(self.0, 7)) }
     }
     fn error(&mut self) -> u8 {
         // SAFETY: the same exclusively owned controller supplies this error
         // register after status indicated a failed command; no RAM is aliased.
-        unsafe { arch::inb(ata_port(1)) }
+        unsafe { arch::inb(ata_port(self.0, 1)) }
     }
     fn command(&mut self, command: u8) {
         // SAFETY: the storage owner has observed an idle data phase on this
         // discovered controller. Only a bounded supported command is submitted.
-        unsafe { arch::outb(ata_port(7), command) };
+        unsafe { arch::outb(ata_port(self.0, 7), command) };
     }
     fn settle(&mut self) {
-        ata_settle();
+        ata_settle(self.0);
     }
 }
 
-fn ata_settle() {
+fn ata_settle(io: &AtaIo) {
     // SAFETY: the discovered control port is the channel's alternate status.
     // Four PIO register cycles (at least 120 ns each under the supported ATA
     // timing contract) exceed ATA's 400 ns command/selection settling interval.
     // Ignored reads do not acknowledge IRQs or access memory; one BSP owns I/O.
     for _ in 0..4 {
-        unsafe { arch::inb(ATA_CONTROL_BASE) };
+        unsafe { arch::inb(io.control_base) };
     }
 }
 
@@ -1004,29 +1035,29 @@ fn ata_flush_with(io: &mut impl AtaControl, polls: usize) -> Result<(), StorageE
     wait_status_with(false, io, polls)
 }
 
-fn select_sector(lba: u32, command: u8) -> Result<(), StorageError> {
+fn select_sector(io: &AtaIo, lba: u32, command: u8) -> Result<(), StorageError> {
     if lba >= 1 << 28 {
         return Err(StorageError::Device);
     }
-    wait_not_busy()?;
+    wait_not_busy(io)?;
     // SAFETY: one BSP owns the discovered IDE channel. Polling mode suppresses
     // device interrupts; selecting the master changes no memory ownership.
     unsafe {
-        arch::outb(ATA_CONTROL_BASE, 2);
-        arch::outb(ata_port(6), 0xe0 | ((lba >> 24) as u8 & 0x0f));
+        arch::outb(io.control_base, 2);
+        arch::outb(ata_port(io, 6), 0xe0 | ((lba >> 24) as u8 & 0x0f));
     }
-    ata_settle();
+    ata_settle(io);
     // SAFETY: the selected device has settled; these bounded LBA28/count/command
     // values address one sector on the exclusively owned controller.
     unsafe {
-        arch::outb(ata_port(2), 1);
-        arch::outb(ata_port(3), lba as u8);
-        arch::outb(ata_port(4), (lba >> 8) as u8);
-        arch::outb(ata_port(5), (lba >> 16) as u8);
-        arch::outb(ata_port(7), command);
+        arch::outb(ata_port(io, 2), 1);
+        arch::outb(ata_port(io, 3), lba as u8);
+        arch::outb(ata_port(io, 4), (lba >> 8) as u8);
+        arch::outb(ata_port(io, 5), (lba >> 16) as u8);
+        arch::outb(ata_port(io, 7), command);
     }
-    ata_settle();
-    wait_drq()
+    ata_settle(io);
+    wait_drq(io)
 }
 
 fn ata_status_ready(status: u8, data_phase: bool) -> Result<bool, StorageError> {
@@ -1044,15 +1075,15 @@ fn ata_status_ready(status: u8, data_phase: bool) -> Result<bool, StorageError> 
     Ok((status & ATA_STATUS_DRQ != 0) == data_phase)
 }
 
-fn wait_not_busy() -> Result<(), StorageError> {
-    wait_status(false)
+fn wait_not_busy(io: &AtaIo) -> Result<(), StorageError> {
+    wait_status(io, false)
 }
-fn wait_drq() -> Result<(), StorageError> {
-    wait_status(true)
+fn wait_drq(io: &AtaIo) -> Result<(), StorageError> {
+    wait_status(io, true)
 }
 
-fn wait_status(data_phase: bool) -> Result<(), StorageError> {
-    wait_status_with(data_phase, &mut AtaControlPorts, ATA_POLL_LIMIT)
+fn wait_status(io: &AtaIo, data_phase: bool) -> Result<(), StorageError> {
+    wait_status_with(data_phase, &mut AtaControlPorts(io), ATA_POLL_LIMIT)
 }
 
 fn wait_status_with(
