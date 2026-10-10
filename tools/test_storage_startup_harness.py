@@ -1,8 +1,9 @@
 import tempfile
+import subprocess
 from pathlib import Path
 import unittest
 
-from test_storage_startup import PROOFS, WRITE, FAIL_WRITE, patch_fixture, validate_log
+from test_storage_startup import PROOFS, WRITE, FAIL_WRITE, checkout_archive, patch_fixture, validate_log
 
 
 class StorageStartupHarnessTests(unittest.TestCase):
@@ -28,6 +29,26 @@ class StorageStartupHarnessTests(unittest.TestCase):
                           "userspace lifecycle error"]:
             with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
                 validate_log(good + forbidden + "\n")
+
+    def test_disposable_checkout_preserves_commit_identity_and_archived_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "original"
+            source.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+            (source / "tracked.txt").write_text("committed source")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+            subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "--quiet", "-m", "immutable fixture"], cwd=source, check=True)
+            commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+            archive = subprocess.check_output(["git", "archive", "--format=tar", commit], cwd=source)
+            (source / "tracked.txt").write_text("uncommitted change")
+            (source / "untracked.txt").write_text("not part of evidence")
+            root = Path(temporary) / "disposable"
+            checkout_archive(source, root, commit, archive)
+            self.assertEqual((root / "tracked.txt").read_text(), "committed source")
+            self.assertFalse((root / "untracked.txt").exists())
+            self.assertEqual(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(), commit)
+            self.assertEqual(subprocess.check_output(["git", "status", "--porcelain"], cwd=root), b"")
 
     def test_fixture_changes_only_device_write_and_requires_exact_source(self):
         with tempfile.TemporaryDirectory() as temporary:

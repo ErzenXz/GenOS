@@ -74,6 +74,18 @@ def validate_log(log: str) -> None:
             raise ValueError(f"startup quarantine escaped or falsely acknowledged storage: {forbidden}")
 
 
+def checkout_archive(source: Path, root: Path, commit: str, archive: bytes) -> None:
+    # Shared objects preserve the reviewed identity for the serial runner. Files
+    # come only from the commit archive, not the caller's checkout or build tree.
+    subprocess.run(["git", "clone", "--shared", "--no-checkout", "--quiet", str(source), str(root)],
+                   check=True, timeout=30)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        bundle.extractall(root, filter="data")
+    subprocess.run(["git", "reset", "--mixed", "--quiet", commit], cwd=root, check=True, timeout=30)
+    if require_clean_source(root) != commit:
+        raise RuntimeError("disposable checkout differs from the archived commit")
+
+
 def main() -> None:
     if sys.version_info < (3, 12):
         raise SystemExit("Python >=3.12 required")
@@ -90,9 +102,7 @@ def main() -> None:
         manifest.update(environment(Path(firmware_path()), source))
         with tempfile.TemporaryDirectory(prefix="genos-storage-startup-") as temporary:
             root = Path(temporary) / "source"
-            root.mkdir()
-            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
-                bundle.extractall(root, filter="data")
+            checkout_archive(source, root, commit, archive)
             patch = patch_fixture(root)
             (evidence / "fixture.patch").write_text(patch)
             manifest["fixture_sha256"] = hashlib.sha256(patch.encode()).hexdigest()
