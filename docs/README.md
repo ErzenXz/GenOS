@@ -65,3 +65,5 @@ Update the same pull request when code changes:
 - migration, downgrade, rollback, or recovery behavior.
 
 A serial marker proves only the condition it names. A screenshot proves only the displayed state. Documentation should state the smallest claim supported by the evidence.
+
+- [Scoped current-process ownership](CPU_LOCAL.md)

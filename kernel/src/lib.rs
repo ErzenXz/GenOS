@@ -6,6 +6,7 @@ extern crate std;
 pub mod boot_cpu;
 pub mod capability;
 pub mod console_text;
+pub mod context_slot;
 pub mod cpu_context;
 pub mod display;
 pub mod elf;

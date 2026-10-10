@@ -22,6 +22,7 @@ use genos_abi::{
 use kernel::{
     capability::{HandleKind, HandleTable},
     console_text::{FixedText, LineKind},
+    context_slot::ContextSlot,
     endpoint::{EndpointRole, EndpointState, PendingReceive, QueueResult},
     file_snapshot::FileSnapshots,
     input::{InputEvent, KeyEvent, MouseButtons},
@@ -102,7 +103,8 @@ static mut USER_ELF_ADDRESS: u64 = 0;
 static mut USER_ELF_LENGTH: usize = 0;
 static mut SHELL_ELF_ADDRESS: u64 = 0;
 static mut SHELL_ELF_LENGTH: usize = 0;
-static mut CURRENT_PROCESS: *mut UserProcess = core::ptr::null_mut();
+// The admitted BSP owns publication; callbacks may borrow only with IF clear.
+static CURRENT_PROCESS: ContextSlot<UserProcess> = ContextSlot::new();
 
 pub(crate) use kernel::cpu_context::{
     UserContext, USER_CONTEXT_CS_OFFSET, USER_CONTEXT_RIP_OFFSET, USER_CONTEXT_RSP_OFFSET,
@@ -6402,69 +6404,76 @@ fn run_slice(process: &mut UserProcess) {
         crate::serial::println("USER_RETURN_REJECTED origin=kernel policy=halt");
         arch::halt_loop();
     }
+    let space = process.space;
+    let process_pointer = core::ptr::NonNull::from(&mut *process);
+    // SAFETY: only the admitted BSP can dispatch, with IF clear. The caller's
+    // exclusive process borrow keeps the object stationary/live throughout the
+    // trampoline. Suspend all use of that owner reference while published.
+    // Assembly accesses xstate/selectors only before/after Rust entry callbacks;
+    // those callbacks use the slot's checked, non-escaping mutable borrow. The
+    // assembly entry guard halts nested/emergency entries before another Rust
+    // callback. Root restoration precedes unpublication and IF restoration.
     unsafe {
-        core::ptr::addr_of_mut!(CURRENT_PROCESS).write(process as *mut UserProcess);
+        CURRENT_PROCESS.run(process_pointer, || {
+            paging::activate(space);
+            // All field pointers derive from the same original process pointer;
+            // no owner reborrow invalidates them while the process is published.
+            genos_enter_user_context(
+                core::ptr::addr_of!(context),
+                core::ptr::addr_of_mut!((*process_pointer.as_ptr()).xstate),
+                core::ptr::addr_of_mut!((*process_pointer.as_ptr()).segments),
+            );
+            paging::activate_kernel();
+        })
     }
-    paging::activate(process.space);
-    // SAFETY: IF is clear on the admitted BSP, the process and its aligned
-    // xstate/selector images cannot move until the trampoline returns; their
-    // supervisor mapping is live in both address spaces. Assembly preserves
-    // the kernel's SysV callee-saved GPRs and uses the validated IRET frame.
-    unsafe {
-        genos_enter_user_context(
-            core::ptr::addr_of!(context),
-            core::ptr::addr_of_mut!(process.xstate),
-            core::ptr::addr_of_mut!(process.segments),
-        )
-    };
-    paging::activate_kernel();
-    unsafe {
-        core::ptr::addr_of_mut!(CURRENT_PROCESS).write(core::ptr::null_mut());
-    }
+    .expect("nested process dispatch");
     if restore_interrupts {
         arch::enable_interrupts();
     }
 }
 
 pub(crate) fn timer_preempt(frame: *mut UserContext) -> bool {
-    let Some(process) = current_process() else {
-        return false;
-    };
-    let frame = unsafe { &mut *frame };
-    if !process.preemption_armed {
-        return false;
-    }
-    if !valid_user_frame(frame, process) {
-        crate::serial::println("USER_RETURN_REJECTED origin=user policy=terminate");
-        terminate_process_fault(process, 13, 0, frame.rip, 0);
-        return true;
-    }
+    with_current_process(|process| {
+        // SAFETY: IRQ assembly owns the complete saved GPR/return frame on its
+        // disjoint TSS stack. Its borrow ends before assembly restores the frame;
+        // the current process lives in the suspended coordinator's storage.
+        let frame = unsafe { &mut *frame };
+        if !process.preemption_armed {
+            return false;
+        }
+        if !valid_user_frame(frame, process) {
+            crate::serial::println("USER_RETURN_REJECTED origin=user policy=terminate");
+            terminate_process_fault(process, 13, 0, frame.rip, 0);
+            return true;
+        }
 
-    process.context = *frame;
-    process.event = ProcessEvent::Preempt;
-    process.preemptions = process.preemptions.saturating_add(1);
-    if !paging::copy_to_user(
-        process.space,
-        paging::USER_DATA + core::mem::offset_of!(UserProcessHeader, preemptions) as u64,
-        &process.preemptions.to_le_bytes(),
-    ) {
-        terminate_process_fault(process, 13, 0, frame.rip, 0);
-        return true;
-    }
-    if process.preemptions == 1 {
-        crate::serial::trace::print("USER_PREEMPT pid=");
-        crate::serial::trace::print_u64(process.pid as u64);
-        crate::serial::trace::println("");
-    }
-    true
+        process.context = *frame;
+        process.event = ProcessEvent::Preempt;
+        process.preemptions = process.preemptions.saturating_add(1);
+        if !paging::copy_to_user(
+            process.space,
+            paging::USER_DATA + core::mem::offset_of!(UserProcessHeader, preemptions) as u64,
+            &process.preemptions.to_le_bytes(),
+        ) {
+            terminate_process_fault(process, 13, 0, frame.rip, 0);
+            return true;
+        }
+        if process.preemptions == 1 {
+            crate::serial::trace::print("USER_PREEMPT pid=");
+            crate::serial::trace::print_u64(process.pid as u64);
+            crate::serial::trace::println("");
+        }
+        true
+    })
+    .unwrap_or(false)
 }
 
 pub(crate) fn terminate_current_fault(vector: u8, error: u64, rip: u64, cr2: u64) -> bool {
-    let Some(process) = current_process() else {
-        return false;
-    };
-    terminate_process_fault(process, vector, error, rip, cr2);
-    true
+    with_current_process(|process| {
+        terminate_process_fault(process, vector, error, rip, cr2);
+        true
+    })
+    .unwrap_or(false)
 }
 
 fn terminate_process_fault(process: &mut UserProcess, vector: u8, error: u64, rip: u64, cr2: u64) {
@@ -6491,11 +6500,17 @@ fn terminate_process_fault(process: &mut UserProcess, vector: u8, error: u64, ri
 
 #[no_mangle]
 extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
+    // SAFETY: the interrupt gate owns this complete, aligned saved frame on the
+    // privilege stack. Entry ownership excludes nested Rust, and process storage
+    // is disjoint. The frame borrow ends before assembly restore/nonlocal exit.
     let frame = unsafe { &mut *frame };
-    let Some(process) = current_process() else {
+    with_current_process(|process| dispatch_syscall(frame, process)).unwrap_or_else(|| {
         crate::serial::trace::println("USER_PROCESS_MISSING");
-        return 1;
-    };
+        1
+    })
+}
+
+fn dispatch_syscall(frame: &mut UserContext, process: &mut UserProcess) -> u64 {
     if !valid_user_frame(frame, process) {
         crate::serial::println("USER_RETURN_REJECTED origin=user policy=terminate");
         terminate_process_fault(process, 13, 0, frame.rip, 0);
@@ -7180,13 +7195,20 @@ extern "C" fn genos_syscall_rust(frame: *mut UserContext) -> u64 {
     }
 }
 
-fn current_process() -> Option<&'static mut UserProcess> {
-    let process = unsafe { *core::ptr::addr_of!(CURRENT_PROCESS) };
-    if process.is_null() {
-        None
-    } else {
-        Some(unsafe { &mut *process })
-    }
+fn with_current_process<R>(access: impl for<'a> FnOnce(&'a mut UserProcess) -> R) -> Option<R> {
+    assert!(
+        !arch::interrupts_enabled(),
+        "current-process access requires IF clear"
+    );
+    // SAFETY: the only callers are ordinary interrupt/syscall entry adapters on
+    // the admitted BSP. The gate clears IF and assembly excludes nested Rust
+    // entries. run_slice keeps the published process live and suspends its owner
+    // borrow; xstate assembly has finished before Rust and resumes after it.
+    // No callback switches context/enables IF or returns a process reference.
+    unsafe { CURRENT_PROCESS.with_current(access) }.unwrap_or_else(|_| {
+        crate::serial::println("CPU_LOCAL_ACCESS_REJECTED policy=halt");
+        arch::halt_loop();
+    })
 }
 
 fn valid_user_frame(frame: &UserContext, process: &UserProcess) -> bool {

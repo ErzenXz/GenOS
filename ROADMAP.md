@@ -223,9 +223,10 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
   admission now lives in `native_image`, with a bounded immutable plan validated
   before root allocation and exercised by parser stress/allocation injection.
   Bounds and active-root authority stay with the process coordinator; mapping,
-  construction, lifecycle, syscall
-  coordination and remaining handles are still open. See the
+  construction, lifecycle, syscall coordination and remaining handles are still open. See the
   [module contract](docs/MODULE_DEPENDENCIES.md#cpu-context-and-bounded-scheduling).
+  The [current-process slot](docs/CPU_LOCAL.md) now scopes entry borrows and
+  separates syscall entry from action handling; wider process decomposition remains open.
 - [ ] **F4.2:** classify every mutable object as boot-only, coordinator-owned, IRQ-shared or emergency-safe; replace raw global mutation with scoped access that cannot leak mutable borrows.
 - [x] **F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.
   Neutral text/geometry types replaced authority-module imports from display; a checked dependency rule rejects forbidden imports and mutable authority borrows in presentation. The normal reference boot passed on `3e55272`; [module contract](docs/MODULE_DEPENDENCIES.md). This does not close F4.2/F4.4.
@@ -242,6 +243,9 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [ ] **F5.1:** guard all state shared with interrupts, and assert allowed execution context and lock order in debug/validation builds. No handler may wait on a lock held by the interrupted context.
 - [ ] **F5.2:** bound IRQ work and masked duration; move blocking/expensive device work to coordinators. Record worst observed latency under the declared workload.
 - [ ] **F5.3:** put current process/address space/scheduler-local/interrupt-local state behind a per-CPU-ready interface, while retaining exactly one active CPU in R1.
+  A [scoped current-process binding](docs/CPU_LOCAL.md) now replaces the raw global
+  mutable-reference helper. Active-root, scheduler and interrupt-local ownership
+  still need the complete per-CPU boundary; no SMP support is implied.
 - [ ] **F5.4:** test delayed/nested interrupt delivery during allocation, context changes, request cancellation and device completion, with forward progress and ownership checks.
 - [x] **F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.
   [The local ordering and future acknowledgment contract](docs/TLB_RETIREMENT.md) documents disabled PCID/global retention, conservative invalidation/CR3 switches and real-CPU root/reuse tests. AP admission remains disabled; no cross-CPU shootdown code is claimed.
