@@ -27,6 +27,7 @@ use kernel::{
     file_snapshot::FileSnapshots,
     input::{InputEvent, KeyEvent, MouseButtons},
     request::RequestSequence,
+    scheduler::RoundRobin,
     socket::{
         local_port_is_available, SocketError, SocketOwner, SocketProtocol, SocketSet, TcpServerPeer,
     },
@@ -103,61 +104,9 @@ static mut SHELL_ELF_ADDRESS: u64 = 0;
 static mut SHELL_ELF_LENGTH: usize = 0;
 static mut CURRENT_PROCESS: *mut UserProcess = core::ptr::null_mut();
 
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(crate) struct UserContext {
-    r15: u64,
-    r14: u64,
-    r13: u64,
-    r12: u64,
-    r11: u64,
-    r10: u64,
-    r9: u64,
-    r8: u64,
-    rdi: u64,
-    rsi: u64,
-    rbp: u64,
-    rbx: u64,
-    rdx: u64,
-    rcx: u64,
-    rax: u64,
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
-}
-
-pub(crate) const USER_CONTEXT_CS_OFFSET: usize = core::mem::offset_of!(UserContext, cs);
-pub(crate) const USER_CONTEXT_RIP_OFFSET: usize = core::mem::offset_of!(UserContext, rip);
-pub(crate) const USER_CONTEXT_RSP_OFFSET: usize = core::mem::offset_of!(UserContext, rsp);
-
-impl UserContext {
-    const fn initial(token: u64, entry: u64) -> Self {
-        Self {
-            r15: 0,
-            r14: 0,
-            r13: 0,
-            r12: 0,
-            r11: 0,
-            r10: 0,
-            r9: 0,
-            r8: 0,
-            rdi: token,
-            rsi: 0,
-            rbp: 0,
-            rbx: 0,
-            rdx: 0,
-            rcx: 0,
-            rax: 0,
-            rip: entry,
-            cs: arch::USER_CODE_SELECTOR as u64,
-            rflags: 0x202,
-            rsp: paging::USER_STACK_TOP,
-            ss: arch::USER_DATA_SELECTOR as u64,
-        }
-    }
-}
+pub(crate) use kernel::cpu_context::{
+    UserContext, USER_CONTEXT_CS_OFFSET, USER_CONTEXT_RIP_OFFSET, USER_CONTEXT_RSP_OFFSET,
+};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ProcessEvent {
@@ -1219,8 +1168,8 @@ impl ManagedProcess {
 pub struct ProcessManager {
     slots: [Option<ManagedProcess>; MAX_ASYNC_PROCESSES],
     slot_incarnations: [u64; MAX_ASYNC_PROCESSES],
-    cursor: usize,
-    socket_wait_cursor: usize,
+    schedule: RoundRobin<MAX_ASYNC_PROCESSES>,
+    socket_wait_schedule: RoundRobin<MAX_ASYNC_PROCESSES>,
 }
 
 impl ProcessManager {
@@ -1228,8 +1177,8 @@ impl ProcessManager {
         Self {
             slots: [const { None }; MAX_ASYNC_PROCESSES],
             slot_incarnations: [0; MAX_ASYNC_PROCESSES],
-            cursor: 0,
-            socket_wait_cursor: 0,
+            schedule: RoundRobin::new(),
+            socket_wait_schedule: RoundRobin::new(),
         }
     }
 
@@ -1752,15 +1701,14 @@ impl ProcessManager {
     pub fn poll(&mut self, tick: u64) -> Option<ProcessUpdate> {
         self.wake_socket_waiters(tick);
         self.wake_sleepers(tick);
-        for offset in 1..=MAX_ASYNC_PROCESSES {
-            let index = (self.cursor + offset) % MAX_ASYNC_PROCESSES;
+        for index in self.schedule.scan() {
             let Some(managed) = self.slots[index].as_ref() else {
                 continue;
             };
             if managed.state != ManagedState::Ready || managed.process.completed {
                 continue;
             }
-            self.cursor = index;
+            assert!(self.schedule.selected(index));
             let event = {
                 let managed = self.slots[index].as_mut().expect("selected process exists");
                 run_slice(&mut managed.process);
@@ -2765,13 +2713,11 @@ impl ProcessManager {
 
     fn wake_socket_waiters(&mut self, tick: u64) {
         let mut woke = 0usize;
-        let start_cursor = self.socket_wait_cursor;
         let mut last_woken = None;
-        for offset in 1..=MAX_ASYNC_PROCESSES {
+        for index in self.socket_wait_schedule.scan() {
             if woke >= SOCKET_WAIT_WAKE_BUDGET {
                 break;
             }
-            let index = (start_cursor + offset) % MAX_ASYNC_PROCESSES;
             let Some(managed) = self.slots[index].as_mut() else {
                 continue;
             };
@@ -2805,7 +2751,7 @@ impl ProcessManager {
             crate::serial::trace::println("");
         }
         if let Some(index) = last_woken {
-            self.socket_wait_cursor = index;
+            assert!(self.socket_wait_schedule.selected(index));
         }
     }
 
@@ -6432,7 +6378,7 @@ fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, P
     Ok(UserProcess {
         pid,
         space,
-        context: UserContext::initial(token, loaded.entry),
+        context: UserContext::initial(token, loaded.entry, paging::USER_STACK_TOP),
         xstate: kernel::xstate::State::initial(),
         segments: kernel::segments::State::initial(),
         data_frame: loaded.data_frame,
@@ -7280,13 +7226,12 @@ fn valid_user_frame(frame: &UserContext, process: &UserProcess) -> bool {
 }
 
 fn valid_return_context(frame: &UserContext, process: &UserProcess) -> bool {
-    frame.cs == arch::USER_CODE_SELECTOR as u64
-        && frame.ss == arch::USER_DATA_SELECTOR as u64
-        && frame.rip >= process.executable_start
-        && frame.rip < process.executable_end
-        && frame.rsp > paging::USER_STACK_BOTTOM
-        && frame.rsp <= paging::USER_STACK_TOP
-        && kernel::exception::user_flags_valid(frame.rflags)
+    frame.valid_return(kernel::cpu_context::ReturnBounds {
+        executable_start: process.executable_start,
+        executable_end: process.executable_end,
+        stack_bottom: paging::USER_STACK_BOTTOM,
+        stack_top: paging::USER_STACK_TOP,
+    })
 }
 
 fn copy_user_u64(process: &UserProcess, address: u64, length: u64) -> Option<u64> {

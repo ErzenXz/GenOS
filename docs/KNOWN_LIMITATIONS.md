@@ -119,8 +119,9 @@ not implemented; SMP remains disabled. **Roadmap:** F3, F5, H-SMP.
 
 ## Module and unsafe-code review
 
-Endpoint authority and pathname rules now have production modules with executable
-host tests. Much process/context/loader/syscall/lifecycle coordination remains in
+Endpoint authority, pathname rules, native saved CPU frames/return checks and
+bounded round-robin scheduling now have production modules with executable host
+tests. Much process/loader/syscall/lifecycle coordination remains in
 `kernel/src/userspace.rs`, and other shared globals need decomposition. Presentation
 now uses neutral text/geometry types and a dependency checker, but the generated
 [lexical inventory](unsafe-inventory.json)

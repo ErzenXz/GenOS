@@ -95,8 +95,6 @@ pub unsafe extern "sysv64" fn enter_boot_stack(
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
 const TSS_SELECTOR: u16 = 0x18;
-pub const USER_DATA_SELECTOR: u16 = kernel::segments::USER_DATA;
-pub const USER_CODE_SELECTOR: u16 = 0x33;
 const INTERRUPT_IST_INDEX: u16 = 1;
 const INTERRUPT_STACK_SIZE: usize = 64 * 1024;
 const PRIVILEGE_STACK_SIZE: usize = 64 * 1024;

@@ -29,3 +29,30 @@ the check; `.github/workflows/ci.yml` runs it in static analysis. The check is a
 conservative source rule, while Rust's borrow checker enforces the immutable
 view parameters. It is not a complete caller-invariant or unsafe-code audit;
 those remain F4.2/F4.4.
+
+## CPU context and bounded scheduling
+
+`kernel::cpu_context` owns the native twenty-word saved frame, assembly offsets,
+fresh register initialization and pure return checks. `userspace` supplies the
+executable and stack bounds from its owned process and separately checks the
+active CR3 for captured frames. A frame value or a successful bounds check does
+not grant address-space authority. The selectors, flag mask, stack endpoints and
+assembly frame layout are unchanged. Host tests check all twenty offsets, fresh
+registers, every 16-bit selector, each flag bit and guard/range boundaries.
+The fault harness still corrupts only deliberate initial return words in this
+module; its validator remains production code.
+
+`kernel::scheduler` owns a bounded round-robin cursor and immutable scan snapshot.
+Each scan visits every slot once, starting after the last selected slot. Idle or
+skipped scans do not advance it; invalid selections preserve it. Process dispatch
+and the separate two-wakeup socket budget use independent instances. A batch
+keeps its initial scan order even while the coordinator handles completions.
+Readiness, process ownership, timers, dispatch, cancellation and cleanup remain
+with `ProcessManager`. Host tests cover every ready subset of the current four
+slots, equal bounded service, wake batches, empty/singleton capacities and cursor
+overflow boundaries. This is policy evidence, not whole-system fairness or an
+IRQ latency qualification.
+
+These are scoped F4.1 extractions. Process construction, ELF mapping, lifecycle,
+syscall coordination, typed process/file handles and current-process raw pointers
+still need their own decomposition and ownership review.
