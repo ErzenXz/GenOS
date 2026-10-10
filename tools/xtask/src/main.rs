@@ -569,6 +569,7 @@ fn test_memory() -> Result<(), String> {
             false,
             &[
                 "FRAME_ALLOCATOR_BITMAP_READY",
+                "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
                 "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
                 "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
                 "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
@@ -723,6 +724,7 @@ fn verify_production_fault_hooks_absent() -> Result<(), String> {
     for forbidden in [
         b"TCP_FAULT_DATA_DROP_INJECTED".as_slice(),
         b"MEMORY_ROLLBACK_READY".as_slice(),
+        b"NATIVE_IMAGE_PREFLIGHT_OK".as_slice(),
         b"TCP_FAULT_REORDER_HELD".as_slice(),
         b"TCP_FAULT_REORDER_RELEASED".as_slice(),
     ] {

@@ -16,7 +16,9 @@ The kernel binary no longer contains a `.usertext` payload. Userspace behavior c
 
 The bounded parser accepts only little-endian ELF64 executable files for x86_64. It validates the ELF and program-header sizes, caps the program-header count, checks every offset and length with overflow-safe arithmetic, requires at least one loadable segment, and rejects truncated file data.
 
-Before allocating user pages, the process loader additionally requires:
+Before creating an owner or allocating an address-space root, the production
+`kernel::native_image::Plan` validates every segment and builds an immutable,
+ten-page bounded plan borrowing the original image. It requires:
 
 - page-aligned segment virtual addresses and at least page alignment;
 - readable load segments with no unknown permission bits;
@@ -25,7 +27,17 @@ Before allocating user pages, the process loader additionally requires:
 - at most eight executable pages under image layout 2;
 - no overlapping virtual pages;
 - an entry point inside an executable segment;
-- a writable data mapping at the ABI data address with space for the stable `UserProcessHeader` and application buffers.
+- a writable data mapping at the ABI data address with at least sixteen file and
+  memory bytes. Its zeroed full frame supplies the stable `UserProcessHeader` and
+  application buffers; admission does not validate arbitrary application ABI content.
+
+No plan is returned for a malformed late segment. The paging adapter consumes
+only validated page addresses, permissions and bounded file slices; it retains
+ownership of the inactive root until image and stack construction succeeds.
+Host tests and the `native-elf` parser-stress target call this same production
+admission boundary. The memory fault lane requires late W+X rejection under a
+zero-allocation budget, valid-image allocation failure under that same budget,
+and an unchanged live-frame baseline.
 
 Every accepted page receives a newly allocated zeroed physical frame. File bytes are copied into those frames, remaining memory is left zeroed, and page-table permissions come directly from the validated segment flags. Stacks are mapped separately with an unmapped guard page.
 

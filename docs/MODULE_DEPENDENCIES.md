@@ -56,3 +56,23 @@ IRQ latency qualification.
 These are scoped F4.1 extractions. Process construction, ELF mapping, lifecycle,
 syscall coordination, typed process/file handles and current-process raw pointers
 still need their own decomposition and ownership review.
+
+## Native image admission
+
+`kernel::native_image` owns the fixed image/stack addresses and a bounded,
+immutable load plan. It borrows validated source slices and has no allocator,
+paging, process-owner or publication interface. Its private page fields prevent
+callers from constructing an unvalidated plan. Admission validates the whole
+image before `userspace::build_process` creates an address-space root. The paging
+adapter copies each bounded slice to an exclusively owned zeroed frame, maps the
+validated permissions, and destroys the partial inactive root on failure. Stack
+construction and process publication still belong to the coordinator.
+
+The native layout and acceptance policy are preserved, including the required
+sixteen initial data bytes and entry within executable memory rather than only
+file-backed bytes. Eight host tests cover complete admission, every truncation,
+late invalid segments, overlap/alignment/overflow, entry/data authority, the eight
+executable-page budget and exact partial/BSS slices. Parser stress calls this
+production seam; allocation injection distinguishes malformed-layout rejection
+from valid-image OOM with budget zero. These checks do not qualify general ELF
+applications or complete F4.1/F6.2.

@@ -219,8 +219,11 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] Endpoint authority and canonical pathname policy execute in host-tested modules; a lexical unsafe/assembly inventory retains source context.
 - [ ] **F4.1:** split process state, CPU context, scheduler policy, ELF loading, user-copy, lifecycle, syscalls and remaining typed handles into modules with clear failure/cleanup interfaces.
   The native saved frame/return policy and bounded process/socket scheduling now
-  live in host-tested `cpu_context` and `scheduler` modules. Bounds and active-root
-  authority stay with the process coordinator; construction, lifecycle, syscall
+  live in host-tested `cpu_context` and `scheduler` modules. Whole-image native ELF
+  admission now lives in `native_image`, with a bounded immutable plan validated
+  before root allocation and exercised by parser stress/allocation injection.
+  Bounds and active-root authority stay with the process coordinator; mapping,
+  construction, lifecycle, syscall
   coordination and remaining handles are still open. See the
   [module contract](docs/MODULE_DEPENDENCIES.md#cpu-context-and-bounded-scheduling).
 - [ ] **F4.2:** classify every mutable object as boot-only, coordinator-owned, IRQ-shared or emergency-safe; replace raw global mutation with scoped access that cannot leak mutable borrows.
