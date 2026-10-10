@@ -40,6 +40,7 @@ entry halts and provides no recoverable unwinding promise.
 | Object | Owner and lifetime | Exclusion and retirement |
 | --- | --- | --- |
 | `INIT_IMAGE` / `SHELL_IMAGE` | Boot publisher, then immutable boot-lifetime bytes | One atomic publication; no replacement, mutable borrow or integer pointer reconstruction |
+| `CPU_PAGING` | One record for the admitted BSP | Permanent supervisor root, irreversible bootstrap/sealed phase; active-root copies published after CR3 readback with IF clear |
 | `CURRENT_PROCESS` binding | One admitted BSP; per-slice publication | Owner reference suspended; kernel root restored before publication clears; IF restored last |
 | Slot access flag | One synchronous entry callback | Set before dereference; nested access denied; private scope guard releases before assembly resumes |
 | `UserProcess` fields | Coordinator outside a slice; scoped entry borrow during a slice | No owner access while published; reclaim occurs only after leaving the slice |
@@ -53,7 +54,7 @@ is no new unsafe `Send`/`Sync` implementation. The BSP admission gate and assemb
 nested-entry guard remain required. Emergency/NMI/#MC paths cannot enter these
 Rust callbacks. The complete unsafe inventory still needs its wider caller audit.
 
-Before SMP, each admitted CPU needs its own slot plus scheduler, active-root,
+Before SMP, each admitted CPU needs its own process slot and paging record plus scheduler,
 interrupt-local state and independently reviewed synchronization. The current
 slot is a reusable boundary for that work, not a second-CPU implementation.
 Other coordinator/device globals, assembly return pointers,
@@ -101,3 +102,46 @@ publication and competing publishers with different slice lengths. A compile-fai
 doctest rejects temporary input. These tests are selected for strict-provenance
 Miri; the concurrent test exercises its recorded schedule, not every possible
 interleaving. This narrows F4.1/F4.2 without closing the wider mutable-state audit.
+
+## CPU-local address-space bookkeeping
+
+`kernel::cpu_paging::CpuPaging` replaces the kernel-root, active-root and sealed-map
+raw globals. It contains atomic integer metadata and returns owned root copies;
+there are no raw mutable references, unsafe operations or new Send/Sync impls.
+A root value from this object grants no allocation, page-table or mapping authority.
+The paging adapter still checks the private live root grant before activation.
+
+The permanent root is published once after its exact CR3 readback. During
+bootstrap only that root can be active, and permission/guard APIs require the
+bootstrap phase. Sealing requires the permanent root active and its hardware
+observation matching. The phase never reopens; private-root creation requires
+sealed supervisor mappings. Invalid, repeated or mismatched operations preserve
+the previous metadata. Readers do not wait for an interrupted initial publisher.
+
+The admitted BSP masks local interrupts across admission, MOV CR3, readback and
+active-root publication. A failed post-switch observation reports
+`CPU_LOCAL_ROOT_REJECTED reason=hardware-mismatch policy=halt` and halts with IF
+clear. It cannot safely guess a root, dispatch, restore interrupts, reclaim frames
+or promise hardware rollback. Initialization/sealing mismatch also halts before
+runtime admission. Existing local TLB-retirement and ownership checks remain
+necessary; atomics do not implement SMP synchronization or shootdown.
+
+Seven host tests exercise phase admission, malformed/unobserved roots, permanent
+root replacement denial, bootstrap/private separation, irreversible sealing,
+repeated switches, mismatch preservation and competing initial publishers.
+They are selected for pinned Miri; simulated observations are metadata-policy
+evidence, not privileged CPU execution or exhaustive interleaving exploration.
+The full memory translation probe separately performs actual CR3 switches and
+same-address reads across roots/reuse, followed by reclamation.
+
+`python3 tools/test_cpu_paging.py` archives clean source and changes only the
+observation supplied after a real distinct private-root activation. The production
+MMU operation, metadata validator, reporter and entry guards remain intact. It
+requires matching actual/target CR3, the declared corrupted sample, the previous
+root and one exact ordered refusal; any fault, continued dispatch, reset, exit,
+paused VM, duplicate or malformed proof fails. QMP is subscribed before starting
+the VM and records final running status after refusal. Success/failure hashes,
+serial, command and QMP wire evidence remain in `build/cpu-paging-evidence/`.
+This fixture proves software refusal of a falsified sample, not an actual MMU
+failure or complete hardware qualification. Scheduler/interrupt-local state and
+the wider F4.2/F5 audit remain open.

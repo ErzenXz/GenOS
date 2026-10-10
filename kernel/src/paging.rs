@@ -8,7 +8,7 @@ const WRITABLE: u64 = 1 << 1;
 const USER: u64 = 1 << 2;
 const HUGE_OR_PAT: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
-const TABLE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const TABLE_ADDRESS_MASK: u64 = kernel::cpu_paging::ROOT_ADDRESS_MASK;
 const PAGE_2M_ADDRESS_MASK: u64 = 0x000f_ffff_ffe0_0000;
 const PAGE_1G_ADDRESS_MASK: u64 = 0x000f_ffff_c000_0000;
 pub use kernel::native_image::{
@@ -17,9 +17,9 @@ pub use kernel::native_image::{
 };
 const USER_PML4_INDEX: usize = 128;
 
-static mut KERNEL_ROOT: u64 = 0;
-static mut ACTIVE_ROOT: u64 = 0;
-static mut KERNEL_MAPPINGS_SEALED: bool = false;
+// This admitted BSP owns one CPU-local record. IRQ exclusion spans hardware
+// changes and their read-back publication; emergency entry never mutates it.
+static CPU_PAGING: kernel::cpu_paging::CpuPaging = kernel::cpu_paging::CpuPaging::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddressSpace {
@@ -51,6 +51,9 @@ pub struct AddressSpaceSwitchBenchmark {
 }
 
 pub fn init_protected_address_space() -> Result<(), PagingError> {
+    if crate::arch::interrupts_enabled() || !CPU_PAGING.is_uninitialized() {
+        return Err(PagingError::InvalidAddress);
+    }
     // This bounded BSP implementation retires translations by CR3 reload. Do
     // not inherit firmware PCIDs/global retention into the ownership contract.
     let mut cr4: u64;
@@ -88,11 +91,15 @@ pub fn init_protected_address_space() -> Result<(), PagingError> {
     let allocated_before = memory::allocated_frames();
     let protected = unsafe { clone_table(current, 4)? };
     let table_frames = memory::allocated_frames().saturating_sub(allocated_before);
+    // SAFETY: BSP bootstrap owns the live cloned hierarchy with IF clear. Its
+    // retained identity mappings cover the running kernel and guarded stacks;
+    // no process or other CPU can access these tables during installation.
     unsafe {
         write_cr3(protected);
-        core::ptr::addr_of_mut!(KERNEL_ROOT).write(protected);
-        core::ptr::addr_of_mut!(ACTIVE_ROOT).write(protected);
     }
+    CPU_PAGING
+        .initialize(protected, read_cr3())
+        .expect("bootstrap hardware root mismatch");
     crate::serial::print("PAGING_READY root=0x");
     crate::serial::print_hex(protected);
     crate::serial::print(" tables=");
@@ -102,10 +109,9 @@ pub fn init_protected_address_space() -> Result<(), PagingError> {
 }
 
 pub fn create_user_address_space() -> Result<AddressSpace, PagingError> {
-    let kernel_root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
-    if kernel_root == 0 || !unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) } {
-        return Err(PagingError::MissingMapping);
-    }
+    let kernel_root = CPU_PAGING
+        .sealed_root()
+        .ok_or(PagingError::MissingMapping)?;
     let owner = memory::new_owner().ok_or(PagingError::OutOfMemory)?;
     let authority = memory::alloc_frame(owner, Kind::Table).ok_or(PagingError::OutOfMemory)?;
     let root = authority.address();
@@ -236,11 +242,10 @@ pub fn protect_kernel_page(
     writable: bool,
     executable: bool,
 ) -> Result<(), PagingError> {
-    let root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
-    if root == 0
-        || unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) }
-        || active_root() != root
-        || crate::arch::interrupts_enabled()
+    let root = CPU_PAGING
+        .bootstrap_root()
+        .ok_or(PagingError::InvalidAddress)?;
+    if crate::arch::interrupts_enabled()
         || address & (PAGE_SIZE - 1) != 0
         || !(PAGE_SIZE..USER_BASE).contains(&address)
         || (writable && executable)
@@ -355,12 +360,12 @@ pub unsafe fn guard_kernel_page(address: u64) -> Result<(), PagingError> {
         static __kernel_data_start: u8;
         static __kernel_data_end: u8;
     }
-    let root = *core::ptr::addr_of!(KERNEL_ROOT);
+    let root = CPU_PAGING
+        .bootstrap_root()
+        .ok_or(PagingError::InvalidAddress)?;
     let data_start = core::ptr::addr_of!(__kernel_data_start) as u64;
     let data_end = core::ptr::addr_of!(__kernel_data_end) as u64;
-    if root == 0
-        || active_root() != root
-        || crate::arch::interrupts_enabled()
+    if crate::arch::interrupts_enabled()
         || !address.is_multiple_of(PAGE_SIZE)
         || !(data_start..data_end).contains(&address)
     {
@@ -440,8 +445,7 @@ pub fn protect_kernel_image() -> Result<(), PagingError> {
 /// NX except the read-only linked kernel text. User RO/RX publication can then
 /// tighten its one supervisor alias without allocating or changing neighbors.
 pub fn seal_kernel_mappings(boot_info: &genos_abi::BootInfo) -> Result<(), PagingError> {
-    if crate::arch::interrupts_enabled() || unsafe { *core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) }
-    {
+    if crate::arch::interrupts_enabled() || CPU_PAGING.bootstrap_root().is_none() {
         return Err(PagingError::InvalidAddress);
     }
     let regions = genos_abi::boot_memory::validate_map(&boot_info.memory_map)
@@ -491,13 +495,17 @@ pub fn seal_kernel_mappings(boot_info: &genos_abi::BootInfo) -> Result<(), Pagin
     // SAFETY: IF clear, kernel root active and no user root exists; the CR3
     // reload retires all old non-global permissions before runtime admission.
     unsafe {
-        let root = *core::ptr::addr_of!(KERNEL_ROOT);
-        if root == 0 || root != active_root() || !seal_table(root, 4, text_start, text_end) {
+        let root = CPU_PAGING
+            .bootstrap_root()
+            .ok_or(PagingError::InvalidAddress)?;
+        if !seal_table(root, 4, text_start, text_end) {
             return Err(PagingError::InvalidAddress);
         }
         write_cr3(root);
-        core::ptr::addr_of_mut!(KERNEL_MAPPINGS_SEALED).write(true);
     }
+    CPU_PAGING
+        .seal_kernel(read_cr3())
+        .expect("sealed hardware root mismatch");
     crate::serial::println("PHYSICAL_ALIAS_POLICY_READY identity=only user_alias=sealed direct=nx");
     Ok(())
 }
@@ -508,10 +516,12 @@ fn set_user_alias_writable(frame: u64, writable: bool) -> Result<(), PagingError
     // SAFETY: all managed RAM was split and sealed before user construction;
     // shared supervisor tables remain live for the entire kernel lifetime.
     unsafe {
-        if !*core::ptr::addr_of!(KERNEL_MAPPINGS_SEALED) || crate::arch::interrupts_enabled() {
+        if crate::arch::interrupts_enabled() {
             return Err(PagingError::InvalidAddress);
         }
-        let mut current = *core::ptr::addr_of!(KERNEL_ROOT);
+        let mut current = CPU_PAGING
+            .sealed_root()
+            .ok_or(PagingError::InvalidAddress)?;
         for shift in [39, 30, 21] {
             let entry = table(current)[index(frame, shift)];
             if entry & PRESENT == 0 || entry & (USER | HUGE_OR_PAT) != 0 {
@@ -543,38 +553,64 @@ pub fn activate(space: AddressSpace) {
             memory::is_live(space.authority),
             "stale address-space activation"
         );
-        // SAFETY: the admitted BSP holds the live root authority; CR3 and its
-        // bookkeeping change atomically with respect to local interrupts.
+        CPU_PAGING
+            .admit_switch(space.root)
+            .expect("CPU root switch admission");
+        // SAFETY: the admitted BSP holds the live root authority; local IRQs
+        // remain masked through CR3 reload, exact readback and publication.
         unsafe {
             write_cr3(space.root);
-            core::ptr::addr_of_mut!(ACTIVE_ROOT).write(space.root);
         }
+        publish_active_root(space.root);
     });
 }
 
 pub fn activate_kernel() {
     crate::arch::without_interrupts(|| {
-        let root = unsafe { *core::ptr::addr_of!(KERNEL_ROOT) };
-        if root != 0 {
+        if let Some(root) = CPU_PAGING.kernel_root() {
+            CPU_PAGING
+                .admit_switch(root)
+                .expect("kernel root switch admission");
             // SAFETY: kernel root outlives the machine. This CR3 reload retires
             // every previous private translation before teardown is admitted.
             unsafe {
                 write_cr3(root);
-                core::ptr::addr_of_mut!(ACTIVE_ROOT).write(root);
             }
+            publish_active_root(root);
         }
     });
 }
 
+fn publish_active_root(target: u64) {
+    assert!(
+        !crate::arch::interrupts_enabled(),
+        "CPU root publication requires IF clear"
+    );
+    let observed = read_cr3();
+    if let Err(error) = CPU_PAGING.record_switch(target, observed) {
+        crate::serial::print("CPU_LOCAL_ROOT_REJECTED reason=");
+        crate::serial::print(match error {
+            kernel::cpu_paging::Error::HardwareMismatch => "hardware-mismatch",
+            kernel::cpu_paging::Error::InvalidRoot => "invalid-root",
+            kernel::cpu_paging::Error::WrongPhase => "wrong-phase",
+            kernel::cpu_paging::Error::AlreadyInitialized => "already-initialized",
+        });
+        crate::serial::println(" policy=halt");
+        // Hardware already changed. Do not publish a guessed root, restore IF,
+        // dispatch another context, reclaim any frame or attempt a rollback.
+        crate::arch::halt_loop();
+    }
+}
+
 pub fn active_root() -> u64 {
-    unsafe { *core::ptr::addr_of!(ACTIVE_ROOT) }
+    CPU_PAGING.active_root().unwrap_or(0)
 }
 
 pub fn benchmark_address_space_switch(
     space: AddressSpace,
     samples: u32,
 ) -> Option<AddressSpaceSwitchBenchmark> {
-    if samples == 0 || unsafe { *core::ptr::addr_of!(KERNEL_ROOT) } == 0 {
+    if samples == 0 || CPU_PAGING.sealed_root().is_none() {
         return None;
     }
 

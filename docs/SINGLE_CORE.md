@@ -97,6 +97,11 @@ synchronization and lock ordering, address-space sharing rules, TLB
 shootdowns and delayed/nested interrupt stress proofs. None is implied by
 the admission gate. See [known limitations](KNOWN_LIMITATIONS.md).
 
+The current process binding and paging metadata now have
+[scoped CPU-local interfaces](CPU_LOCAL.md). Before another CPU can enter, each
+CPU needs its own record plus the reviewed scheduler/interrupt state and shared
+retirement protocol. The standalone metadata atomics do not enable kernel SMP.
+
 ## Reproducible checks
 
 ```sh

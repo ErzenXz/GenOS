@@ -52,6 +52,9 @@ jobs:
           - name: elf-entry-data
             script: test_kernel_elf.py
             args: --case entry-data
+          - name: active-root-observation
+            script: test_cpu_paging.py
+            args: ''
           - name: storage-create-failure
             script: test_storage_startup.py
             args: ''
@@ -142,6 +145,7 @@ jobs:
             build/kernel-elf-evidence/
             build/memory-snapshot-evidence/
             build/storage-startup-evidence/
+            build/cpu-paging-evidence/
             build/fault-containment-evidence/
           if-no-files-found: warn
           retention-days: 14

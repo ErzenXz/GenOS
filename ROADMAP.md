@@ -246,8 +246,10 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [ ] **F5.2:** bound IRQ work and masked duration; move blocking/expensive device work to coordinators. Record worst observed latency under the declared workload.
 - [ ] **F5.3:** put current process/address space/scheduler-local/interrupt-local state behind a per-CPU-ready interface, while retaining exactly one active CPU in R1.
   A [scoped current-process binding](docs/CPU_LOCAL.md) now replaces the raw global
-  mutable-reference helper. Active-root, scheduler and interrupt-local ownership
-  still need the complete per-CPU boundary; no SMP support is implied.
+  mutable-reference helper. CPU-local paging metadata now replaces raw root/seal
+  globals, with irreversible bootstrap admission and hardware CR3 readback before
+  publishing root switches. Scheduler and interrupt-local ownership still need
+  the complete per-CPU boundary; no SMP support is implied.
 - [ ] **F5.4:** test delayed/nested interrupt delivery during allocation, context changes, request cancellation and device completion, with forward progress and ownership checks.
 - [x] **F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.
   [The local ordering and future acknowledgment contract](docs/TLB_RETIREMENT.md) documents disabled PCID/global retention, conservative invalidation/CR3 switches and real-CPU root/reuse tests. AP admission remains disabled; no cross-CPU shootdown code is claimed.

@@ -34,6 +34,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
 | Scoped current-process access | 7 |
 | Typed capability registry | 3 |
@@ -44,11 +45,11 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **65** |
+| **Total** | **72** |
 
 The October 10 scope additions exercise current-process publication/borrow
-retirement and immutable image publication, including pointer provenance and
-competing image publishers. The latter runs the recorded interpreter schedule;
+retirement, immutable image publication, and CPU-local paging phase transitions,
+including pointer provenance and competing initial publishers. The latter runs the recorded interpreter schedule;
 it is not exhaustive concurrency exploration. Compile-fail lifetime/borrow tests
 run separately in the normal workspace test lane.
 
