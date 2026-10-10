@@ -1,9 +1,11 @@
 use kernel::{
     console_text::FixedText,
     input::{InputEvent, KeyEvent},
+    scoped_cell::ScopedCell,
     socket::SocketProtocol,
     tasks::{TaskRegistry, TaskSnapshotSet, TaskState},
-    vfs::{NodeKind, RamVfs},
+    vfs::{NodeKind, RamVfs, VfsError},
+    vfs_snapshot::VfsSnapshot,
 };
 
 use crate::{network, serial, storage, userspace};
@@ -11,7 +13,17 @@ use crate::{network, serial, storage, userspace};
 const MAX_RUNTIME_EVENTS: usize = 4;
 const PASSIVE_TCP_PER_PROCESS_BUDGET: usize = 2;
 pub const SHELL_TASK_ID: u32 = 0x100;
-static mut VFS_ROLLBACK: RamVfs = RamVfs::new();
+static VFS_ROLLBACK: ScopedCell<VfsSnapshot> = ScopedCell::new(VfsSnapshot::new());
+
+// The single BSP coordinator holds this scope from capture through mutation,
+// storage commit and any restore/status publication. IRQ handlers never enter it.
+fn with_vfs_rollback<R>(operation: impl for<'a> FnOnce(&'a mut VfsSnapshot) -> R) -> R {
+    VFS_ROLLBACK.try_with(operation).unwrap_or_else(|_| {
+        crate::arch::disable_interrupts();
+        serial::println("VFS_TRANSACTION_REJECTED policy=halt");
+        crate::arch::halt_loop();
+    })
+}
 
 enum SocketTransportProgress {
     Pending,
@@ -448,9 +460,10 @@ impl RuntimeCoordinator {
                     && !manageable
                     && self.vfs.find(request.path.as_str()).is_none()
                 {
-                    capture_vfs(&self.vfs);
-                    let created = self.vfs.touch(request.path.as_str()).is_ok();
-                    if created && self.persist_change() {
+                    if self
+                        .mutate_vfs(|vfs| vfs.touch(request.path.as_str()))
+                        .is_some()
+                    {
                         batch.vfs_changed = true;
                     } else {
                         allowed = false;
@@ -506,16 +519,14 @@ impl RuntimeCoordinator {
                     serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     None
                 } else {
-                    capture_vfs(&self.vfs);
-                    self.vfs
-                        .write_at(
+                    self.mutate_vfs(|vfs| {
+                        vfs.write_at(
                             request.path.as_str(),
                             request.offset as usize,
                             request.data.as_slice(),
                         )
-                        .ok()
-                        .map(|count| count as u64)
-                        .filter(|_| self.persist_change())
+                    })
+                    .map(|count| count as u64)
                 };
                 batch.vfs_changed |= written.is_some();
                 self.processes.complete_file_write(request, written)
@@ -525,8 +536,8 @@ impl RuntimeCoordinator {
                     serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     false
                 } else {
-                    capture_vfs(&self.vfs);
-                    self.vfs.truncate(request.path.as_str()).is_ok() && self.persist_change()
+                    self.mutate_vfs(|vfs| vfs.truncate(request.path.as_str()))
+                        .is_some()
                 };
                 batch.vfs_changed |= truncated;
                 self.processes.complete_file_truncate(request, truncated)
@@ -558,8 +569,8 @@ impl RuntimeCoordinator {
                     serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     false
                 } else {
-                    capture_vfs(&self.vfs);
-                    self.vfs.mkdir(request.target.as_str()).is_ok() && self.persist_change()
+                    self.mutate_vfs(|vfs| vfs.mkdir(request.target.as_str()))
+                        .is_some()
                 };
                 batch.vfs_changed |= created;
                 self.processes.complete_directory_create(request, created)
@@ -569,8 +580,8 @@ impl RuntimeCoordinator {
                     serial::trace::println("PERSISTENT_READ_ONLY_MUTATION_DENIED");
                     false
                 } else {
-                    capture_vfs(&self.vfs);
-                    self.vfs.remove(request.target.as_str()).is_ok() && self.persist_change()
+                    self.mutate_vfs(|vfs| vfs.remove(request.target.as_str()))
+                        .is_some()
                 };
                 batch.vfs_changed |= removed;
                 self.processes.complete_path_remove(request, removed)
@@ -988,14 +999,30 @@ impl RuntimeCoordinator {
         }
     }
 
-    fn persist_change(&mut self) -> bool {
-        match self.persistent_fs.sync(&mut self.vfs, restore_vfs) {
-            storage::CommitOutcome::Committed => true,
-            storage::CommitOutcome::Rejected | storage::CommitOutcome::Failed(_) => {
-                serial::trace::println("PERSISTENT_WRITE_FAILED");
-                false
-            }
-        }
+    fn mutate_vfs<R>(
+        &mut self,
+        operation: impl for<'a> FnOnce(&'a mut RamVfs) -> Result<R, VfsError>,
+    ) -> Option<R> {
+        with_vfs_rollback(|rollback| {
+            rollback.with_snapshot(&mut self.vfs, |vfs, saved| {
+                let value = match operation(vfs) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        vfs.copy_from(saved);
+                        return None;
+                    }
+                };
+                // PersistentFs restores the prior view before publishing its
+                // quarantine status. Do not restore again after sync returns.
+                match self.persistent_fs.sync(vfs, |vfs| vfs.copy_from(saved)) {
+                    storage::CommitOutcome::Committed => Some(value),
+                    storage::CommitOutcome::Rejected | storage::CommitOutcome::Failed(_) => {
+                        serial::trace::println("PERSISTENT_WRITE_FAILED");
+                        None
+                    }
+                }
+            })
+        })
     }
 
     fn persistent_write_denied(&self, path: &str) -> bool {
@@ -1016,17 +1043,5 @@ impl RuntimeCoordinator {
         let mut snapshot = self.tasks.snapshot();
         self.processes.append_task_snapshots(&mut snapshot);
         self.task_snapshot = snapshot;
-    }
-}
-
-fn capture_vfs(vfs: &RamVfs) {
-    unsafe {
-        core::ptr::copy_nonoverlapping(vfs, core::ptr::addr_of_mut!(VFS_ROLLBACK), 1);
-    }
-}
-
-fn restore_vfs(vfs: &mut RamVfs) {
-    unsafe {
-        core::ptr::copy_nonoverlapping(core::ptr::addr_of!(VFS_ROLLBACK), vfs, 1);
     }
 }

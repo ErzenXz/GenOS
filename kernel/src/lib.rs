@@ -42,6 +42,7 @@ pub mod syscall;
 pub mod tasks;
 pub mod user_copy;
 pub mod vfs;
+pub mod vfs_snapshot;
 pub mod xstate;
 
 #[cfg(test)]

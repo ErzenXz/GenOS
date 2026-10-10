@@ -22,6 +22,7 @@ from test_cpu_paging import boot
 from test_exception_entry import firmware_path, replace_once, require_clean_source
 
 HALTS = {
+    'vfs-borrow': 'VFS_TRANSACTION_REJECTED policy=halt',
     'network-borrow': 'NETWORK_ACCESS_REJECTED policy=halt',
     'network-repeat': 'NETWORK_INIT_REJECTED policy=halt',
     'storage-borrow': 'STORAGE_ACCESS_REJECTED policy=halt',
@@ -32,7 +33,7 @@ HALTS = {
 def patch_fixture(root: Path, case: str) -> str:
     if case not in HALTS:
         raise ValueError('unknown coordinator access case')
-    module = 'network' if case.startswith('network') else 'storage'
+    module = 'runtime' if case == 'vfs-borrow' else 'network' if case.startswith('network') else 'storage'
     names = ['kernel/src/main.rs', f'kernel/src/{module}.rs']
     before = {name: (root / name).read_text() for name in names}
     if any('COORDINATOR_ACCESS_WINDOW' in text or 'pub fn run_borrow_probe' in text for text in before.values()):
@@ -40,7 +41,23 @@ def patch_fixture(root: Path, case: str) -> str:
     after = before.copy()
     window = f'    serial::println("COORDINATOR_ACCESS_WINDOW case={case}");\n'
     returned = '    serial::println("COORDINATOR_ACCESS_RETURNED"); arch::halt_loop();\n'
-    if module == 'network':
+    if module == 'runtime':
+        anchor = '    network::init();'
+        after[names[0]] = replace_once(after[names[0]], anchor,
+            window + '    runtime::run_borrow_probe();\n' + returned + anchor)
+        after[names[1]] += '''
+pub fn run_borrow_probe() {
+    let mut live = RamVfs::new();
+    live.init_root();
+    with_vfs_rollback(|snapshot| {
+        snapshot.with_snapshot(&mut live, |live, saved| {
+            with_vfs_rollback(|_| serial::println("COORDINATOR_ACCESS_RETURNED"));
+            assert_eq!(live.count(), saved.count());
+        });
+    });
+}
+'''
+    elif module == 'network':
         anchor = '    network::init();'
         call = '    network::run_borrow_probe();\n' if case.endswith('borrow') else anchor + '\n'
         after[names[0]] = replace_once(after[names[0]], anchor, anchor + '\n' + window + call + returned)

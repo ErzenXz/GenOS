@@ -73,6 +73,9 @@ jobs:
           - name: allocation-irq-deferred
             script: test_memory_access.py
             args: --case irq-deferred
+          - name: coordinator-vfs-borrow
+            script: test_coordinator_access.py
+            args: --case vfs-borrow
           - name: coordinator-network-borrow
             script: test_coordinator_access.py
             args: --case network-borrow
