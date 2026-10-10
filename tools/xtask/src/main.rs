@@ -2415,6 +2415,6 @@ mod tests {
         let headless = main.find("run_headless_boot_probe").unwrap();
         let terminal = main.find("SERVER_TERMINAL_READY").unwrap();
         assert!(headless < terminal);
-        assert!(!main.contains("FramebufferDevice::new"));
+        assert!(!main.contains("FramebufferDevice::"));
     }
 }

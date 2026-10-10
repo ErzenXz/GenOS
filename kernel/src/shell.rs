@@ -188,7 +188,7 @@ fn draw_terminal_prompt(prompt: &SerialPrompt, clear_line: bool) {
 
 #[allow(dead_code)]
 pub fn run(
-    mut display: DisplayManager,
+    mut display: DisplayManager<'_>,
     boot_info: &'static BootInfo,
     mut runtime: RuntimeCoordinator,
 ) -> ! {
@@ -379,7 +379,7 @@ pub fn run(
 }
 
 #[allow(dead_code)]
-fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &BootInfo) {
+fn execute_recovery(command: &str, display: &mut DisplayManager<'_>, boot_info: &BootInfo) {
     serial::print("recovery: ");
     serial::println(command);
 
@@ -447,7 +447,7 @@ fn execute_recovery(command: &str, display: &mut DisplayManager, boot_info: &Boo
     }
 }
 #[allow(dead_code)]
-fn apply_process_update(display: &mut DisplayManager, update: userspace::ProcessUpdate) {
+fn apply_process_update(display: &mut DisplayManager<'_>, update: userspace::ProcessUpdate) {
     if !update.output.is_empty() {
         let mut line = FixedText::from_str("app[");
         line.push_u64(update.pid as u64);
@@ -496,7 +496,7 @@ fn managed_state_text(state: userspace::ManagedState) -> &'static str {
 }
 
 #[allow(dead_code)]
-fn push_launch_error(display: &mut DisplayManager, error: userspace::LaunchError) {
+fn push_launch_error(display: &mut DisplayManager<'_>, error: userspace::LaunchError) {
     let text = match error {
         userspace::LaunchError::ImageUnavailable => "userspace process not found",
         userspace::LaunchError::ProcessBuildFailed => "INIT.ELF failed validation or mapping",

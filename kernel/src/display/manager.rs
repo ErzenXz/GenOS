@@ -43,8 +43,8 @@ impl FileView {
     }
 }
 
-pub struct DisplayManager {
-    fb: FramebufferDevice,
+pub struct DisplayManager<'a> {
+    fb: FramebufferDevice<'a>,
     shell: ShellBuffer,
     input: FixedText,
     status: FixedText,
@@ -81,9 +81,9 @@ pub struct DisplayManager {
     about_offset: Point,
 }
 
-impl DisplayManager {
+impl<'a> DisplayManager<'a> {
     pub fn new(
-        fb: FramebufferDevice,
+        fb: FramebufferDevice<'a>,
         boot_info: &BootInfo,
         memory_bytes: u64,
         initrd_files: usize,

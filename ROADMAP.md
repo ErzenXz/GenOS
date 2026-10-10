@@ -245,6 +245,10 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
   [Persistent VFS mutations](docs/VFS_TRANSACTIONS.md) now hold one rollback
   snapshot borrow through capture, mutation, commit and restore/status publication,
   replacing the raw global copies. Wider classification remains incomplete.
+  The dormant [framebuffer boundary](docs/FRAMEBUFFER_OWNERSHIP.md) now borrows
+  caller-owned buffers and explicitly requires unsafe MMIO construction, with
+  checked raster/layout admission. Actual display hardware and remaining shared
+  objects still need qualification.
 - [x] **F4.3:** keep rendering/terminal presentation outside storage, scheduling, lifecycle and transport ownership. Add dependency checks that fail on forbidden imports/mutation paths.
   Neutral text/geometry types replaced authority-module imports from display; a checked dependency rule rejects forbidden imports and mutable authority borrows in presentation. The normal reference boot passed on `3e55272`; [module contract](docs/MODULE_DEPENDENCIES.md). This does not close F4.2/F4.4.
 - [ ] **F4.4:** review caller obligations, aliasing, synchronization, assembly clobbers and failure containment at every unsafe boundary, including unsafe Send/Sync. Inventory presence alone does not close this review.

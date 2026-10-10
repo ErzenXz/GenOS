@@ -38,6 +38,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
 | Scoped current-process access | 7 |
+| Borrowed framebuffer RAM targets and raster bounds | 10 |
 | Owned VFS rollback snapshot | 5 |
 | Non-waiting scoped network/storage cell | 7 |
 | Typed capability registry | 3 |
@@ -48,7 +49,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **90** |
+| **Total** | **100** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -70,6 +71,12 @@ The VFS snapshot addition exercises complete owned copies and mutation/restore
 ordering, full node/file capacity, snapshot reuse and independent owners. A
 separate compile-fail check denies escaping its immutable saved view. Actual
 persistent commit, quarantine and media behavior remain separate storage tests.
+
+The dormant framebuffer addition interprets ten RAM-backed target/raster and
+numeric-admission tests, including volatile stores with allocation provenance.
+Its unsafe external-MMIO constructor/store and actual hardware mapping remain
+outside interpreter execution. Four additional compile-fail checks cover buffer
+exclusivity/lifetimes, unsafe construction and thread transfer.
 
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an

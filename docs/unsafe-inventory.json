@@ -5,7 +5,7 @@
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 241,
+    "unsafe_block": 240,
     "unsafe_extern": 7,
     "unsafe_fn": 71,
     "unsafe_impl": 3,
@@ -108,19 +108,19 @@
       "sha256": "7b75c0fc98361bf6de403bc44654931cc441be962204e90d5b71fd77b33b6212"
     },
     {
-      "lines": 383,
+      "lines": 993,
       "path": "kernel/src/display/framebuffer.rs",
-      "sha256": "e60f3f85b11134b6d2c48030f5659363184336ecbedde4c6391416d5d3d5c630"
+      "sha256": "a37a868304cdd0d0a37c12c2d612889b6b9f0966b593df542a8ddd3e2a2c9dc5"
     },
     {
       "lines": 1692,
       "path": "kernel/src/display/manager.rs",
-      "sha256": "63b254f9593f9ef361c51c2f6ac07fee32cd89226f6e57d4763df998b6faefac"
+      "sha256": "7b5d09686d1f324d49cafd3e54aacf8e3a248548f6b91cceb9d797536bc727c9"
     },
     {
       "lines": 13,
       "path": "kernel/src/display/mod.rs",
-      "sha256": "4dd41521098d3a1eb769f145201f97263df7416ed5dd59668ac68b673c885d13"
+      "sha256": "bad8ebd7f921f6d9f68913c192fe83a16b989f353781d3810b45a027b8a3895b"
     },
     {
       "lines": 114,
@@ -135,7 +135,7 @@
     {
       "lines": 128,
       "path": "kernel/src/display/text.rs",
-      "sha256": "b8f001408d6d7922a631ecd6837840b87cd37065629b65902d1c8816c88c4605"
+      "sha256": "2b02828dd4d740c494e8a0e12e72acbfb7c2f72e9c96306d4eec67a59bc82147"
     },
     {
       "lines": 28,
@@ -360,7 +360,7 @@
     {
       "lines": 509,
       "path": "kernel/src/shell.rs",
-      "sha256": "87c5e9b2fc55293349aea043da9073bc3101a5004b410996e38309405969bd48"
+      "sha256": "f21cbbb7292de9200cc22d355ac320b93e5d1c679db09218c46c1ad0d8194dd9"
     },
     {
       "lines": 1508,
@@ -460,7 +460,7 @@
     {
       "lines": 2420,
       "path": "tools/xtask/src/main.rs",
-      "sha256": "00256efd98c6504772f9aa5aea6d859bdb557afda8f680710ea218d5fd3c3fe4"
+      "sha256": "24ce4471d5798518a8538263155436d3888804ee12c626413d90525804b1c07e"
     },
     {
       "lines": 509,
@@ -1653,43 +1653,33 @@
       "path": "kernel/src/context_slot.rs"
     },
     {
-      "column": 13,
-      "construct_sha256": "b7c1d4ab22069daaf949028caaf7bfb5476f5a7c91916f33179a946c14af37f9",
-      "context": "        let row_pixels = clipped.width as usize;\n        for y in clipped.y..clipped.bottom() {\n            let offset = ((y * self.stride + clipped.x) * 4) as usize;\n            unsafe {\n                let src = self.draw_base.add(offset);\n                let dst = self.base.add(offset);\n                for pixel in 0..row_pixels {",
-      "context_start_line": 77,
-      "end_line": 88,
+      "column": 21,
+      "construct_sha256": "8ea4f7b60cdb0404b3a1b73a01c1928a1b5e4b72d5c94d4a1670b5fd013f06ec",
+      "context": "                    // SAFETY: this exclusive, aligned element reference retains\n                    // allocation provenance and is live for this write. Volatile\n                    // does not grant synchronization or additional alias rights.\n                    unsafe { core::ptr::write_volatile(pixel, value) };\n                }\n            }\n            Self::Mmio { address, pixels } if index < *pixels => {",
+      "context_start_line": 103,
+      "end_line": 106,
       "kind": "unsafe_block",
-      "line": 80,
+      "line": 106,
+      "path": "kernel/src/display/framebuffer.rs"
+    },
+    {
+      "column": 17,
+      "construct_sha256": "c41bb139a80363cef0bc2bd467baf77a764f6dc9df893286ddb29674633e8aaf",
+      "context": "                // range mapped, exclusively owned and non-trapping for u32 stores\n                // for the device lifetime. Checked layout/extent and index keep\n                // this aligned address in range. No Rust reference is fabricated.\n                unsafe { core::ptr::without_provenance_mut::<u32>(address).write_volatile(value) };\n            }\n            Self::Mmio { .. } => {}\n        }",
+      "context_start_line": 112,
+      "end_line": 115,
+      "kind": "unsafe_block",
+      "line": 115,
       "path": "kernel/src/display/framebuffer.rs"
     },
     {
       "column": 9,
-      "construct_sha256": "26032416ae0dbe2f9f9993c66dae4472c7be24a16538d94f6c3f88448ce1de56",
-      "context": "    }\n\n    fn put_pixel_at_offset_bytes(&mut self, offset: usize, color: Color) {\n        unsafe {\n            let pixel = self.draw_base.add(offset);\n            match self.format {\n                PixelFormat::Rgb => {",
-      "context_start_line": 336,
-      "end_line": 354,
-      "kind": "unsafe_block",
-      "line": 339,
-      "path": "kernel/src/display/framebuffer.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "ab9fc97e9bd836f603355322274c4eafa633acdf32c01f471c1a5df187283919",
-      "context": "        }\n    }\n\n    unsafe fn write_draw_byte(&self, ptr: *mut u8, value: u8) {\n        if self.backbuffered {\n            ptr.write(value);\n        } else {",
-      "context_start_line": 354,
-      "end_line": 363,
+      "construct_sha256": "e886d8ee352f0cdbbffb97aa008aaa6523dd4fcfdc944943299a33758dd3eb2d",
+      "context": "    /// fn require_send<T: Send>() {}\n    /// require_send::<FramebufferDevice<'static>>();\n    /// ```\n    pub unsafe fn from_mmio(\n        info: &FramebufferInfo,\n        backbuffer: Option<&'a mut [u32]>,\n    ) -> Result<Self, FramebufferError> {",
+      "context_start_line": 191,
+      "end_line": 208,
       "kind": "unsafe_fn",
-      "line": 357,
-      "path": "kernel/src/display/framebuffer.rs"
-    },
-    {
-      "column": 9,
-      "construct_sha256": "5166964c04f87717bc58a3c1d7ced0702b52431397920411f42ffc759c6e76bd",
-      "context": "    }\n\n    fn put_physical_pixel_at_offset(&mut self, offset: usize, color: Color) {\n        unsafe {\n            let pixel = self.base.add(offset);\n            match self.format {\n                PixelFormat::Rgb => {",
-      "context_start_line": 363,
-      "end_line": 381,
-      "kind": "unsafe_block",
-      "line": 366,
+      "line": 194,
       "path": "kernel/src/display/framebuffer.rs"
     },
     {
