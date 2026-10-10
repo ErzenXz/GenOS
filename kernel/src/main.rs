@@ -110,7 +110,10 @@ extern "sysv64" fn kernel_main(boot_info: &'static BootInfo) -> ! {
         serial::println("USER_ELF_INVALID");
         arch::halt_loop();
     }
-    userspace::register_shell_elf(shell_program.data);
+    if !userspace::register_shell_elf(shell_program.data) {
+        serial::println("USER_SHELL_INVALID");
+        arch::halt_loop();
+    }
     #[cfg(feature = "memory-test-faults")]
     {
         let enabled = arch::interrupts_enabled();

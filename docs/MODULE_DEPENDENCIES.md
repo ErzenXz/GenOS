@@ -78,3 +78,10 @@ executable-page budget and exact partial/BSS slices. Parser stress calls this
 production seam; allocation injection distinguishes malformed-layout rejection
 from valid-image OOM with budget zero. These checks do not qualify general ELF
 applications or complete F4.1/F6.2.
+
+`kernel::boot_image` separately owns immutable boot-lifetime image publication.
+Its safe publish-once API preserves slice provenance and rejects replacement;
+INIT and shell registration both validate admission before publishing. Each
+launch still builds its own validated plan and inactive root. No paging, scheduler,
+mutable process or executable authority is granted by the publication interface.
+See [the ownership contract](CPU_LOCAL.md#immutable-boot-images).
