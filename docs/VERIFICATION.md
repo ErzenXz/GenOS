@@ -1261,3 +1261,98 @@ the frozen 11.1.1 profile and strict CPU requirements are unchanged. The underly
 remote ATA timeout is unresolved. Broader ownership/decomposition, interrupt
 timing, CPU qualification, independent reference review and later roadmap work
 remain open. Roadmap stays **51/100**, Experimental, and PR #9 draft/unmerged.
+
+## October 11 scoped physical memory state and initialization
+
+`fb8600931085209ad1d4f72d96edb098c1136778` replaces separate raw allocator,
+grant-ledger and fault-counter access with one permanent in-place `MemoryState`.
+Its private `ContextSlot` adapter masks IRQs before publication/access and retires
+both guards before restoring caller IF. All observations share that scope.
+Higher-ranked callbacks cannot return a state borrow; nested access refuses
+before dereference rather than waiting. Initialization requires IF clear and
+may start once; ready methods deny access before initialization. Invalid maps
+or capacity halt without publishing readiness or promising recoverable rollback.
+Serial initialization diagnostics use owned copies outside the state borrow.
+Allocation still zeroes before returning a grant; release retains identity/pin,
+retirement and scrubbing obligations. No capacity, quota or ABI changed.
+
+Four unsafe blocks were removed; the reviewed inventory now records **429 sites
+across 101 sources**, with no new unsafe Send/Sync. The BSP/emergency exclusions
+remain mandatory. This does not qualify SMP, complete memory/reference/device
+retirement, worst-case masked duration or the wider F4/F5 audit. See
+[memory access](MEMORY_ACCESS.md) for caller and failure obligations.
+
+- **324 workspace unit tests**, **two compile-fail doctests**, **130 Python tests**
+  and strict kernel host/normal/validation target lint passed. Logs remain at
+  `build/memory-access-host-tests.log`, `build/memory-access-python-tests-expanded.log`
+  and `build/memory-access-*-clippy.log`. The initial fixture self-test's
+  formatting-sensitive preservation assertion failed; it remains separately at
+  `build/memory-access-python-tests.log`. The corrected assertion matches the
+  formatted allocation call, and the insertion anchor specifically excludes the
+  hygiene probe before any live fixture ran. No VM failure was relabeled.
+- Pinned strict-provenance Miri passed all **78 selected tests**, and native
+  allocator stress passed, on clean `fb86009`. Source/archive, toolchain, commands
+  and per-module hashes remain at
+  `build/pure-rust-evidence/1791671903010068000/manifest.json`. This interprets the
+  reused slot and pure allocator/ledger modules; the privileged adapter/physical
+  operations are outside Miri scope. The unchanged bounded ownership-model lane
+  was not rerun.
+- The complete system suite passed all **eighteen** manifests on clean `fb86009`:
+  storage creation/restore/read-only/recovery/failure, serial, network/no-HTTP,
+  external SDK, memory preflight/ten allocation cutoffs, six actual protection
+  probes and normal debug/release process/file workflows. Source remained
+  unchanged throughout the campaign. Paths/hashes are indexed in
+  `build/fb86009-system-evidence-index.json`; combined output remains in
+  `build/memory-access-system-tests.log`.
+
+Four independent live fixtures passed on clean `fb86009`, each retaining its
+manifest under `build/memory-access-evidence/1791671903010051000/`: `before-init`,
+`init-repeat`, `reentrant` and `irq-deferred`. The first three require their
+distinct production software refusals and no continuation, CPU fault, reset,
+stopped VM or exit. The allocation case holds the real state borrow after a grant
+is allocated and before production zeroing. QMP sends one real keyboard event;
+the guest requires a pending byte, unchanged IRQ count and empty queue until a
+serial handshake releases the window. After borrow/publication retirement and
+IF restoration, the actual handler delivers exactly one `a`. The returned grant
+is live and completely zeroed; poisoning/release scrubs it and restores the frame
+baseline. Nested masked memory observations/release preserve IF clear, and the
+outer caller retains enabled IF. It covers one delayed allocation/keyboard
+schedule, not exhaustive IRQ nesting, physical devices or DMA retirement.
+
+The additional `init-if-enabled` fixture passed on clean
+`1cfabc1ec1b40e962636d74c9eeb069ce61d7350`, at
+`build/memory-access-evidence/1791672243316747000/init-if-enabled/manifest.json`.
+Calling initialization after real IRQ enable requires the context refusal, not
+the already-initialized reason. No Rust source changed after `fb86009`.
+The shared paused-start/raw-QMP runner gained explicit serial contracts while
+retaining its default checks. Both original defaults passed again on clean
+`fb86009`: input delivery at
+`build/input-irq-evidence/1791671954839429000/manifest.json` and root-observation
+refusal at `build/cpu-paging-evidence/1791671954839313000/manifest.json`.
+
+Five independent memory jobs raise the versioned contract and main branch
+protection to **69 required app-bound checks**. All other fields were preserved,
+with only the order-insensitive context/check arrays compared canonically.
+Before/request/response/fresh-after records and hashes remain at
+`build/ci-policy-evidence/memory-access-policy-1791672302127687000/`.
+
+The prior published head `3733bbaeebe6877da88f5db86ca56aaf1b228b0a` completed all
+**64 then-required checks: 60 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38091711830) passed every
+job, including the complete remote system suite. Input IRQ, root-observation,
+scoped-borrow and fresh-volume failure passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38091711861).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38091711840)
+still failed. Artifacts remain under `build/remote-evidence/3733bba/`.
+Its exact-head policy/execution audit at
+`build/ci-policy-evidence/3733bba-final-audit/` uses the historical 64-check
+contract and does not certify green verification. Required-success replay fails
+at `build/ci-policy-evidence/3733bba-required-success/`. Both audits predate the
+69-check update; the memory change's remote execution must be evaluated separately.
+
+Local QEMU 11.1.2/retained firmware identity remains portability evidence against
+the unchanged frozen 11.1.1 profile. No strict CPU requirement was relaxed, and
+the remote ATA timeout remains unresolved. Complete ownership/decomposition,
+interrupt timing, CPU/reference qualification, independent review and later
+roadmap work remain open: **51/100**, Experimental, with PR #9 draft/unmerged.
