@@ -31,7 +31,7 @@ Those are scoped local results. The VM candidate now has pinned arguments and an
 exact tool/firmware preflight; independent reproduction remains missing.
 The earlier missing-`workflow` publication restriction was resolved on October 10.
 [Draft PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the independent jobs
-and has remote results. The [required-check policy](CI_POLICY.md) binds all sixty-three
+and has remote results. The [required-check policy](CI_POLICY.md) binds all sixty-four
 verification jobs to GitHub Actions and is enforced on `main`, including admins.
 Strict CPU/IRET failures still block integration; publication is not a passing release.
 

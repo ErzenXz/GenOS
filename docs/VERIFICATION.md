@@ -1172,3 +1172,92 @@ Local QEMU 11.1.2 has the retained firmware identity but differs from the frozen
 mismatch. No reference profile, strict CPU requirement or release level was
 relaxed. Complete F4/F5, independent review, CPU qualification and later roadmap
 work remain open: **51/100**, Experimental, with PR #9 draft/unmerged.
+
+## October 11 IRQ-shared input ownership
+
+`3ed61890818a2c2ea489bee67a6ffcc97ab5e90f` groups the legacy PS/2 queue, keyboard
+decoder, partial mouse packet, pointer and bounds behind one private scoped
+adapter. IRQ and coordinator operations, including all observations, mask IRQs
+before publishing the permanent original pointer through `ContextSlot`.
+Higher-ranked access cannot return a state borrow; both guards end before prior
+IF restores. Reentry refuses before dereference rather than waiting. IRQ entry
+and optional boot-only controller configuration unconditionally require IF
+clear. IRQ work remains at most one ready byte, polling at most eight; the
+boot-only mouse configuration retains bounded waits and its existing missing
+error-propagation limitation. NMI/emergency input access and other CPUs remain
+excluded. This is not an SMP lock or completion of F4/F5.
+
+The pure `input_state` module has six tests covering absent-byte status,
+interleaved keyboard/mouse state, overflow ordering with pointer progress,
+motion/button coordinates, degenerate dimensions and integer-boundary motion.
+Pointer initialization now clamps degenerate dimensions and movement saturates
+before clamping. The reviewed inventory records **433 sites across 101 sources**:
+five unsafe blocks and one unsafe helper removed, with no new unsafe Send/Sync.
+
+- **324 workspace unit tests**, **two compile-fail doctests**, **125 Python tests**
+  and strict kernel host/normal/validation target lint passed. Logs are
+  `build/input-ownership-host-tests.log`, `build/input-ownership-python-tests.log`
+  and `build/input-ownership-*-clippy.log`. An initial harness self-test found
+  duplicate fixture installation was accepted; the fixture now refuses a second
+  installation before mutation. That failed self-test remains separately in
+  `build/input-ownership-harness-tests.log`; the final full Python suite passes.
+- Pinned strict-provenance Miri passed **78 selected tests**, including all six
+  input-state cases, on clean `3ed6189`. Native allocator stress also passed.
+  Source/archive, toolchain, exact commands and per-module log hashes remain at
+  `build/pure-rust-evidence/1791671056479360000/manifest.json`. The separate bounded
+  ownership-model lane was unchanged and was not rerun.
+- The complete system suite passed all **eighteen** manifests on clean `3ed6189`:
+  storage creation/restore/read-only/recovery/failure, serial, network/no-HTTP,
+  external SDK, memory preflight/ten allocation cutoffs, all six actual protection
+  probes and normal debug/release process/file workflows. Source did not change
+  during the campaign. Paths/hashes are in `build/3ed6189-system-evidence-index.json`,
+  with combined output in `build/input-ownership-system-tests.log`.
+
+The real delayed-input fixture passed on clean `3ed6189`, with manifest
+`build/input-irq-evidence/1791671056479347000/manifest.json`. QMP subscribed before
+guest startup and acknowledged one keyboard `a` down event during a deliberately
+extended production input borrow. A serial handshake then released the window.
+While IF was clear, the guest observed a ready keyboard byte, unchanged IRQ count
+and empty queue. After the adapter retired its borrow/publication and restored
+IF, the actual production IRQ delivered exactly one `a`. Peek/pop/depth proved
+queue retirement; nested coordinator observations/polling preserved an already
+clear IF and the outer enabled state. The fixture then halted, with a final
+running QMP status and no reset, stopped VM, fault or continued boot. Its retained
+diff inserts only the window and call, leaving controller reads, decoder, queue,
+adapter, PIC acknowledgement and entry assembly intact. This covers one delayed
+keyboard schedule, not mouse hardware, exhaustive nesting, complete workload
+latency or allocator/device-completion schedules. See
+[input ownership](INPUT_OWNERSHIP.md) for caller obligations and scope.
+
+`Foundation input-irq-deferred` is the new independent required lane, raising
+the contract to **64**. The initial policy update succeeded on the server, but
+its wrapper rejected GitHub's retained check-array order; that failed wrapper
+manifest remains at
+`build/ci-policy-evidence/input-irq-policy-1791671341105558000/manifest.json`.
+A separate fresh readback verifies all 64 app-bound checks and every policy
+field, comparing only the two order-insensitive check arrays canonically. Its
+before/request/response/after evidence and hashes remain at
+`build/ci-policy-evidence/input-irq-policy-readback-1791671378516534000/`.
+No other enforcement field changed; strict freshness and administrator
+enforcement remain required.
+
+The previous published head `656fe0e4926963e380060803e91e07d6866ebf05` completed
+all **63 then-required checks: 59 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38090919613) passed every
+job, including the complete remote system suite. The new root-observation,
+scoped-borrow and fresh-volume failure lanes passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38090919577).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38090919673)
+still failed. Artifacts remain under `build/remote-evidence/656fe0e/`; the
+read-only exact-head audit at `build/ci-policy-evidence/656fe0e-final-audit/`
+verifies policy and execution using that historical 63-check contract, not green
+verification. Its required-success replay fails and remains at
+`build/ci-policy-evidence/656fe0e-required-success/`. Both predate the 64-check
+policy update. The input change's remote execution must be evaluated separately.
+
+Local QEMU 11.1.2 remains portability evidence with the retained firmware hash;
+the frozen 11.1.1 profile and strict CPU requirements are unchanged. The underlying
+remote ATA timeout is unresolved. Broader ownership/decomposition, interrupt
+timing, CPU qualification, independent reference review and later roadmap work
+remain open. Roadmap stays **51/100**, Experimental, and PR #9 draft/unmerged.

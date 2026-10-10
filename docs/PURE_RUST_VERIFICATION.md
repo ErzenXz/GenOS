@@ -54,6 +54,10 @@ including pointer provenance and competing initial publishers. The latter runs t
 it is not exhaustive concurrency exploration. Compile-fail lifetime/borrow tests
 run separately in the normal workspace test lane.
 
+The October 11 input-state addition exercises interleaved PS/2 decoding, bounded
+queue overflow and pointer bounds. Actual PIO, deferred hardware IRQ delivery
+and caller IF restoration execute separately in the input VM fixture.
+
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an
 explicit native-only stress case in this lane and is still executed with its
