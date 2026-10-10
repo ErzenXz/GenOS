@@ -536,20 +536,58 @@ impl<'a> FramebufferDevice<'a> {
         let thickness = i64::from(thickness.max(1));
         let radius = (thickness - 1) / 2;
         let forward = thickness - 1 - radius;
-        let left = i64::from(clip.x) - forward;
-        let top = i64::from(clip.y) - forward;
-        let right = i64::from(clip.right()) - 1 + radius;
-        let bottom = i64::from(clip.bottom()) - 1 + radius;
-        let Some((mut x, mut y, end_x, end_y)) = clip_segment(start, end, left, top, right, bottom)
-        else {
+        let (x, y, end_x, end_y) = (
+            i64::from(start.x),
+            i64::from(start.y),
+            i64::from(end.x),
+            i64::from(end.y),
+        );
+        let dx = (end_x - x).abs();
+        let dy = (end_y - y).abs();
+        let sx = if x < end_x { 1 } else { -1 };
+        let sy = if y < end_y { 1 } else { -1 };
+        let major = dx.max(dy);
+        let steps = if dx >= dy {
+            visible_steps(
+                x,
+                sx,
+                major,
+                i64::from(clip.x) - forward,
+                i64::from(clip.right()) - 1 + radius,
+            )
+        } else {
+            visible_steps(
+                y,
+                sy,
+                major,
+                i64::from(clip.y) - forward,
+                i64::from(clip.bottom()) - 1 + radius,
+            )
+        };
+        let Some(steps) = steps else {
             return;
         };
-        let dx = (end_x - x).abs();
-        let sx = if x < end_x { 1 } else { -1 };
-        let dy = -(end_y - y).abs();
-        let sy = if y < end_y { 1 } else { -1 };
-        let mut error = dx + dy;
-        loop {
+        for step in steps {
+            // This closed form is the original symmetric Bresenham phase,
+            // including half-step ties, even when the leading steps are skipped.
+            // i128 covers products of any two full-range i32 endpoint deltas.
+            let (x, y) = if major == 0 {
+                (x, y)
+            } else if dx >= dy {
+                (
+                    x + sx * step,
+                    y + sy
+                        * ((i128::from(dy) * i128::from(step) + i128::from(dx / 2))
+                            / i128::from(dx)) as i64,
+                )
+            } else {
+                (
+                    x + sx
+                        * ((i128::from(dx) * i128::from(step) + i128::from(dy / 2))
+                            / i128::from(dy)) as i64,
+                    y + sy * step,
+                )
+            };
             let brush = self
                 .clip_box(x - radius, y - radius, thickness, thickness)
                 .intersect(clip);
@@ -558,77 +596,25 @@ impl<'a> FramebufferDevice<'a> {
             } else {
                 self.fill_rect(brush, color);
             }
-            if x == end_x && y == end_y {
-                break;
-            }
-            let doubled = error * 2;
-            if doubled >= dy {
-                error += dy;
-                x += sx;
-            }
-            if doubled <= dx {
-                error += dx;
-                y += sy;
-            }
         }
     }
 }
 
-// Cohen-Sutherland clipping uses wide intermediates for every i32 endpoint.
-// Each accepted step removes the selected outside edge; a finite iteration cap
-// also refuses degenerate integer-rounding inputs rather than looping forever.
-fn clip_segment(
-    start: Point,
-    end: Point,
-    left: i64,
-    top: i64,
-    right: i64,
-    bottom: i64,
-) -> Option<(i64, i64, i64, i64)> {
-    let code = |x, y| {
-        (if x < left { 1 } else { 0 })
-            | (if x > right { 2 } else { 0 })
-            | (if y < top { 4 } else { 0 })
-            | (if y > bottom { 8 } else { 0 })
+fn visible_steps(
+    start: i64,
+    direction: i64,
+    major: i64,
+    low: i64,
+    high: i64,
+) -> Option<core::ops::RangeInclusive<i64>> {
+    let (first, last) = if direction > 0 {
+        (low - start, high - start)
+    } else {
+        (start - high, start - low)
     };
-    let (mut x, mut y, mut end_x, mut end_y) = (
-        i64::from(start.x),
-        i64::from(start.y),
-        i64::from(end.x),
-        i64::from(end.y),
-    );
-    for _ in 0..16 {
-        let a = code(x, y);
-        let b = code(end_x, end_y);
-        if a | b == 0 {
-            return Some((x, y, end_x, end_y));
-        }
-        if a & b != 0 {
-            return None;
-        }
-        let outside = if a != 0 { a } else { b };
-        let interpolate = |origin: i64, delta: i64, distance: i64, span: i64| -> i64 {
-            (i128::from(origin) + i128::from(delta) * i128::from(distance) / i128::from(span))
-                as i64
-        };
-        let (next_x, next_y) = if outside & 8 != 0 {
-            (interpolate(x, end_x - x, bottom - y, end_y - y), bottom)
-        } else if outside & 4 != 0 {
-            (interpolate(x, end_x - x, top - y, end_y - y), top)
-        } else if outside & 2 != 0 {
-            (right, interpolate(y, end_y - y, right - x, end_x - x))
-        } else {
-            (left, interpolate(y, end_y - y, left - x, end_x - x))
-        };
-        if outside == a {
-            x = next_x;
-            y = next_y;
-        } else {
-            end_x = next_x;
-            end_y = next_y;
-        }
-    }
-    None
+    let first = first.max(0);
+    let last = last.min(major);
+    (first <= last).then_some(first..=last)
 }
 
 #[cfg(test)]
@@ -885,11 +871,8 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            clip_segment(Point::new(0, 0), Point::new(3, 3), 0, 0, 3, 3),
-            Some((0, 0, 3, 3))
-        );
-        assert!(clip_segment(Point::new(-2, -2), Point::new(-1, -1), 0, 0, 3, 3).is_none());
+        assert_eq!(visible_steps(0, 1, 3, 0, 3), Some(0..=3));
+        assert!(visible_steps(-2, 1, 1, 0, 3).is_none());
     }
 
     #[test]
@@ -988,6 +971,66 @@ mod tests {
         for index in 24..30 {
             assert_eq!(pixels[index], SENTINEL);
             assert_eq!(draw[index], SENTINEL);
+        }
+    }
+    #[test]
+    fn clipped_line_phase_matches_original_raster_for_all_small_endpoints() {
+        for start_x in -2i32..6 {
+            for start_y in -2i32..6 {
+                for end_x in -2i32..6 {
+                    for end_y in -2i32..6 {
+                        let mut expected = [SENTINEL; 20];
+                        // Independent replay of the original iterative rasterizer.
+                        let (mut x, mut y) = (start_x, start_y);
+                        let dx = (end_x - x).abs();
+                        let sx = if x < end_x { 1 } else { -1 };
+                        let dy = -(end_y - y).abs();
+                        let sy = if y < end_y { 1 } else { -1 };
+                        let mut error = dx + dy;
+                        loop {
+                            if (0..4).contains(&x) && (0..4).contains(&y) {
+                                expected[y as usize * 5 + x as usize] =
+                                    packed(RED, PixelFormat::Rgb);
+                            }
+                            if x == end_x && y == end_y {
+                                break;
+                            }
+                            let doubled = error * 2;
+                            if doubled >= dy {
+                                error += dy;
+                                x += sx;
+                            }
+                            if doubled <= dx {
+                                error += dx;
+                                y += sy;
+                            }
+                        }
+                        let mut actual = [SENTINEL; 20];
+                        {
+                            let mut fb = FramebufferDevice::from_pixels(
+                                4,
+                                4,
+                                5,
+                                PixelFormat::Rgb,
+                                &mut actual,
+                                None,
+                            )
+                            .unwrap();
+                            fb.line(
+                                Point::new(start_x, start_y),
+                                Point::new(end_x, end_y),
+                                1,
+                                RED,
+                                fb.bounds(),
+                            );
+                        }
+                        assert_eq!(
+                            actual, expected,
+                            "start=({start_x},{start_y}) end=({end_x},{end_y})"
+                        );
+                    }
+                }
+            }
         }
     }
 }

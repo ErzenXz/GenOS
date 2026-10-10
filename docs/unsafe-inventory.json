@@ -108,9 +108,9 @@
       "sha256": "7b75c0fc98361bf6de403bc44654931cc441be962204e90d5b71fd77b33b6212"
     },
     {
-      "lines": 993,
+      "lines": 1036,
       "path": "kernel/src/display/framebuffer.rs",
-      "sha256": "a37a868304cdd0d0a37c12c2d612889b6b9f0966b593df542a8ddd3e2a2c9dc5"
+      "sha256": "204d066a20ad6e8c4e4283cefe0ee76c372d16bb998a8a24384c6a43834b74fa"
     },
     {
       "lines": 1692,
