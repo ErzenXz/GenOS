@@ -49,16 +49,19 @@ It does not make concurrent or aliased device access safe.
 
 Device-boundary clipping computes endpoints in wide integers before narrowing to
 in-range pixels. Rectangle, blit, circle, checker and stroke offsets do not use
-wrapping i32 address arithmetic. Line clipping bounds the raster segment before
-Bresenham iteration, with wide interpolation and explicit even-brush edges.
+wrapping i32 address arithmetic. Line drawing skips off-screen major-axis steps while retaining the original
+symmetric Bresenham phase and half-step ties, with wide arithmetic and explicit
+even-brush edges.
 Only a bounded admitted pixel index reaches either target. Arbitrarily expensive
 drawing workloads and upstream presentation geometry still need resource/latency
 qualification; this change does not establish a usable or hardened graphical path.
 
-Ten host/Miri tests exercise layout and numeric-MMIO admission without accessing
+Eleven host/Miri tests exercise layout and numeric-MMIO admission without accessing
 MMIO, short buffers, RGB/BGR byte packing, buffered presentation/overlay restore,
 stride/tail canaries, extreme rectangles/blits/lines/circles, independent surfaces
-and existing small-surface wallpaper/checker/stroke/overlay operations. Four new
+and existing small-surface wallpaper/checker/stroke/overlay operations. An
+independent iterative oracle checks all 4096 ordered endpoint pairs in the bounded
+[-2, 5] square against the phase-preserving drawing path on a 4-by-4 surface. Four new
 compile-fail checks deny aliased borrowed buffers, storage outliving its owner,
 safe MMIO construction and thread transfer. Miri executes RAM-backed volatile
 writes with provenance checks; it does not execute or qualify real MMIO.

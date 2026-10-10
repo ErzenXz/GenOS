@@ -38,7 +38,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
 | Scoped current-process access | 7 |
-| Borrowed framebuffer RAM targets and raster bounds | 10 |
+| Borrowed framebuffer RAM targets and raster bounds | 11 |
 | Owned VFS rollback snapshot | 5 |
 | Non-waiting scoped network/storage cell | 7 |
 | Typed capability registry | 3 |
@@ -49,7 +49,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **100** |
+| **Total** | **101** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -72,7 +72,7 @@ ordering, full node/file capacity, snapshot reuse and independent owners. A
 separate compile-fail check denies escaping its immutable saved view. Actual
 persistent commit, quarantine and media behavior remain separate storage tests.
 
-The dormant framebuffer addition interprets ten RAM-backed target/raster and
+The dormant framebuffer addition interprets eleven RAM-backed target/raster and
 numeric-admission tests, including volatile stores with allocation provenance.
 Its unsafe external-MMIO constructor/store and actual hardware mapping remain
 outside interpreter execution. Four additional compile-fail checks cover buffer
