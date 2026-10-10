@@ -54,12 +54,7 @@ const COMMAND_WORDS: &[u8] =
 const NAMESPACE_PROOF_DIRECTORY: &[u8] = b"ABI14";
 
 #[cfg(feature = "validation-boot")]
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum StorageMode {
-    Writable,
-    ReadOnly,
-    Unavailable,
-}
+use genos_shell::storage_status::{self, StorageMode};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -206,6 +201,11 @@ fn run_startup_validation(console: u64, supervisor: u64) {
         }
         StorageMode::Unavailable => {
             if !prove_unavailable_storage(console) {
+                runtime::exit(248);
+            }
+        }
+        StorageMode::Quarantined => {
+            if !prove_storage_denial(console, false) {
                 runtime::exit(248);
             }
         }
@@ -769,17 +769,12 @@ fn prove_storage_status(console: u64) -> Option<StorageMode> {
         return None;
     }
     let status = &buffer[..read];
-    let (message, storage_mode) = if matches(status, b"state=error") {
-        (
-            b"storage failure visible" as &[u8],
-            StorageMode::Unavailable,
-        )
-    } else if matches(status, b"state=readonly") {
-        (b"storage read-only visible" as &[u8], StorageMode::ReadOnly)
-    } else if matches(status, b"state=healthy") || matches(status, b"state=recovered") {
-        (b"storage status visible" as &[u8], StorageMode::Writable)
-    } else {
-        return None;
+    let storage_mode = storage_status::parse(status)?;
+    let message: &[u8] = match storage_mode {
+        StorageMode::Writable => b"storage status visible",
+        StorageMode::ReadOnly => b"storage read-only visible",
+        StorageMode::Unavailable => b"storage failure visible",
+        StorageMode::Quarantined => b"storage write quarantine visible",
     };
     if runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
         != message.len() as u64
@@ -1301,9 +1296,14 @@ fn prove_file_mutation(console: u64) -> bool {
 
 #[cfg(feature = "validation-boot")]
 fn prove_unavailable_storage(console: u64) -> bool {
+    prove_storage_denial(console, true)
+}
+
+#[cfg(feature = "validation-boot")]
+fn prove_storage_denial(console: u64, require_empty: bool) -> bool {
     // A corrupt/unavailable persistent volume must never acknowledge a
     // /USER mutation as a volatile fallback. Probe both kinds of authority.
-    if runtime::open_file(MUTATION_PROOF_PATH) != runtime::ERROR_UNAVAILABLE
+    if (require_empty && runtime::open_file(MUTATION_PROOF_PATH) != runtime::ERROR_UNAVAILABLE)
         || runtime::open_file_with_rights(
             MUTATION_PROOF_PATH,
             runtime::FILE_RIGHT_READ | runtime::FILE_RIGHT_WRITE,
@@ -1325,13 +1325,17 @@ fn prove_unavailable_storage(console: u64) -> bool {
     // SAFETY: no other startup operation holds this process-local output
     // buffer, and read_directory copies only its bounded ABI structure.
     let entry = unsafe { &mut *addr_of_mut!(DATA.directory_entry) };
-    let unchanged = runtime::read_directory(parent, 0, entry) == 0;
+    let unchanged = !require_empty || runtime::read_directory(parent, 0, entry) == 0;
     let closed = runtime::close_handle(parent) == 0;
-    let message = b"storage unavailable mutations denied";
+    let message: &[u8] = if require_empty {
+        b"storage unavailable mutations denied"
+    } else {
+        b"storage quarantine mutations denied"
+    };
     denied
         && unchanged
         && closed
-        && runtime::open_file(MUTATION_PROOF_PATH) == runtime::ERROR_UNAVAILABLE
+        && (!require_empty || runtime::open_file(MUTATION_PROOF_PATH) == runtime::ERROR_UNAVAILABLE)
         && prove_session_file_readable()
         && runtime::console_write(console, message, runtime::CONSOLE_LINE_STATUS)
             == message.len() as u64

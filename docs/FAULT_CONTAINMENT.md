@@ -89,7 +89,7 @@ python3 -m unittest discover -s tools -p test_fault_containment_harness.py
 python3 tools/test_fault_containment.py
 ```
 
-The immutable-source harness has nineteen cases: nested IRQ #PF, syscall #GP,
+The immutable-source harness has twenty cases: scoped syscall borrow denial, nested IRQ #PF, syscall #GP,
 same-IST #PF, IRQ NMI/#MC, #MC-handler #GP, failed NMI IRET plus second NMI;
 four corrupt initial/syscall/IRQ returns; a successful IRET control with NMI re-entry; real #DF; initial flag/RSP/SS denial; user NT
 denial with cleanup; and first NMI/#MC. External events use QEMU's documented

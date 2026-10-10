@@ -353,7 +353,8 @@ def main() -> None:
         evidence = campaign / case
         evidence.mkdir(parents=True, exist_ok=False)
         manifest = {'case': case, 'commit': commit, 'source_clean': True, 'status': 'incomplete',
-                    'scope': ('software return-state denial' if case in SOFTWARE_KERNEL or case == 'user-nt'
+                    'scope': ('software scoped current-process borrow denial' if case == 'syscall-borrow'
+                              else 'software return-state denial' if case in SOFTWARE_KERNEL or case == 'user-nt'
                               else 'real CPU faults; QMP NMI and HMP machine-check injection where named')}
         try:
             manifest.update(environment(firmware_path(), source))
