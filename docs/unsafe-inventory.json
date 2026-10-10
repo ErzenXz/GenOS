@@ -423,14 +423,14 @@
       "sha256": "47e221a605e330daf7e09287ffef4a1c0a3aeb53687fff52cc6dc43a5e8462f9"
     },
     {
-      "lines": 941,
+      "lines": 942,
       "path": "tools/xtask/src/evidence_contract.rs",
-      "sha256": "5b92efa2490a67c202e2c2f2aa074f6a3a40cc981605fbcbecfc469880fe3f30"
+      "sha256": "8c2b3b3fd5880b535e3d4ed8967fbe66a5d190af97ad90ff2ee8301bb624f15f"
     },
     {
       "lines": 2420,
       "path": "tools/xtask/src/main.rs",
-      "sha256": "0dc5642365617f62c74039d7f1d442437d32fba7a93ecbff010a24283bbfd4eb"
+      "sha256": "00256efd98c6504772f9aa5aea6d859bdb557afda8f680710ea218d5fd3c3fe4"
     },
     {
       "lines": 509,

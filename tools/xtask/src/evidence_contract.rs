@@ -466,14 +466,15 @@ impl<'a> Contract<'a> {
             )?;
         }
         self.ordered(&[
-            "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
-            "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
             "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
             "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
             "MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true",
             "USER_COPY_READY bounded=true permissions=true atomic=true stale=denied",
             "TLB_RETIREMENT_READY switched=true reused=true reclaimed=true",
-            "IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored"], &required, &positions)?;
+            "IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored",
+            "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
+            "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
+        ], &required, &positions)?;
         if self.network {
             for chain in [
                 &[
@@ -801,14 +802,14 @@ mod tests {
     #[test]
     fn memory_authority_proofs_require_unique_ordered_exact_results() {
         let markers = [
-            "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
-            "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
             "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
             "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
             "MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true",
             "USER_COPY_READY bounded=true permissions=true atomic=true stale=denied",
             "TLB_RETIREMENT_READY switched=true reused=true reclaimed=true",
             "IRQ_CRITICAL_SECTION_READY nested=preserved outer=restored",
+            "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
+            "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
         ];
         let log = VALIDATION.replace(
             "USERMODE_READY\n",
