@@ -74,6 +74,12 @@ impl RamVfs {
         }
     }
 
+    /// Replace all owned nodes and metadata without a raw copy or heap allocation.
+    pub fn copy_from(&mut self, source: &Self) {
+        self.nodes.copy_from_slice(&source.nodes);
+        self.len = source.len;
+    }
+
     pub fn init_root(&mut self) {
         self.mkdir("/").expect("RAM VFS root construction failed");
     }

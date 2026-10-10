@@ -314,23 +314,34 @@ fn every_write_and_flush_error_quarantines_without_replaying_dirty_data() {
                 let mut disk = baseline.clone();
                 disk.failure = Some((at, effect));
                 let mut fs = mounted_fs();
-                let mut live = contents(b'n');
+                let mut live = contents(b'b');
+                let mut snapshot = kernel::vfs_snapshot::VfsSnapshot::new();
                 let failure = if at >= 42 {
                     CommitFailure::Unknown
                 } else {
                     CommitFailure::NotPublished
                 };
                 assert_eq!(
-                    fs.sync_with(
-                        &mut live,
-                        |vfs| *vfs = contents(b'b'),
-                        &mut disk,
-                        &mut [0; SLOT_BYTES]
-                    ),
+                    snapshot.with_snapshot(&mut live, |live, saved| {
+                        live.write(PERSISTENT_PATH, &[b'n'; 512]).unwrap();
+                        fs.sync_with(
+                            live,
+                            |vfs| vfs.copy_from(saved),
+                            &mut disk,
+                            &mut [0; SLOT_BYTES],
+                        )
+                    }),
                     CommitOutcome::Failed(failure),
                     "write_through={write_through} at={at} effect={effect:?}"
                 );
                 assert_contents(&live, b'b');
+                assert_eq!(
+                    live.read(STATUS_PATH),
+                    Ok(match failure {
+                        CommitFailure::Unknown => &b"state=readonly\ncommit=unknown\nview=last-acknowledged\nrecovery=remount"[..],
+                        CommitFailure::NotPublished => &b"state=readonly\ncommit=not-published\nview=last-acknowledged\nrecovery=remount"[..],
+                    })
+                );
                 assert!(fs.read_only());
                 assert_eq!(fs.active_slot, Some(1));
                 assert_eq!(fs.generation, 2);

@@ -41,7 +41,7 @@ class CoordinatorAccessHarnessTests(unittest.TestCase):
     def test_fixture_preserves_production_modules_and_refuses_second_installation(self):
         source=Path(__file__).resolve().parents[1]
         for case in HALTS:
-            module='network' if case.startswith('network') else 'storage'
+            module='runtime' if case == 'vfs-borrow' else 'network' if case.startswith('network') else 'storage'
             names=['kernel/src/main.rs',f'kernel/src/{module}.rs']
             with tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary)

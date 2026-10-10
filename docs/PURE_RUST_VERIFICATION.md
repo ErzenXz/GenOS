@@ -38,6 +38,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | CPU-local paging phases and observed-root bookkeeping | 7 |
 | Immutable boot-image publication | 5 |
 | Scoped current-process access | 7 |
+| Owned VFS rollback snapshot | 5 |
 | Non-waiting scoped network/storage cell | 7 |
 | Typed capability registry | 3 |
 | Request generation | 2 |
@@ -47,7 +48,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **85** |
+| **Total** | **90** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -64,6 +65,11 @@ unwind release, simultaneous host-thread contention and exclusive handoff of a
 Send-but-not-Sync value. The two additional compile-fail checks reject escaping
 borrows and sharing a cell containing a non-Send value. One interpreted schedule
 is evidence for those executions, not exhaustive concurrency qualification.
+
+The VFS snapshot addition exercises complete owned copies and mutation/restore
+ordering, full node/file capacity, snapshot reuse and independent owners. A
+separate compile-fail check denies escaping its immutable saved view. Actual
+persistent commit, quarantine and media behavior remain separate storage tests.
 
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an
