@@ -5,3 +5,4 @@ extern crate std;
 
 pub mod editor;
 pub mod parser;
+pub mod storage_status;

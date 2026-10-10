@@ -52,6 +52,9 @@ jobs:
           - name: elf-entry-data
             script: test_kernel_elf.py
             args: --case entry-data
+          - name: storage-create-failure
+            script: test_storage_startup.py
+            args: ''
           - name: memory-snapshot
             script: test_memory_snapshot.py
             args: ''
@@ -138,6 +141,7 @@ jobs:
             build/stack-guard-evidence/
             build/kernel-elf-evidence/
             build/memory-snapshot-evidence/
+            build/storage-startup-evidence/
             build/fault-containment-evidence/
           if-no-files-found: warn
           retention-days: 14

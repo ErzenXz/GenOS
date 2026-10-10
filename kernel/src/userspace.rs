@@ -1846,7 +1846,9 @@ impl ProcessManager {
                     crate::serial::trace::println("");
                     #[cfg(feature = "validation-boot")]
                     {
-                        if text.as_str() == "storage status visible" {
+                        if text.as_str() == "storage status visible"
+                            || text.as_str() == "storage write quarantine visible"
+                        {
                             crate::serial::trace::println("USER_STORAGE_STATUS_VISIBLE_OK");
                         }
                         if text.as_str() == "storage failure visible" {
@@ -1925,6 +1927,11 @@ impl ProcessManager {
                                 "USER_DURABLE_RESTORE_OK path=/USER/SHELL.TXT",
                             );
                             crate::serial::trace::println("USER_READ_ONLY_MUTATION_DENIED_OK");
+                        }
+                        if text.as_str() == "storage quarantine mutations denied" {
+                            crate::serial::trace::println(
+                                "USER_STORAGE_QUARANTINE_OK writes=denied namespace=denied ram=preserved",
+                            );
                         }
                         if text.as_str() == "storage unavailable mutations denied" {
                             crate::serial::trace::println(

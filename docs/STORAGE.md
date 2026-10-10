@@ -74,6 +74,22 @@ replacing `/STORAGE.STATUS` with the read-only diagnostic. Failed first-volume
 creation removes its unacknowledged seed files from RAM. Temporary session files
 remain readable.
 
+The validation shell accepts both complete quarantine records (`commit=not-published`
+and `commit=unknown`) separately from the short legacy read-only record. It checks
+persistent write/manage and namespace denial while keeping session RAM files
+readable. Quarantine may retain acknowledged files or leave a failed fresh volume
+empty; it does not imply a successfully created seed file. Unknown, incomplete or
+inconsistent diagnostic records are rejected. The report grants no authority.
+
+`python3 tools/test_storage_startup.py` archives clean committed source, injects
+one device write error in `AtaIo::write`, and runs the production serial-input
+validation with a fresh data image. Commit/quarantine logic and the shell are
+unchanged by the fixture. It requires exactly one ordered failure/quarantine,
+mutation-denial, RAM-readability and shell-ready proof, rejects durable success or
+faults, and retains the runner's image/source/environment hashes and fresh serial
+nonce in `build/storage-startup-evidence/`. This covers failed fresh-volume creation;
+it does not reproduce or fix the cause of a physical ATA timeout.
+
 There is no in-place reconciliation, retry, or unquarantine command. A fresh boot
 with a reset/quiescent device discards the old kernel cache, reads the slots again,
 and selects the highest valid generation. This can reveal a complete mutation
