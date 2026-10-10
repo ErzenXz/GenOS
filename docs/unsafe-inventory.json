@@ -5,7 +5,7 @@
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 296,
+    "unsafe_block": 289,
     "unsafe_extern": 7,
     "unsafe_fn": 72,
     "unsafe_impl": 2,
@@ -76,6 +76,11 @@
       "lines": 179,
       "path": "kernel/src/boot_cpu.rs",
       "sha256": "bc87640707880b1135f9b5419c83d27e2d82b6461292a68cc86e67b3566da4ee"
+    },
+    {
+      "lines": 135,
+      "path": "kernel/src/boot_image.rs",
+      "sha256": "a3d6fed6c590308b90150ea9176d6990919a69dd23602e46cf76a4db095073f0"
     },
     {
       "lines": 128,
@@ -208,14 +213,14 @@
       "sha256": "de208b2f6116d487e6c2a2b91416cf6b9b29689096b9a163dc482edeebbb17ba"
     },
     {
-      "lines": 79,
+      "lines": 80,
       "path": "kernel/src/lib.rs",
-      "sha256": "1d1f01c8bbe268f35ae6da64f8ddcd42439e83460cc5dfb02d12f47f06bf1022"
+      "sha256": "72541e327ee398710cb94eb3b611d41ba8e826609473693abe5f8184a1e3390a"
     },
     {
-      "lines": 289,
+      "lines": 292,
       "path": "kernel/src/main.rs",
-      "sha256": "56417bf2fd4a6c60cb810ea56730cd140a415863bd7e3c0b7e20d21cb861d731"
+      "sha256": "a03e26d675ac40e64ca31b79ccec586266d4b06186d61e3a6fb2c29f9fca2e5a"
     },
     {
       "lines": 256,
@@ -378,9 +383,9 @@
       "sha256": "c5adb0e63818be05e359ac41a697998440ad21db99479f143ad044914109e773"
     },
     {
-      "lines": 7445,
+      "lines": 7410,
       "path": "kernel/src/userspace.rs",
-      "sha256": "49b9aa851136a961ec51d4ff83e6e65cf722c27b0135b81928047dc06ec9395e"
+      "sha256": "b53cf7d63948a96ea9353876ee2e0e050fe834e7583c3d1952ec896e713dd5f9"
     },
     {
       "lines": 461,
@@ -1478,6 +1483,16 @@
       "path": "kernel/src/arch.rs"
     },
     {
+      "column": 14,
+      "construct_sha256": "83c799d01cbee6f57daf89c161a2fca8188addedf8aad6b9def0a43658a7b3c0",
+      "context": "        // AtomicPtr preserves its provenance, alignment and allocation identity,\n        // including the valid nonnull pointer of an empty slice. This shared\n        // reconstruction grants no mutable access and cannot outlive the input.\n        Some(unsafe { core::slice::from_raw_parts(pointer.cast_const(), length) })\n    }\n}\n",
+      "context_start_line": 55,
+      "end_line": 58,
+      "kind": "unsafe_block",
+      "line": 58,
+      "path": "kernel/src/boot_image.rs"
+    },
+    {
       "column": 9,
       "construct_sha256": "6814dc504a04b5ac4f97eba0f750bb967b263fd9d51cf9355b77e065abfb091c",
       "context": "    /// may create references. Assembly may access fields only outside those Rust\n    /// borrows. No external actor may mutate/free the object. The caller supplies\n    /// IRQ/emergency exclusion; it must not leave an access callback suspended.\n    pub unsafe fn run<R>(&self, object: NonNull<T>, run: impl FnOnce() -> R) -> Result<R, Error> {\n        self.current\n            .compare_exchange(\n                core::ptr::null_mut(),",
@@ -1971,60 +1986,60 @@
       "column": 9,
       "construct_sha256": "c310339d010c2c279dec79e3d8bdc635ba9247882638991d300a61bbe205ffc0",
       "context": "\n#[cfg(test)]\nmod arch {\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
-      "context_start_line": 50,
-      "end_line": 55,
+      "context_start_line": 51,
+      "end_line": 56,
       "kind": "unsafe_fn",
-      "line": 53,
+      "line": 54,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "17c7b12b790576fd937eb7f726ddfd58cd1f981940ec1fb7386e9d0084b8af7f",
       "context": "    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {",
-      "context_start_line": 53,
-      "end_line": 58,
+      "context_start_line": 54,
+      "end_line": 59,
       "kind": "unsafe_fn",
-      "line": 56,
+      "line": 57,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "3f568f289ddbf53aced0e01a8c08b8663d90f40db51a5e1be26743d1cdb1909d",
       "context": "    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {",
-      "context_start_line": 56,
-      "end_line": 61,
+      "context_start_line": 57,
+      "end_line": 62,
       "kind": "unsafe_fn",
-      "line": 59,
+      "line": 60,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "00dea65152448b96d0d5ddf452abeaf12431daf027379b4aebfe7ac7e715a65b",
       "context": "    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {",
-      "context_start_line": 59,
-      "end_line": 64,
+      "context_start_line": 60,
+      "end_line": 65,
       "kind": "unsafe_fn",
-      "line": 62,
+      "line": 63,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "1a6c18dc0212beeffb26ec78ecbc3d296d3fd9d71a685cb427653cb62ab59fa2",
       "context": "    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {",
-      "context_start_line": 62,
-      "end_line": 67,
+      "context_start_line": 63,
+      "end_line": 68,
       "kind": "unsafe_fn",
-      "line": 65,
+      "line": 66,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "238b04576c64e3b2b07a66a69a9a15c9f6c008fa62d62f5039892dedddb70d60",
       "context": "    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n}",
-      "context_start_line": 65,
-      "end_line": 70,
+      "context_start_line": 66,
+      "end_line": 71,
       "kind": "unsafe_fn",
-      "line": 68,
+      "line": 69,
       "path": "kernel/src/lib.rs"
     },
     {
@@ -3731,260 +3746,180 @@
       "column": 29,
       "construct_sha256": "fe3c67f2a642ca920ca0bd07db860e11290edecbd4538d33bf626ab8d5aff2ff",
       "context": "                    queued_send: status.queued_send as u64,\n                    queued_receive: status.queued_receive as u64,\n                };\n                let bytes = unsafe {\n                    core::slice::from_raw_parts(\n                        core::ptr::from_ref(&status).cast::<u8>(),\n                        core::mem::size_of::<UserSocketStatus>(),",
-      "context_start_line": 2297,
-      "end_line": 2305,
+      "context_start_line": 2295,
+      "end_line": 2303,
       "kind": "unsafe_block",
-      "line": 2300,
+      "line": 2298,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 33,
       "construct_sha256": "07ad3750ae8cfdfcd8d74d5633eae93dabb717364113fb540ec3957ec5ee45d2",
       "context": "                    entry.size = info.size;\n                    entry.name_length = name.len() as u64;\n                    entry.name[..name.len()].copy_from_slice(name);\n                    let bytes = unsafe {\n                        core::slice::from_raw_parts(\n                            core::ptr::addr_of!(entry).cast::<u8>(),\n                            core::mem::size_of::<UserDirectoryEntry>(),",
-      "context_start_line": 2884,
-      "end_line": 2892,
+      "context_start_line": 2882,
+      "end_line": 2890,
       "kind": "unsafe_block",
-      "line": 2887,
+      "line": 2885,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 21,
       "construct_sha256": "82861082af2167042927b49e242128a137b1a5a53421fc474865ec7f3a02a510",
       "context": "            return Err(LaunchError::InvalidResult);\n        }\n        let event = input.to_user_event();\n        let bytes = unsafe {\n            core::slice::from_raw_parts(\n                core::ptr::addr_of!(event).cast::<u8>(),\n                core::mem::size_of::<UserInputEvent>(),",
-      "context_start_line": 3492,
-      "end_line": 3500,
+      "context_start_line": 3490,
+      "end_line": 3498,
       "kind": "unsafe_block",
-      "line": 3495,
+      "line": 3493,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 25,
       "construct_sha256": "87ecc97ca918ce699cac443d5a424e743b596b96b2a0ca686a0db088eb2a22b5",
       "context": "                rights: capability.rights,\n            });\n        let copied = stat.is_some_and(|stat| {\n            let bytes = unsafe {\n                core::slice::from_raw_parts(\n                    core::ptr::addr_of!(stat).cast::<u8>(),\n                    core::mem::size_of::<UserFileStat>(),",
-      "context_start_line": 3763,
-      "end_line": 3771,
+      "context_start_line": 3761,
+      "end_line": 3769,
       "kind": "unsafe_block",
-      "line": 3766,
+      "line": 3764,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 5,
       "construct_sha256": "de56fdd1748a31c30f23e86806333e71337ff780ed7992d9ce519557739688b8",
       "context": "}\n\nfn user_process_status_bytes(status: &UserProcessStatus) -> &[u8] {\n    unsafe {\n        core::slice::from_raw_parts(\n            core::ptr::from_ref(status).cast::<u8>(),\n            core::mem::size_of::<UserProcessStatus>(),",
-      "context_start_line": 4670,
-      "end_line": 4678,
+      "context_start_line": 4668,
+      "end_line": 4676,
       "kind": "unsafe_block",
-      "line": 4673,
+      "line": 4671,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 1,
       "construct_sha256": "19bb8143efe69b8c060cc0c2487dc9f886d8d41d94fdea1c7b0827b2445fe798",
       "context": "    }\n}\n\nglobal_asm!(\n    r#\"\n    .global genos_enter_user_context\ngenos_enter_user_context:",
-      "context_start_line": 4678,
-      "end_line": 4878,
+      "context_start_line": 4676,
+      "end_line": 4876,
       "kind": "global_asm_macro",
-      "line": 4681,
+      "line": 4679,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 1,
       "construct_sha256": "3214e432fbac85df78c6596922775b49147fa215361c7ea050c1764bc8290b2e",
       "context": "    kernel_data = const 0x10,\n);\n\nunsafe extern \"C\" {\n    fn genos_enter_user_context(\n        context: *const UserContext,\n        xstate: *mut kernel::xstate::State,",
-      "context_start_line": 4877,
-      "end_line": 4887,
+      "context_start_line": 4875,
+      "end_line": 4885,
       "kind": "unsafe_extern",
-      "line": 4880,
+      "line": 4878,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 29,
       "construct_sha256": "7105bd854c1001e7f949bf6f9f55f225a21cc2eed5788df010c6b5e4ea23acdd",
       "context": "    fn genos_syscall_stub();\n}\n\npub fn syscall_handler() -> unsafe extern \"C\" fn() {\n    genos_syscall_stub\n}\n",
-      "context_start_line": 4886,
-      "end_line": 4891,
+      "context_start_line": 4884,
+      "end_line": 4889,
       "kind": "unsafe_fn",
-      "line": 4889,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "3778be22ee1e9688df18d3c4d82c9b89bd39ea7618c6ac9cad8814c1f0fae52a",
-      "context": "    // SAFETY: the claimed boot CPU calls this once before launching userspace.\n    // The initrd slice is immutable and lives for the entire boot. Interrupts\n    // cannot read these fields; ELF_READY publishes both values after writing.\n    unsafe {\n        core::ptr::addr_of_mut!(USER_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);\n        core::ptr::addr_of_mut!(USER_ELF_LENGTH).write(elf_bytes.len());\n    }",
-      "context_start_line": 4899,
-      "end_line": 4905,
-      "kind": "unsafe_block",
-      "line": 4902,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "8f8d547514b230bb3ce4d9aff1fafc33a06f2361e8bec330253ca5b27cd71547",
-      "context": "pub fn register_shell_elf(elf_bytes: &'static [u8]) {\n    // SAFETY: the claimed boot CPU registers this immutable, boot-lifetime\n    // initrd slice before any process manager reads or launches the shell.\n    unsafe {\n        core::ptr::addr_of_mut!(SHELL_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);\n        core::ptr::addr_of_mut!(SHELL_ELF_LENGTH).write(elf_bytes.len());\n    }",
-      "context_start_line": 5026,
-      "end_line": 5032,
-      "kind": "unsafe_block",
-      "line": 5029,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 19,
-      "construct_sha256": "f02343a9261ceb1783101c2dd060930fadd88b69fe172ed38c15868268194da1",
-      "context": "    }\n    // SAFETY: the boot CPU published this immutable, boot-lifetime slice once\n    // through ELF_READY; runtime readers never mutate or free its storage.\n    let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };\n    // SAFETY: published together with USER_ELF_ADDRESS, with the same lifetime.\n    let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };\n    if address == 0 || length == 0 {",
-      "context_start_line": 6228,
-      "end_line": 6231,
-      "kind": "unsafe_block",
-      "line": 6231,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 18,
-      "construct_sha256": "07e60d2c8baeff60fb9d5f1705a166d4606565b4fa850f6437f32c41f0d8e69a",
-      "context": "    // through ELF_READY; runtime readers never mutate or free its storage.\n    let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };\n    // SAFETY: published together with USER_ELF_ADDRESS, with the same lifetime.\n    let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };\n    if address == 0 || length == 0 {\n        return Err(LaunchError::ImageUnavailable);\n    }",
-      "context_start_line": 6230,
-      "end_line": 6233,
-      "kind": "unsafe_block",
-      "line": 6233,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 8,
-      "construct_sha256": "aa1d2bbde39642700b3647b338fa121f5b9f2455b5c995a4f3d1f4cc94d1a287",
-      "context": "        return Err(LaunchError::ImageUnavailable);\n    }\n    // SAFETY: these are the unchanged pointer and length of the registered slice.\n    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })\n}\n\nfn shell_elf() -> Result<&'static [u8], LaunchError> {",
-      "context_start_line": 6235,
-      "end_line": 6238,
-      "kind": "unsafe_block",
-      "line": 6238,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 19,
-      "construct_sha256": "5a622ca502a32556009c8275f2f8f95f8388fa555f9122484cf9517a255c5eba",
-      "context": "}\n\nfn shell_elf() -> Result<&'static [u8], LaunchError> {\n    let address = unsafe { *core::ptr::addr_of!(SHELL_ELF_ADDRESS) };\n    let length = unsafe { *core::ptr::addr_of!(SHELL_ELF_LENGTH) };\n    if address == 0 || length == 0 {\n        return Err(LaunchError::ImageUnavailable);",
-      "context_start_line": 6239,
-      "end_line": 6242,
-      "kind": "unsafe_block",
-      "line": 6242,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 18,
-      "construct_sha256": "acd67809c1e1f645abb1b541fc5e3924d12c7bb69b30dcec451446a02c5de749",
-      "context": "\nfn shell_elf() -> Result<&'static [u8], LaunchError> {\n    let address = unsafe { *core::ptr::addr_of!(SHELL_ELF_ADDRESS) };\n    let length = unsafe { *core::ptr::addr_of!(SHELL_ELF_LENGTH) };\n    if address == 0 || length == 0 {\n        return Err(LaunchError::ImageUnavailable);\n    }",
-      "context_start_line": 6240,
-      "end_line": 6243,
-      "kind": "unsafe_block",
-      "line": 6243,
-      "path": "kernel/src/userspace.rs"
-    },
-    {
-      "column": 8,
-      "construct_sha256": "aa1d2bbde39642700b3647b338fa121f5b9f2455b5c995a4f3d1f4cc94d1a287",
-      "context": "    if address == 0 || length == 0 {\n        return Err(LaunchError::ImageUnavailable);\n    }\n    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })\n}\n\nfn load_elf(",
-      "context_start_line": 6244,
-      "end_line": 6247,
-      "kind": "unsafe_block",
-      "line": 6247,
+      "line": 4887,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 13,
       "construct_sha256": "01b1e4d9a9b69276d7a79823069678f966923e414a8ccc27775c966ef3ad4ed5",
       "context": "            // inactive address space and has no published mapping, user, Rust\n            // reference or device alias. Copy precedes mapping publication.\n            // A later failure frees this leaf or destroys the partial root.\n            unsafe {\n                core::ptr::copy_nonoverlapping(\n                    page.file_bytes().as_ptr(),\n                    frame.address() as *mut u8,",
-      "context_start_line": 6260,
-      "end_line": 6269,
+      "context_start_line": 6225,
+      "end_line": 6234,
       "kind": "unsafe_block",
-      "line": 6263,
+      "line": 6228,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 17,
       "construct_sha256": "8cf459abc9a606b039474399786b252ac1ab049ae364809925ce81f334952799",
       "context": "            // SAFETY: mapping failed before publishing this new image-page\n            // grant. The constructor is its sole owner and has no live user.\n            assert!(\n                unsafe { memory::free_frame(frame) },\n                \"failed ELF map retained frame\"\n            );\n            return Err(ProcessBuildError::Paging);",
-      "context_start_line": 6280,
-      "end_line": 6283,
+      "context_start_line": 6245,
+      "end_line": 6248,
       "kind": "unsafe_block",
-      "line": 6283,
+      "line": 6248,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 17,
       "construct_sha256": "115ebd1bcaf880b808e28b54c5ca45bf4e8f857bbebb555b44443af5218371aa",
       "context": "            // SAFETY: this newly allocated stack page was never published;\n            // the failed constructor still owns it exclusively.\n            assert!(\n                unsafe { memory::free_frame(stack_frame) },\n                \"failed stack map retained frame\"\n            );\n            paging::destroy_user_address_space(space).expect(\"failed stack map reclaim failed\");",
-      "context_start_line": 6335,
-      "end_line": 6338,
+      "context_start_line": 6300,
+      "end_line": 6303,
       "kind": "unsafe_block",
-      "line": 6338,
+      "line": 6303,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 5,
       "construct_sha256": "fb1c5650af2e6917d10fd3e3b559e0bd2d20f8c56daef8699daf34a09679b931",
       "context": "    // those callbacks use the slot's checked, non-escaping mutable borrow. The\n    // assembly entry guard halts nested/emergency entries before another Rust\n    // callback. Root restoration precedes unpublication and IF restoration.\n    unsafe {\n        CURRENT_PROCESS.run(process_pointer, || {\n            paging::activate(space);\n            // All field pointers derive from the same original process pointer;",
-      "context_start_line": 6420,
-      "end_line": 6435,
+      "context_start_line": 6385,
+      "end_line": 6400,
       "kind": "unsafe_block",
-      "line": 6423,
+      "line": 6388,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 21,
       "construct_sha256": "9a85270d40a4be6774bae5de5a9b01e2b689b3ff81020e650597b14c0ccdf993",
       "context": "        // SAFETY: IRQ assembly owns the complete saved GPR/return frame on its\n        // disjoint TSS stack. Its borrow ends before assembly restores the frame;\n        // the current process lives in the suspended coordinator's storage.\n        let frame = unsafe { &mut *frame };\n        if !process.preemption_armed {\n            return false;\n        }",
-      "context_start_line": 6444,
-      "end_line": 6447,
+      "context_start_line": 6409,
+      "end_line": 6412,
       "kind": "unsafe_block",
-      "line": 6447,
+      "line": 6412,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 17,
       "construct_sha256": "9a85270d40a4be6774bae5de5a9b01e2b689b3ff81020e650597b14c0ccdf993",
       "context": "    // SAFETY: the interrupt gate owns this complete, aligned saved frame on the\n    // privilege stack. Entry ownership excludes nested Rust, and process storage\n    // is disjoint. The frame borrow ends before assembly restore/nonlocal exit.\n    let frame = unsafe { &mut *frame };\n    with_current_process(|process| dispatch_syscall(frame, process)).unwrap_or_else(|| {\n        crate::serial::trace::println(\"USER_PROCESS_MISSING\");\n        1",
-      "context_start_line": 6510,
-      "end_line": 6513,
+      "context_start_line": 6475,
+      "end_line": 6478,
       "kind": "unsafe_block",
-      "line": 6513,
+      "line": 6478,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 25,
       "construct_sha256": "9124d97c8c61e594c310c9638b19e1f6f785442ca9ec42d26b73f5e952a79530",
       "context": "                socket_buffer_capacity: USER_SOCKET_BUFFER_CAPACITY,\n                socket_status_size: core::mem::size_of::<UserSocketStatus>() as u64,\n            };\n            let bytes = unsafe {\n                core::slice::from_raw_parts(\n                    core::ptr::addr_of!(info).cast::<u8>(),\n                    core::mem::size_of::<UserSystemInfo>(),",
-      "context_start_line": 6628,
-      "end_line": 6636,
+      "context_start_line": 6593,
+      "end_line": 6601,
       "kind": "unsafe_block",
-      "line": 6631,
+      "line": 6596,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 33,
       "construct_sha256": "06631acf0a569978cd6bf44f89628a406b0b3a1d307bec8f67622797147db9a2",
       "context": "            });\n            frame.rax = result\n                .filter(|config| {\n                    let bytes = unsafe {\n                        core::slice::from_raw_parts(\n                            core::ptr::from_ref(config).cast::<u8>(),\n                            core::mem::size_of::<UserNetworkConfig>(),",
-      "context_start_line": 6804,
-      "end_line": 6812,
+      "context_start_line": 6769,
+      "end_line": 6777,
       "kind": "unsafe_block",
-      "line": 6807,
+      "line": 6772,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 5,
       "construct_sha256": "98384fcaf00edc724dae187ecd01b995ae500246c87f2fa8edb6d25c195c022a",
       "context": "    // entries. run_slice keeps the published process live and suspends its owner\n    // borrow; xstate assembly has finished before Rust and resumes after it.\n    // No callback switches context/enables IF or returns a process reference.\n    unsafe { CURRENT_PROCESS.with_current(access) }.unwrap_or_else(|_| {\n        crate::serial::println(\"CPU_LOCAL_ACCESS_REJECTED policy=halt\");\n        arch::halt_loop();\n    })",
-      "context_start_line": 7212,
-      "end_line": 7215,
+      "context_start_line": 7177,
+      "end_line": 7180,
       "kind": "unsafe_block",
-      "line": 7215,
+      "line": 7180,
       "path": "kernel/src/userspace.rs"
     },
     {
       "column": 5,
       "construct_sha256": "3e9a5561a7918f56cd09f3ed60eba0c18c94fb637e82c0325eac5579331a2f0a",
       "context": "}\n\nfn channel_message_bytes(message: &UserChannelMessage) -> &[u8] {\n    unsafe {\n        core::slice::from_raw_parts(\n            core::ptr::from_ref(message).cast::<u8>(),\n            core::mem::size_of::<UserChannelMessage>(),",
-      "context_start_line": 7349,
-      "end_line": 7357,
+      "context_start_line": 7314,
+      "end_line": 7322,
       "kind": "unsafe_block",
-      "line": 7352,
+      "line": 7317,
       "path": "kernel/src/userspace.rs"
     },
     {

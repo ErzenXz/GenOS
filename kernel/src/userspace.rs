@@ -70,7 +70,6 @@ const ENDPOINT_QUEUE_CAPACITY: usize = USER_ENDPOINT_QUEUE_CAPACITY;
 pub const MAX_ASYNC_PROCESSES: usize = 4;
 
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
-static ELF_READY: AtomicBool = AtomicBool::new(false);
 static CONTEXT_PASSED: AtomicBool = AtomicBool::new(false);
 static COPY_OUT_PASSED: AtomicBool = AtomicBool::new(false);
 static PING_COUNT: AtomicU8 = AtomicU8::new(0);
@@ -99,10 +98,9 @@ static NEXT_DYNAMIC_PID: AtomicU8 = AtomicU8::new(4);
 static NEXT_CONSOLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_LIFECYCLE_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_PROCESS_HANDLE_GENERATION: AtomicU64 = AtomicU64::new(1);
-static mut USER_ELF_ADDRESS: u64 = 0;
-static mut USER_ELF_LENGTH: usize = 0;
-static mut SHELL_ELF_ADDRESS: u64 = 0;
-static mut SHELL_ELF_LENGTH: usize = 0;
+// Immutable boot-lifetime slices; replacement is rejected after publication.
+static INIT_IMAGE: kernel::boot_image::ImageSlot = kernel::boot_image::ImageSlot::new();
+static SHELL_IMAGE: kernel::boot_image::ImageSlot = kernel::boot_image::ImageSlot::new();
 // The admitted BSP owns publication; callbacks may borrow only with IF clear.
 static CURRENT_PROCESS: ContextSlot<UserProcess> = ContextSlot::new();
 
@@ -4893,18 +4891,7 @@ pub fn syscall_handler() -> unsafe extern "C" fn() {
 /// Register the immutable initrd image independently of the validation suite.
 /// Actual launches still perform all ELF layout, mapping, and ownership checks.
 pub fn register_init_elf(elf_bytes: &'static [u8]) -> bool {
-    if ImagePlan::parse(elf_bytes).is_err() || ELF_READY.load(Ordering::Acquire) {
-        return false;
-    }
-    // SAFETY: the claimed boot CPU calls this once before launching userspace.
-    // The initrd slice is immutable and lives for the entire boot. Interrupts
-    // cannot read these fields; ELF_READY publishes both values after writing.
-    unsafe {
-        core::ptr::addr_of_mut!(USER_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
-        core::ptr::addr_of_mut!(USER_ELF_LENGTH).write(elf_bytes.len());
-    }
-    ELF_READY.store(true, Ordering::Release);
-    true
+    ImagePlan::parse(elf_bytes).is_ok() && INIT_IMAGE.publish(elf_bytes).is_ok()
 }
 
 pub fn run_probe(elf_bytes: &'static [u8]) {
@@ -5023,13 +5010,8 @@ pub fn run_probe(elf_bytes: &'static [u8]) {
     }
 }
 
-pub fn register_shell_elf(elf_bytes: &'static [u8]) {
-    // SAFETY: the claimed boot CPU registers this immutable, boot-lifetime
-    // initrd slice before any process manager reads or launches the shell.
-    unsafe {
-        core::ptr::addr_of_mut!(SHELL_ELF_ADDRESS).write(elf_bytes.as_ptr() as u64);
-        core::ptr::addr_of_mut!(SHELL_ELF_LENGTH).write(elf_bytes.len());
-    }
+pub fn register_shell_elf(elf_bytes: &'static [u8]) -> bool {
+    ImagePlan::parse(elf_bytes).is_ok() && SHELL_IMAGE.publish(elf_bytes).is_ok()
 }
 
 #[allow(dead_code)]
@@ -6223,28 +6205,11 @@ fn run_supervisor_cleanup_case(state: ManagedState, owner_task: u32, child_task:
 }
 
 fn user_elf() -> Result<&'static [u8], LaunchError> {
-    if !ELF_READY.load(Ordering::Acquire) {
-        return Err(LaunchError::ImageUnavailable);
-    }
-    // SAFETY: the boot CPU published this immutable, boot-lifetime slice once
-    // through ELF_READY; runtime readers never mutate or free its storage.
-    let address = unsafe { *core::ptr::addr_of!(USER_ELF_ADDRESS) };
-    // SAFETY: published together with USER_ELF_ADDRESS, with the same lifetime.
-    let length = unsafe { *core::ptr::addr_of!(USER_ELF_LENGTH) };
-    if address == 0 || length == 0 {
-        return Err(LaunchError::ImageUnavailable);
-    }
-    // SAFETY: these are the unchanged pointer and length of the registered slice.
-    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
+    INIT_IMAGE.get().ok_or(LaunchError::ImageUnavailable)
 }
 
 fn shell_elf() -> Result<&'static [u8], LaunchError> {
-    let address = unsafe { *core::ptr::addr_of!(SHELL_ELF_ADDRESS) };
-    let length = unsafe { *core::ptr::addr_of!(SHELL_ELF_LENGTH) };
-    if address == 0 || length == 0 {
-        return Err(LaunchError::ImageUnavailable);
-    }
-    Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
+    SHELL_IMAGE.get().ok_or(LaunchError::ImageUnavailable)
 }
 
 fn load_elf(

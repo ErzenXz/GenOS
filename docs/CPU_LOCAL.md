@@ -39,6 +39,7 @@ entry halts and provides no recoverable unwinding promise.
 
 | Object | Owner and lifetime | Exclusion and retirement |
 | --- | --- | --- |
+| `INIT_IMAGE` / `SHELL_IMAGE` | Boot publisher, then immutable boot-lifetime bytes | One atomic publication; no replacement, mutable borrow or integer pointer reconstruction |
 | `CURRENT_PROCESS` binding | One admitted BSP; per-slice publication | Owner reference suspended; kernel root restored before publication clears; IF restored last |
 | Slot access flag | One synchronous entry callback | Set before dereference; nested access denied; private scope guard releases before assembly resumes |
 | `UserProcess` fields | Coordinator outside a slice; scoped entry borrow during a slice | No owner access while published; reclaim occurs only after leaving the slice |
@@ -55,7 +56,7 @@ Rust callbacks. The complete unsafe inventory still needs its wider caller audit
 Before SMP, each admitted CPU needs its own slot plus scheduler, active-root,
 interrupt-local state and independently reviewed synchronization. The current
 slot is a reusable boundary for that work, not a second-CPU implementation.
-Boot image pointers, other coordinator/device globals, assembly return pointers,
+Other coordinator/device globals, assembly return pointers,
 lock order and masked-duration qualification remain open. See
 [SINGLE_CORE.md](SINGLE_CORE.md), [FAULT_CONTAINMENT.md](FAULT_CONTAINMENT.md) and
 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md).
@@ -75,3 +76,28 @@ entry guard intact. The evidence requires one ordered window and exact denial,
 no second callback, CPU exception, continued boot, reset or stopped VM. The new
 independent CI lane is required by the versioned branch-protection contract.
 Exact executed commits/results are in [VERIFICATION.md](VERIFICATION.md).
+
+## Immutable boot images
+
+`kernel::boot_image::ImageSlot` replaces both raw image address/length pairs.
+Only immutable `&'static [u8]` inputs can be published. A single atomic claimant
+writes the length, then releases the original pointer; an acquiring reader sees
+both fields from the same slice. The claimant never resets, so neither replacement
+nor a competing publisher can alter a published image. Readers never wait: an
+incomplete publication remains unavailable. Pointer provenance is preserved through
+`AtomicPtr`, with one documented shared-slice reconstruction and no integer casts
+or new unsafe `Send`/`Sync` implementation.
+
+Both INIT and shell registration validate the complete native plan before
+publication and reject a second registration. Boot rejects an invalid or already
+registered shell before launching processes. Each launch still validates admission
+and retains its existing mapping/cleanup checks. The interface does not grant
+executable authority or expand the accepted image layout. Original initrd storage
+must remain immutable and live throughout the boot, as required by the loader's
+handoff; this is not a DMA/IOMMU guarantee.
+
+Five host tests cover absence, original slice identity, replacement denial, empty
+publication and competing publishers with different slice lengths. A compile-fail
+doctest rejects temporary input. These tests are selected for strict-provenance
+Miri; the concurrent test exercises its recorded schedule, not every possible
+interleaving. This narrows F4.1/F4.2 without closing the wider mutable-state audit.
