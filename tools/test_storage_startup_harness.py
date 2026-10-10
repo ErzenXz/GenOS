@@ -6,12 +6,20 @@ import unittest
 from test_storage_startup import PROOFS, WRITE, FAIL_WRITE, checkout_archive, patch_fixture, validate_log
 
 
+def valid_log():
+    early = []
+    for pid, vector, error, cr2 in [(1, 14, 6, 0x40000000b000), (122, 16, 0, 0), (122, 16, 0, 0)]:
+        early.append(f"EXCEPTION_FRAME vector={vector} cpl=3 error=0x{error:x} rip=0x400000001140 cs=0x33 rflags=0x10246 rsp=0x400000010000 ss=0x2b cr2=0x{cr2:x}")
+        early.append(f"USER_FAULT_TERMINATED pid={pid} vector={vector} error=0x{error:x} rip=0x400000001140 cr2=0x{cr2:x}")
+    return "\n".join([PROOFS[0], *early, *PROOFS[1:]]) + "\n"
+
+
 class StorageStartupHarnessTests(unittest.TestCase):
     def test_exact_ordered_proof(self):
-        validate_log("\n".join(PROOFS) + "\n")
+        validate_log(valid_log())
 
     def test_missing_duplicate_embedded_and_reordered_proofs_fail(self):
-        good = "\n".join(PROOFS) + "\n"
+        good = valid_log()
         for line in PROOFS:
             for bad in [good.replace(line + "\n", ""), good + line + "\n",
                         good.replace(line, "prefix " + line),
@@ -21,7 +29,7 @@ class StorageStartupHarnessTests(unittest.TestCase):
                         validate_log(bad)
 
     def test_false_acknowledgment_and_faults_fail(self):
-        good = "\n".join(PROOFS) + "\n"
+        good = valid_log()
         for forbidden in ["PERSISTENT_STORAGE_CREATED", "PERSISTENT_STORAGE_RESTORED",
                           "USER_STORAGE_FILE_COMMITTED", "USER_STORAGE_FILE_RESTORED",
                           "EXCEPTION_FRAME", "USER_FAULT_TERMINATED", "KERNEL PANIC",
@@ -29,6 +37,16 @@ class StorageStartupHarnessTests(unittest.TestCase):
                           "userspace lifecycle error"]:
             with self.subTest(forbidden=forbidden), self.assertRaises(ValueError):
                 validate_log(good + forbidden + "\n")
+
+    def test_only_exact_expected_cpu_probes_may_precede_storage_injection(self):
+        good = valid_log()
+        frame = next(line for line in good.splitlines() if line.startswith("EXCEPTION_FRAME"))
+        for bad in [good.replace("cpl=3", "cpl=0", 1), good.replace("vector=14", "vector=13", 1),
+                    good.replace("pid=1 ", "pid=2 ", 1), good.replace("rip=0x400000001140", "rip=0x1", 1),
+                    good.replace(frame + "\n", "", 1), good + frame + "\n",
+                    good.replace(frame + "\n", "", 1) + frame + "\n"]:
+            with self.subTest(log=bad), self.assertRaises(ValueError):
+                validate_log(bad)
 
     def test_disposable_checkout_preserves_commit_identity_and_archived_content(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -21,7 +21,7 @@ import tarfile
 import tempfile
 import time
 
-from test_exception_entry import firmware_path, replace_once, require_clean_source
+from test_exception_entry import FRAME, firmware_path, replace_once, require_clean_source
 from reference_vm import environment
 
 WRITE = """    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
@@ -55,6 +55,31 @@ def patch_fixture(root: Path) -> str:
         fromfile="a/kernel/src/storage.rs", tofile="b/kernel/src/storage.rs"))
 
 
+def validate_initial_faults(lines: list[str]) -> None:
+    frames = [(index, FRAME.fullmatch(line)) for index, line in enumerate(lines) if "EXCEPTION_FRAME" in line]
+    terminated = [(index, line) for index, line in enumerate(lines) if "USER_FAULT_TERMINATED" in line]
+    if len(frames) != 3 or len(terminated) != 3:
+        raise ValueError("validation boot must have exactly its three deliberate CPU faults")
+    armed = lines.index("STORAGE_CREATE_WRITE_FAILURE_ARMED")
+    previous = -1
+    for (frame_index, match), (exit_index, record), (pid, vector, error, cr2) in zip(
+        frames, terminated, [(1, 14, 6, 0x40000000b000), (122, 16, 0, 0), (122, 16, 0, 0)]
+    ):
+        if match is None:
+            raise ValueError("malformed CPU validation frame")
+        fields = match.groups()
+        values = [int(field, 10 if index < 2 else 16) for index, field in enumerate(fields)]
+        v, cpl, err, rip, cs, flags, rsp, ss, address = values
+        expected = f"USER_FAULT_TERMINATED pid={pid} vector={vector} error=0x{error:x} rip=0x{rip:x} cr2=0x{cr2:x}"
+        if (v, cpl, err, cs, ss, address) != (vector, 3, error, 0x33, 0x2b, cr2) or record != expected:
+            raise ValueError("unexpected CPU validation fault identity")
+        if not 0x400000001000 <= rip < 0x400000009000 or not 0x40000000c000 <= rsp <= 0x400000010000:
+            raise ValueError("CPU validation fault outside native code/stack")
+        if not previous < frame_index < exit_index < armed:
+            raise ValueError("CPU validation fault duplicated, reordered or after storage injection")
+        previous = exit_index
+
+
 def validate_log(log: str) -> None:
     lines = log.replace("\r", "").splitlines()
     runtime = [line for line in lines if "HEADLESS_RUNTIME_OK" in line]
@@ -63,15 +88,18 @@ def validate_log(log: str) -> None:
     proofs = [runtime[0] if marker.startswith("HEADLESS_RUNTIME_OK") else marker for marker in PROOFS]
     if any(lines.count(marker) != 1 for marker in proofs):
         raise ValueError("missing, embedded or duplicated startup quarantine proof")
+    validate_initial_faults(lines)
     positions = [lines.index(marker) for marker in proofs]
     if positions != sorted(positions):
         raise ValueError("startup quarantine proof out of order")
     for forbidden in ("PERSISTENT_STORAGE_CREATED", "PERSISTENT_STORAGE_RESTORED",
                       "USER_STORAGE_FILE_COMMITTED", "USER_STORAGE_FILE_RESTORED",
-                      "EXCEPTION_FRAME", "USER_FAULT", "KERNEL PANIC", "BOOTLOADER_PANIC",
+                      "KERNEL PANIC", "BOOTLOADER_PANIC",
                       "RECOVERY_CONSOLE_READY", "_FAILED", "userspace lifecycle error"):
         if any(forbidden in line for line in lines):
             raise ValueError(f"startup quarantine escaped or falsely acknowledged storage: {forbidden}")
+    if any("EXCEPTION" in line or "USER_FAULT" in line for line in lines[lines.index("STORAGE_CREATE_WRITE_FAILURE_ARMED"):]):
+        raise ValueError("fault after storage injection")
 
 
 def checkout_archive(source: Path, root: Path, commit: str, archive: bytes) -> None:
