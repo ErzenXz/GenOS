@@ -25,6 +25,8 @@ media outcomes and fresh-boot recovery policy remain unchanged.
 
 The scope preserves caller IF and does not wait. Reentry is refused before value
 access, disables IRQs, prints `VFS_TRANSACTION_REJECTED policy=halt`, then halts.
+The acquisition order is rollback snapshot then storage; the restore callback
+uses its already-borrowed snapshot and never reacquires either scope.
 Ordinary IRQ handlers never enter runtime VFS mutation or storage; no kernel
 thread switch occurs within the callback. Emergency entries remain fatal and
 must not access this Rust state. This does not establish SMP, device retirement,

@@ -1445,3 +1445,85 @@ remain enforced; the remote ATA timeout's underlying cause remains unresolved.
 Complete ownership/decomposition, IRQ timing and nesting, CPU/reference
 qualification, independent review, sustained workloads and later roadmap work
 remain open. Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged.
+
+## October 11 persistent VFS transaction ownership
+
+`ac22cd8fd3b256083e47757164a0aa3e61136e16` replaces the runtime's raw rollback
+copies with a permanent owned `VfsSnapshot` in the existing `ScopedCell`.
+One borrow covers capture, RAM mutation, commit, any restore and failure-status
+publication. All five mutation paths use `mutate_vfs`; no separately callable raw
+capture/restore functions remain. Higher-ranked callbacks cannot return either
+view; safe array/metadata copies replace two unsafe blocks. Mutation errors restore
+the prior view and skip storage. Storage failures still restore before publishing
+quarantine status, with no later runtime restore to erase it. No heap allocation,
+ABI, VFS limits, media format or device semantics changed. See
+[VFS transactions](VFS_TRANSACTIONS.md) for caller, ordering and failure obligations.
+
+The reviewed lexical inventory records **399 sites across 103 sources**, with
+no new unsafe construct or Send/Sync implementation. The permanent buffer avoids
+another full VFS field in each runtime owner. IRQs remain available; ordinary IRQ
+handlers do not access the rollback state, and emergency Rust reentry remains
+forbidden. Wider ownership, lock order, DMA, SMP and latency qualification remain
+open in F4/F5.
+
+- **336 workspace unit tests**, **five compile-fail doctests**, **135 Python tests**
+  and strict kernel host/normal/validation target lint passed. Logs remain at
+  `build/vfs-rollback-host-final.log`, `build/vfs-rollback-python-tests.log`,
+  `build/vfs-rollback-host-clippy-final.log`, `build/vfs-rollback-target-clippy.log`
+  and `build/vfs-rollback-validation-clippy.log`.
+- Five pure snapshot tests cover capture/mutation order, complete full-capacity
+  restore, latest acknowledged state, independent owners and post-restore status.
+  The existing production storage fault matrix now routes all **176** before/after
+  write/flush failures through the actual snapshot and safe restore callback,
+  retaining prior RAM/media/quarantine/no-I/O assertions and adding exact
+  not-published/unknown status checks. This is the existing bounded simulated disk
+  matrix, not physical-device fault qualification.
+- The live `vfs-borrow` software fixture passed on clean `ac22cd8`, at
+  `build/coordinator-access-evidence/1791673824237696000/vfs-borrow/manifest.json`.
+  It holds a real snapshot callback while reentering the production rollback
+  adapter and requires `VFS_TRANSACTION_REJECTED policy=halt` without continuation,
+  fault, reset, VM exit or stopped status. The original paused-start/raw-QMP runner
+  and exact serial contract are reused. It does not inject a CPU or device fault.
+- Pinned strict-provenance Miri passed all **90 selected tests**, including the
+  five new snapshot cases, and native allocator stress passed on clean `ac22cd8`.
+  Complete source/archive/toolchain, commands, deadlines and module log hashes
+  remain at `build/pure-rust-evidence/1791673824237644000/manifest.json`.
+  Privileged CPU/device operations remain outside the interpreter scope; one
+  fixed seed is not exhaustive concurrency exploration. The unchanged bounded
+  ownership-model lane was not rerun.
+- The complete system suite passed all **eighteen** manifests on clean `ac22cd8`:
+  storage creation/restore/read-only/recovery/failure, serial, network/no-HTTP,
+  external SDK, memory preflight/ten allocation cutoffs, six actual protection
+  probes and normal debug/release process/file workflows. Source remained clean
+  and unchanged throughout. Paths/hashes are indexed in
+  `build/ac22cd8-system-evidence-index.json`; output remains at
+  `build/vfs-rollback-system-tests.log`. A final check verified source/status and
+  hashes for these manifests, the live VFS fixture and all interpreted logs.
+
+The independent VFS transaction lane raises the versioned contract and main
+protection to **74 required GitHub Actions app-bound checks**. Fresh readback
+compares every other field exactly, normalizing only context/check array order.
+Before/request/response/after records and hashes remain at
+`build/ci-policy-evidence/vfs-rollback-policy-1791674128862651000/`.
+
+The previous published head `3f6ba38dfc381aaebe8c3a29e934f6836fcad3f7` completed
+all **73 then-required checks: 69 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38093785138) passed every
+job, including the complete remote system suite. All four coordinator refusal
+jobs and the production storage-create-failure regression passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38093785145).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38093785153)
+still failed. Retained artifacts remain under `build/remote-evidence/3f6ba38/`,
+with paths/hashes indexed in `evidence-index.json`. The historical exact-head
+policy/execution audit at `build/ci-policy-evidence/3f6ba38-final-audit/` records
+73 completed checks and does not certify green verification. Required-success
+replay fails at `build/ci-policy-evidence/3f6ba38-required-success/`. Both predate
+the 74-check upgrade; the VFS change needs separate remote execution.
+
+Local QEMU 11.1.2 and retained firmware identity remain portability evidence
+against the unchanged frozen 11.1.1 profile. The four strict CPU requirements
+remain enforced, and the remote ATA timeout's underlying cause is unresolved.
+Complete ownership/decomposition, IRQ timing/nesting, CPU/reference qualification,
+independent review, sustained workloads and later roadmap work remain open.
+Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged.
