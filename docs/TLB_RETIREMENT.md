@@ -9,6 +9,11 @@ covers the hardware root change and active-root bookkeeping together. This is a
 deliberately conservative use of the [Intel SDM's invalidation rules, section
 4.10.4.1](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
+The permanent/active-root and bootstrap-sealed metadata now use a
+[CPU-local interface](CPU_LOCAL.md#cpu-local-address-space-bookkeeping). A failed
+post-switch readback halts with IF clear before publishing metadata or reclaiming
+anything; it does not promise to undo an unknown hardware change.
+
 The retirement obligations are:
 
 | Operation | Required ordering |
@@ -16,7 +21,7 @@ The retirement obligations are:
 | Bootstrap supervisor restriction/split | Finish all initialized child entries before publishing their parent; invalidate the affected leaf, then reload CR3 before runtime admission |
 | Seal a user frame's supervisor alias | Clear alias write authority and INVLPG its address before publishing the user leaf |
 | Construct a user mapping | Require a live inactive root; new tables are private, with no retained translations; rollback unlinks new edges before release |
-| Switch away | Reload CR3 and update active-root bookkeeping in one IRQ-masked section |
+| Switch away | Admit the live root, reload CR3, verify its exact hardware readback, then publish CPU-local active-root metadata in one IRQ-masked section |
 | Destroy a user space | Reject active/stale roots, validate ownership, unlink each entry, restore only its now-retired supervisor alias, retire its exact ledger pin, scrub and free |
 | Guard page | Remove its bootstrap identity leaf, INVLPG, and verify absence; reserved backing never enters the free allocator |
 

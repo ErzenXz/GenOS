@@ -84,6 +84,10 @@
       "app_id": 15368
     },
     {
+      "context": "Foundation active-root-observation",
+      "app_id": 15368
+    },
+    {
       "context": "Foundation boot-stack-guard",
       "app_id": 15368
     },
