@@ -34,6 +34,8 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| Immutable boot-image publication | 5 |
+| Scoped current-process access | 7 |
 | Typed capability registry | 3 |
 | Request generation | 2 |
 | Canonical path policy and VFS use | 3 |
@@ -42,7 +44,13 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **53** |
+| **Total** | **65** |
+
+The October 10 scope additions exercise current-process publication/borrow
+retirement and immutable image publication, including pointer provenance and
+competing image publishers. The latter runs the recorded interpreter schedule;
+it is not exhaustive concurrency exploration. Compile-fail lifetime/borrow tests
+run separately in the normal workspace test lane.
 
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an
