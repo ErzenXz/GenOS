@@ -82,7 +82,7 @@ own implementation decision and tests.
 | Network | Modern VirtIO/MSI-X, IPv4, bounded concurrent TCP, socket waits and fault tests | General Internet TCP behavior, multi-process fairness at scale, arbitrary streams or secure traffic |
 | IPv6 | SLAAC, DAD, neighbor/control parsing and router echo in the reference network | IPv6 application sockets, AAAA, IPv6-only boot or complete host conformance |
 | SDK | A separately built native ELF executes and is reclaimed; ABI mismatch handling exists | General named launch, packages or a maintained ABI/SDK compatibility promise |
-| Verification | Host tests, parser CLI/mutation tests, scoped QEMU suites, negative harness tests and retained per-run evidence | New remote CI runs, 1000-boot evidence, sustained qualification, whole-kernel verification or real-hardware support |
+| Verification | Host tests, parser CLI/mutation tests, scoped QEMU suites, negative harness tests and retained per-run evidence | All-green candidate CI, 1000-boot evidence, sustained qualification, whole-kernel verification or real-hardware support |
 
 Evidence, test totals and exact commits: [VERIFICATION.md](docs/VERIFICATION.md).
 The September 8 research refresh was documentation-only; September 22 records
@@ -214,7 +214,7 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 
 ### F4 — Kernel ownership and decomposition
 
-**Owner:** each subsystem maintainer. **Status:** endpoint/path seams extracted; wider decomposition open.
+**Owner:** each subsystem maintainer. **Status:** endpoint/path, CPU/scheduler and native image admission seams extracted; wider decomposition open.
 
 - [x] Endpoint authority and canonical pathname policy execute in host-tested modules; a lexical unsafe/assembly inventory retains source context.
 - [ ] **F4.1:** split process state, CPU context, scheduler policy, ELF loading, user-copy, lifecycle, syscalls and remaining typed handles into modules with clear failure/cleanup interfaces.
