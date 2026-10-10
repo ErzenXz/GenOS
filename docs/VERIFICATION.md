@@ -1085,3 +1085,90 @@ of its published head must be evaluated separately. Local QEMU 11.1.2/firmware
 identity and mismatched reference status remain explicit. No pinned-reference,
 independent-review, general SMP, complete F4/F5 or release qualification is
 claimed. Roadmap remains **51/100**, Experimental, and PR #9 stays draft/unmerged.
+
+## October 11 CPU-local paging publication and refusal
+
+`d451c63efaaa1e8e6dd2d66a979197f220a0db06` replaces three raw paging globals
+with `cpu_paging::CpuPaging`. Initialization publishes a complete permanent/active
+root pair only after checking the actual CR3. Bootstrap and sealed phases are
+irreversible; bootstrap mapping/guard edits close when sealing succeeds, and
+private root admission requires sealing. Every root activation retains the live
+grant and interrupt exclusion checks, validates admission before MOV CR3, and
+checks the resulting CR3 before publishing the active root. A refused observation
+halts with IF clear before dispatch, reclamation or interrupt restoration.
+
+The host module contains no unsafe code and grants no page-table authority. Its
+seven tests cover initialization, competing publishers, permanent-root identity,
+phase boundaries, invalid roots, mismatched observations and repeated switching.
+The competing-publisher case covers its recorded schedule, not every interleaving.
+The adapter still requires one owning CPU and excludes NMI/emergency mutation;
+this does not establish SMP support. Eight former unsafe blocks were removed.
+The reviewed lexical inventory now records **439 sites across 100 source files**.
+
+- **318 workspace unit tests**, **two compile-fail doctests**, strict kernel
+  host/normal/validation target lint and the complete system suite passed on clean
+  `d451c63`. All **eighteen** per-run system manifests are indexed with hashes in
+  `build/d451c63-system-evidence-index.json`; combined output is retained in
+  `build/cpu-paging-system-tests.log`. The campaign includes storage creation,
+  restore, read-only/recovery/failure, serial, network/no-HTTP, external SDK,
+  construction preflight and ten allocation cutoffs, all six protection probes,
+  and normal debug/release process/file workflows. Source remained unchanged
+  during the campaign.
+- Pinned strict-provenance Miri passed **72 selected tests**, including all seven
+  paging-state tests, on clean `d451c63`. Native allocator stress also passed.
+  Exact source/archive, toolchain, commands, per-module counts and hashes remain
+  at `build/pure-rust-evidence/1791670144159484000/manifest.json`. The separate
+  ownership-model lane was unchanged and was not rerun.
+- **120 Python tests** pass after the refusal-oracle refinement in
+  `28da1b84235c166105686a0287c8473a74631b92` (119 before that refinement).
+  Logs are `build/cpu-paging-host-tests.log`,
+  `build/cpu-paging-python-tests-final.log` and
+  `build/cpu-paging-*-clippy.log`. No Rust source changed after `d451c63`.
+
+The new disposable active-root fixture passed first on clean `d451c63`, with
+manifest `build/cpu-paging-evidence/1791670144159483000/manifest.json`, and again
+with the stricter oracle on clean `28da1b8`, with manifest
+`build/cpu-paging-evidence/1791670507348493000/manifest.json`. It changes only the
+observation supplied to the production publisher after a real private CR3
+activation. Actual CR3 must equal the target; the injected observation differs
+by exactly one page, and the previous root must differ from the target. The
+only accepted serial tail after arming is the exact hardware-mismatch halt
+record. Partial preemption, syscall, exit, image launch or other continuation
+fails. QMP subscribes before starting the paused VM and retains raw commands and
+messages; exactly one resume and a final running status are required, and reset,
+shutdown, stop, watchdog and guest-panic events fail. Buffered messages and guest
+exit are checked again after the final status. This demonstrates software refusal
+of a falsified observation after real activation, not a hardware CR3 failure or
+CPU exception qualification.
+
+The production fresh-volume write-failure regression also passed on clean
+`28da1b8`: `build/storage-startup-evidence/1791670507345838000/manifest.json`.
+It retains sticky not-published quarantine, denied persistent mutations,
+readable session RAM and responsive Ring 3 shell under the existing nonce and
+deadline contract. The underlying remote ATA timeout cause remains unresolved.
+
+The independent `Foundation active-root-observation` lane raises the versioned
+required-check contract to **63**. Main branch protection was updated and read
+back with every other policy field preserved; before/request/response/after
+records and hashes remain in
+`build/ci-policy-evidence/cpu-paging-policy-1791670145255164000/`.
+
+The previous published head `1e07788701bca9175d505939ccbfa827a1250f0f` completed
+all **62 then-required checks: 58 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38089505340) passed every
+job, including the complete remote build/boot suite. Scoped-borrow and
+fresh-volume failure passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38089505312),
+while strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38089505320)
+qualification failed. Artifacts remain under `build/remote-evidence/1e07788/`.
+The retained read-only audit at `build/ci-policy-evidence/1e07788-final-audit/`
+uses that head's historical 62-check contract and verifies policy/execution,
+not green verification. It predates the 63-check policy update; the new head's
+remote execution must be evaluated separately.
+
+Local QEMU 11.1.2 has the retained firmware identity but differs from the frozen
+11.1.1 reference profile. These manifests explicitly record that portability
+mismatch. No reference profile, strict CPU requirement or release level was
+relaxed. Complete F4/F5, independent review, CPU qualification and later roadmap
+work remain open: **51/100**, Experimental, with PR #9 draft/unmerged.
