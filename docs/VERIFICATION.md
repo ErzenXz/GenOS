@@ -1619,3 +1619,83 @@ Complete ownership/decomposition, IRQ timing/nesting, CPU/reference qualificatio
 independent review, sustained workloads, actual graphics and later platform work
 remain open. The underlying remote ATA timeout remains unresolved. Roadmap stays
 **51/100**, Experimental; PR #9 remains draft/unmerged.
+
+## October 11 VirtIO TX timeout and completion ownership
+
+`899624252d3269e0af0a0d99d42f7c5187297c59` fixes reuse of the single permanent
+TX DMA buffer after an uncertain publication. The old driver returned false on
+its polling deadline, then let the next send rewrite the same buffer/descriptor
+without observing completion. It also accepted any changed used index. A new
+production `TxQueue` tracks one in-flight descriptor, requires exactly one
+wrapping used-index advance with ID zero, and makes timeout/malformed completion
+quarantine irreversible for that instance. Reservation precedes every TX buffer
+write. Further TX/RX calls return before mutation or notification; even a late
+valid completion cannot authorize reuse. Rejected completions leave the owned
+used counter and successful-TX metrics unchanged. Healthy queue layout, capacity,
+interrupt/coordinator ordering, ABI, limits and frozen reference remain unchanged.
+
+The permanent buffers stay reserved: quarantine does not stop DMA, establish
+reset completion, scrub/free memory or authorize another initialization. No
+recovery/reset path is added. The [ownership review](TX_QUEUE_OWNERSHIP.md) records
+caller obligations and remaining raw-DMA, RX, mapping, reset and isolation work.
+This scoped fix does not close F3.2/F4/F6.4/H-DMA or qualify physical devices.
+
+- An archived-source host fixture reproduces the old overwrite on published
+  `719757d7763d373367e45719682950dbb0e1d358`: after two real production polling
+  timeouts the first packet byte changes from 0x45 to 0x99. The failing assertion,
+  exact patch, command, source/archive identity and hashes remain at
+  `build/tx-timeout-counterexample/`. Notification targets borrowed RAM and no
+  device DMA runs in this host counterexample; it is not a hardware fault claim.
+- **353 workspace unit tests**, **nine compile-fail doctests**, **135 Python tests**
+  and strict host/normal/validation kernel lint passed. Logs remain at
+  `build/tx-ownership-host-tests.log`, `build/tx-ownership-python-tests.log` and
+  `build/tx-ownership-*-clippy.log`. The reviewed inventory records **400 lexical
+  sites across 104 sources**: two added unsafe blocks are in the existing
+  exclusive host DMA fixture; no production unsafe block or unsafe Send/Sync
+  implementation was added. Initial inventory-drift checks failed as expected
+  until explicit source/context review and baseline replacement.
+- Six new pure tests cover success, busy reservation, timeout/late completion,
+  bad descriptor IDs, stale/skipped/excess used indices, unsolicited/duplicate
+  completion and wrap. The existing single driver fixture retains its coalesced
+  RX/wrap/invalid-advance checks and now executes production TX success, bad ID,
+  excess advance and the real polling timeout. After each rejected completion it
+  injects a plausible late completion and checks denied send/receive, unchanged
+  buffer bytes, descriptor fields, available index and notification count.
+- Pinned `nightly-2026-09-21` Miri with strict provenance and seed 1 passed
+  **107 selected tests**, including all six new TX-state tests, plus the unchanged
+  native 20,000-operation allocator stress, on clean `8996242`. Manifest,
+  per-module logs and hashes remain under
+  `build/pure-rust-evidence/1791675963142701000/`. Real DMA, MMIO/PIO, interrupts
+  and CPU/page-table semantics remain outside interpreter execution.
+- The complete `cargo xtask test` suite passed **18 clean-source system workflows**
+  on `8996242`, including both real modern VirtIO network/no-HTTP workflows,
+  storage creation/restore/read-only/recovery/failure, serial input, external SDK,
+  memory preflight/ten allocation cutoffs, six actual CPU protection probes and
+  normal debug/release process/file workflows. Paths/hashes remain in
+  `build/8996242-system-evidence-index.json`, with output at
+  `build/tx-ownership-system-tests.log`. Final qualification checked clean source,
+  manifest status/identity and interpreted-log hashes before this ledger update.
+  Healthy transport evidence does not inject a real device timeout or prove DMA
+  quiescence. Local QEMU 11.1.2 remains portability evidence against frozen 11.1.1.
+
+The previous framebuffer head `719757d7763d373367e45719682950dbb0e1d358`
+completed all **74 required checks: 70 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38095871073) passed the
+complete remote system suite. All five coordinator refusal cases and production
+storage-create-failure passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38095871096).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38095871100)
+still failed. Retained artifacts, paths and hashes remain at
+`build/remote-evidence/719757d/`; its index covers 29 manifests with workflow
+duplication, not 29 distinct required checks. The exact-head policy/execution
+read at `build/ci-policy-evidence/719757d-final-audit/` passed its contract audit
+while explicitly recording failed verification. Required-success replay fails
+at `build/ci-policy-evidence/719757d-required-success/`. Main protection remains
+unchanged at 74 strict app-bound checks; all four CPU requirements stay enforced.
+The new TX head requires its own remote execution.
+
+Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged. Broader
+ownership, IRQ latency/nesting, CPU/reference qualification, independent review,
+sustained workloads and later platform/application work remain open. The
+underlying remote ATA timeout remains unresolved.
