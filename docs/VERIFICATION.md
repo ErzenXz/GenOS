@@ -1013,3 +1013,75 @@ passed on `18fc1d5` with the corrected software-denial scope label at
 `build/fault-containment-evidence/1791668667329612000/syscall-borrow/manifest.json`.
 These are bounded regressions, not physical-device, complete CPU or release
 qualification.
+
+## October 10 immutable boot-image publication
+
+`b7ef0562f2815220a78f1f9a8e32c4e1f509aabd` replaces INIT/shell global integer
+address/length pairs with `boot_image::ImageSlot`. A single atomic claimant
+publishes the original immutable boot-lifetime slice; readers acquire a complete
+pointer/length pair without waiting. Replacement is rejected, and both image
+registrations validate complete native admission before publication. Shell boot
+now rejects invalid registration before any user launch. Each actual launch
+still validates its plan and retains existing failure cleanup.
+
+Five host tests cover absence, original pointer/length identity, replacement
+refusal, empty publication and competing publishers with different lengths.
+A compile-fail doctest rejects temporary input. The only shared-slice
+reconstruction preserves pointer provenance and is documented at its boundary;
+eight former adapter unsafe blocks are replaced by one, with no new unsafe
+Send/Sync. After source review the lexical inventory records **447 sites across
+99 source files**. This is a scoped F4.1/F4.2 improvement, not completion of the
+mutable-global audit or kernel SMP support.
+
+- **311 workspace unit tests**, **two compile-fail doctests**, **114 Python tests**
+  and strict kernel host/normal/validation target lint passed. Logs remain in
+  `build/boot-image-host-tests.log`, `build/boot-image-python-tests.log` and
+  `build/boot-image-*-clippy.log`.
+- The immutable pinned Miri campaign passed **65 selected tests**, including all
+  five image-slot cases and all seven scoped-process cases, with strict provenance
+  and seed one. Native allocator stress also passed. Its exact source/archive,
+  toolchains, commands, per-module counts and hashes are retained at
+  `build/pure-rust-evidence/1791669043221279000/manifest.json`.
+  The concurrent case covers its recorded schedule, not all interleavings.
+  The bounded ownership-model lane was unchanged and not rerun.
+- The production fresh-volume failure regression passed with the typed images;
+  its manifest is `build/storage-startup-evidence/1791669043221279000/manifest.json`.
+  It retains one deliberately failed device write, sticky not-published quarantine,
+  denied persistent mutations, readable RAM session data and responsive shell
+  under the unchanged runner deadline and nonce contract.
+
+- The complete `cargo xtask test` system suite passed all **eighteen** per-run
+  manifests on clean `b7ef056`. Hashes/paths are indexed in
+  `build/b7ef056-system-evidence-index.json`, with combined output in
+  `build/boot-image-system-tests.log`. Both image registrations execute through
+  storage create/restore/read-only/recovery/failure, serial, network/no-HTTP,
+  external SDK, ten construction allocation cutoffs, all six protection probes
+  and normal debug/release process/file workflows. No source changed during
+  the full campaign.
+
+The earlier storage-fix head `cb380ab` completed all sixty-two required checks:
+**57 passed and five failed**. Its new fixture failed before boot on missing Git
+metadata; the main remote build/boot suite passed. The retained final audit is
+`build/ci-policy-evidence/cb380ab-final-audit/`, with passing main QEMU artifacts
+under `build/remote-evidence/cb380ab/passing-qemu/` and the failed storage fixture
+under `build/remote-evidence/cb380ab/storage-startup/`.
+
+Published head `91695700a3bc0e99d39b21e5147d799710f90e24` completed all sixty-two
+required checks: **58 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38088962062) passed every
+job, including the full remote build/boot suite. The corrected storage-create
+failure and scoped-borrow lanes both passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38088962097).
+Strict `initial-rip`/`nmi-iret` and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38088962076)
+qualification still failed. Selected success/failure artifacts and passing main
+QEMU artifacts remain under `build/remote-evidence/9169570/`. The read-only audit
+at `build/ci-policy-evidence/9169570-final-audit/` verifies enforcement and complete
+exact-head execution, reports all four failures and does not certify green
+verification. Its required-success replay is retained separately and fails.
+
+The newer typed-image change has the local qualification above; remote execution
+of its published head must be evaluated separately. Local QEMU 11.1.2/firmware
+identity and mismatched reference status remain explicit. No pinned-reference,
+independent-review, general SMP, complete F4/F5 or release qualification is
+claimed. Roadmap remains **51/100**, Experimental, and PR #9 stays draft/unmerged.
