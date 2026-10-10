@@ -1527,3 +1527,95 @@ remain enforced, and the remote ATA timeout's underlying cause is unresolved.
 Complete ownership/decomposition, IRQ timing/nesting, CPU/reference qualification,
 independent review, sustained workloads and later roadmap work remain open.
 Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged.
+
+## October 11 dormant framebuffer ownership and raw mapping boundary
+
+`33810c08dcb43997afa9b7061481bda2d9c2a396` includes the framebuffer ownership
+change from `c121a598706ac0c60cc5890f98446b482b844803` and its raster correction.
+The implementation removes the dormant renderer's safe
+arbitrary-address constructor and shared mutable global backbuffer. A safe
+RAM-backed constructor now borrows exclusive caller-owned target/backbuffer
+slices. The separate unsafe MMIO constructor records mapping, alignment,
+non-trapping stores, external-memory/device exclusivity and lifetime obligations;
+there is currently no production caller. Numeric admission rejects invalid
+layout, format, extent, alignment, short buffers and overlapping backbuffer
+ranges before constructing a device. No Rust MMIO reference is fabricated.
+DisplayManager now carries the borrowed storage lifetime, and renderer/recovery
+functions borrow that typed owner. The serial composition root still creates no
+framebuffer; its source guard now rejects all direct FramebufferDevice calls.
+ABI, limits and media/reference contracts are unchanged.
+
+Raster entry uses wide clipping/index arithmetic for extreme rectangles,
+blits, lines and circles; RAM and MMIO writes have distinct bounds/provenance
+obligations. RGB/BGR packing retains the zero reserved byte, and presentation
+preserves padding/tail storage. The reviewed inventory now records **398 sites
+across 103 sources**, one fewer unsafe block. Three framebuffer unsafe constructs
+have explicit obligations in [the ownership review](FRAMEBUFFER_OWNERSHIP.md).
+No unsafe Send/Sync implementation was added; the device is neither Send nor
+Sync. This is a scoped safety/interface fix, not graphical hardware qualification
+or completion of F4/F5/Stage 9.
+
+- **347 workspace unit tests**, **nine compile-fail doctests**, **135 Python tests**
+  and strict kernel host/normal/validation lint passed. Logs remain at
+  `build/framebuffer-phase-host-tests.log`,
+  `build/framebuffer-phase-python-tests.log` and
+  `build/framebuffer-phase-*-clippy.log`. Extracting the numeric alias helper
+  initially left a double dereference after changing its parameter to a slice;
+  the compiler rejected it. Those failed compiler/Python-wiring runs remain at
+  `build/framebuffer-alias-extraction-*.log`; the corrected helper uses the slice
+  directly and the final checks above passed. No failed VM/Miri run was relabeled.
+- Eleven new tests cover rejected dimensions/formats/extents/buffers, numeric MMIO
+  range/overlap admission without access, RGB/BGR packing, buffered present and
+  overlay restore, extreme geometry/blits/lines/circles, padding/tail canaries,
+  independent surfaces and small-surface wallpaper/checker/stroke/overlay work.
+  Four new compile-fail cases reject buffer aliasing, escaping owner lifetimes,
+  safe MMIO construction and thread transfer.
+  The eleventh compares all 4,096 ordered endpoint pairs in a bounded grid
+  against an independent iterative Bresenham oracle and checks padding canaries.
+- The initial clipping implementation passed its 100 selected Miri tests and
+  all 18 system workflows on clean `c121a59`, but a subsequent semantic oracle
+  found that clipping endpoints changed raster phase: the line from (-2,-2) to
+  (0,2) lost pixel (0,1). This was a visible-output error, not a Miri finding.
+  The counterexample remains at `build/framebuffer-line-phase-counterexample.log`;
+  initial evidence remains at
+  `build/pure-rust-evidence/1791674880213158000/manifest.json` and
+  `build/c121a59-system-evidence-index.json`. The corrected path derives the
+  original Bresenham phase with wide arithmetic and skips invisible major-axis
+  steps. The retained oracle and extreme/even-width brush tests pass.
+- Pinned `nightly-2026-09-21` Miri with strict provenance and seed 1 passed
+  **101 production-selected tests** on clean `33810c0`, plus the unchanged native
+  20,000-operation allocator stress. Manifest, per-module logs and hashes remain
+  at `build/pure-rust-evidence/1791675362050061000/`. This includes all eleven
+  framebuffer tests on borrowed RAM and numeric MMIO admission without touching
+  device memory. Miri does not execute real MMIO, IRQ, DMA or page-table hardware.
+- The complete `cargo xtask test` suite passed **18 clean-source system workflows**
+  on `33810c0`: storage creation/restore/read-only/recovery/failure, serial input,
+  network/no-HTTP, external SDK, memory preflight/ten allocation cutoffs, six
+  actual protection probes and normal debug/release process/file workflows.
+  Paths/hashes are indexed in `build/33810c0-system-evidence-index.json`; output
+  remains at `build/framebuffer-phase-system-tests.log`. A final check verified
+  source/status and hashes for all manifests and interpreted/native logs before
+  this documentation update. Local QEMU 11.1.2 remains portability evidence
+  against the unchanged frozen 11.1.1 profile.
+
+The prior published head `a77406d693ce86de8753d24f5d14d5e1a7e573a8` completed
+all **74 required checks: 70 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38094451756) passed the
+complete remote system suite. All five coordinator refusal jobs, including VFS
+transaction reentry, and production storage-create-failure passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38094451762).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38094451842)
+still failed. Artifacts remain under `build/remote-evidence/a77406d/`, with
+29 retained manifests (including workflow duplication), paths and hashes indexed
+in `evidence-index.json`. The exact-head policy/execution audit at
+`build/ci-policy-evidence/a77406d-final-audit/` passed its 74-check contract audit
+and explicitly records failed verification. Required-success replay fails at
+`build/ci-policy-evidence/a77406d-required-success/`. Main protection remains
+unchanged at 74 strict app-bound checks; no CPU requirement was removed or relaxed.
+The new framebuffer head requires its own remote execution.
+
+Complete ownership/decomposition, IRQ timing/nesting, CPU/reference qualification,
+independent review, sustained workloads, actual graphics and later platform work
+remain open. The underlying remote ATA timeout remains unresolved. Roadmap stays
+**51/100**, Experimental; PR #9 remains draft/unmerged.
