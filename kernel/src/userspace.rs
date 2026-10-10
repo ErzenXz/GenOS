@@ -22,10 +22,10 @@ use genos_abi::{
 use kernel::{
     capability::{HandleKind, HandleTable},
     console_text::{FixedText, LineKind},
-    elf::{ElfImage, FLAG_EXECUTE, FLAG_READ, FLAG_WRITE},
     endpoint::{EndpointRole, EndpointState, PendingReceive, QueueResult},
     file_snapshot::FileSnapshots,
     input::{InputEvent, KeyEvent, MouseButtons},
+    native_image::{Error as ImageError, Plan as ImagePlan},
     request::RequestSequence,
     scheduler::RoundRobin,
     socket::{
@@ -4884,7 +4884,7 @@ pub fn syscall_handler() -> unsafe extern "C" fn() {
 /// Register the immutable initrd image independently of the validation suite.
 /// Actual launches still perform all ELF layout, mapping, and ownership checks.
 pub fn register_init_elf(elf_bytes: &'static [u8]) -> bool {
-    if ElfImage::parse(elf_bytes).is_err() || ELF_READY.load(Ordering::Acquire) {
+    if ImagePlan::parse(elf_bytes).is_err() || ELF_READY.load(Ordering::Acquire) {
         return false;
     }
     // SAFETY: the claimed boot CPU calls this once before launching userspace.
@@ -5153,6 +5153,33 @@ pub fn run_memory_rollback_probe(elf_bytes: &[u8]) -> bool {
     let was_enabled = arch::interrupts_enabled();
     arch::disable_interrupts();
     let baseline = memory::allocated_frames();
+    // The second PT_LOAD is W+X. Even with no allocation budget, the complete
+    // image must fail admission before attempting to construct a root. A valid
+    // image under the same budget must instead reach and fail the allocator.
+    let malformed = include_bytes!("../../tools/parser-stress/corpus/native-elf-late-wx.bin");
+    let mut preflight = true;
+    for (bytes, invalid_layout) in [(malformed.as_slice(), true), (elf_bytes, false)] {
+        memory::fail_after(Some(0));
+        let result = build_process(127, TOKEN_DYNAMIC_BASE | 127, bytes);
+        memory::fail_after(None);
+        preflight &= match result {
+            Err(ProcessBuildError::InvalidLayout) => invalid_layout,
+            Err(ProcessBuildError::Paging) => !invalid_layout,
+            Ok(mut process) => {
+                reclaim_process(&mut process).expect("preflight probe reclaim failed");
+                false
+            }
+            Err(_) => false,
+        };
+        preflight &= memory::allocated_frames() == baseline;
+    }
+    if !preflight {
+        if was_enabled {
+            arch::enable_interrupts();
+        }
+        return false;
+    }
+    crate::serial::trace::println("NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true");
     let mut success = false;
     for cutoff in 0..64 {
         memory::fail_after(Some(cutoff));
@@ -6211,127 +6238,68 @@ fn shell_elf() -> Result<&'static [u8], LaunchError> {
     Ok(unsafe { core::slice::from_raw_parts(address as *const u8, length) })
 }
 
-fn load_elf(space: paging::AddressSpace, bytes: &[u8]) -> Result<LoadedImage, ProcessBuildError> {
-    let image = ElfImage::parse(bytes).map_err(|_| ProcessBuildError::InvalidElf)?;
-    if image.entry() < paging::USER_CODE || image.entry() >= paging::USER_STACK_GUARD {
-        return Err(ProcessBuildError::InvalidLayout);
-    }
-
-    let mut mapped_pages = 0u64;
-    let mut entry_is_executable = false;
-    let mut executable_start = u64::MAX;
-    let mut executable_end = 0u64;
-    let mut data_frame = 0u64;
-    let mut segment_count = 0u8;
-    let mut page_count = 0u8;
-    let mut executable_pages = 0u64;
-    for segment in image.segments() {
-        let segment = segment.map_err(|_| ProcessBuildError::InvalidElf)?;
-        let writable = segment.flags & FLAG_WRITE != 0;
-        let executable = segment.flags & FLAG_EXECUTE != 0;
-        if segment.flags & FLAG_READ == 0
-            || segment.flags & !(FLAG_READ | FLAG_WRITE | FLAG_EXECUTE) != 0
-            || (writable && executable)
-            || segment.align < paging::PAGE_SIZE
-            || segment.virtual_address & (segment.align - 1)
-                != segment.file_offset & (segment.align - 1)
-            || segment.virtual_address & (paging::PAGE_SIZE - 1) != 0
-        {
-            return Err(ProcessBuildError::InvalidLayout);
-        }
-        let segment_end = segment
-            .virtual_address
-            .checked_add(segment.memory_size)
-            .ok_or(ProcessBuildError::InvalidLayout)?;
-        if segment.virtual_address < paging::USER_CODE || segment_end > paging::USER_STACK_GUARD {
-            return Err(ProcessBuildError::InvalidLayout);
-        }
-        if executable && image.entry() >= segment.virtual_address && image.entry() < segment_end {
-            entry_is_executable = true;
-        }
-        if executable {
-            executable_start = executable_start.min(segment.virtual_address);
-            executable_end = executable_end.max(segment_end);
-        }
-
-        let pages = segment.memory_size.div_ceil(paging::PAGE_SIZE);
-        if pages == 0 || pages > 16 {
-            return Err(ProcessBuildError::InvalidLayout);
-        }
-        if executable {
-            executable_pages = executable_pages
-                .checked_add(pages)
-                .ok_or(ProcessBuildError::InvalidLayout)?;
-            if executable_pages > USER_EXECUTABLE_PAGE_CAPACITY {
-                return Err(ProcessBuildError::InvalidLayout);
-            }
-        }
-        for page in 0..pages {
-            let virtual_address = segment.virtual_address + page * paging::PAGE_SIZE;
-            let image_page = (virtual_address - paging::USER_CODE) / paging::PAGE_SIZE;
-            if image_page >= 64 || mapped_pages & (1 << image_page) != 0 {
-                return Err(ProcessBuildError::InvalidLayout);
-            }
-            mapped_pages |= 1 << image_page;
-
-            let frame =
-                paging::allocate_zeroed_frame(space).map_err(|_| ProcessBuildError::Paging)?;
-            let file_offset = (page * paging::PAGE_SIZE) as usize;
-            if file_offset < segment.file_data.len() {
-                let copy_len =
-                    (segment.file_data.len() - file_offset).min(paging::PAGE_SIZE as usize);
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        segment.file_data.as_ptr().add(file_offset),
-                        frame.address() as *mut u8,
-                        copy_len,
-                    );
-                }
-            }
-            if paging::map_user_page(space, virtual_address, frame, writable, executable).is_err() {
-                // SAFETY: mapping failed before publishing this new image-page
-                // grant. The constructor is its sole owner and has no live user.
-                assert!(
-                    unsafe { memory::free_frame(frame) },
-                    "failed ELF map retained frame"
+fn load_elf(
+    space: paging::AddressSpace,
+    plan: &ImagePlan<'_>,
+) -> Result<LoadedImage, ProcessBuildError> {
+    let mut data_frame = 0;
+    for page in plan.pages() {
+        let frame = paging::allocate_zeroed_frame(space).map_err(|_| ProcessBuildError::Paging)?;
+        if !page.file_bytes().is_empty() {
+            // SAFETY: the complete immutable plan bounds this source slice to
+            // one page. This newly zeroed frame is exclusively owned by the
+            // inactive address space and has no published mapping, user, Rust
+            // reference or device alias. Copy precedes mapping publication.
+            // A later failure frees this leaf or destroys the partial root.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    page.file_bytes().as_ptr(),
+                    frame.address() as *mut u8,
+                    page.file_bytes().len(),
                 );
-                return Err(ProcessBuildError::Paging);
             }
-            if virtual_address == paging::USER_DATA
-                && writable
-                && segment.memory_size >= 16
-                && segment.file_data.len() >= 16
-            {
-                data_frame = frame.address();
-            }
-            page_count = page_count
-                .checked_add(1)
-                .ok_or(ProcessBuildError::InvalidLayout)?;
         }
-        segment_count = segment_count
-            .checked_add(1)
-            .ok_or(ProcessBuildError::InvalidLayout)?;
+        if paging::map_user_page(
+            space,
+            page.address(),
+            frame,
+            page.writable(),
+            page.executable(),
+        )
+        .is_err()
+        {
+            // SAFETY: mapping failed before publishing this new image-page
+            // grant. The constructor is its sole owner and has no live user.
+            assert!(
+                unsafe { memory::free_frame(frame) },
+                "failed ELF map retained frame"
+            );
+            return Err(ProcessBuildError::Paging);
+        }
+        if page.process_data() {
+            data_frame = frame.address();
+        }
     }
-
-    if !entry_is_executable
-        || data_frame == 0
-        || paging::translate(space, paging::USER_DATA) != Some(data_frame)
-    {
+    if data_frame == 0 || paging::translate(space, paging::USER_DATA) != Some(data_frame) {
         return Err(ProcessBuildError::InvalidLayout);
     }
     Ok(LoadedImage {
-        entry: image.entry(),
+        entry: plan.entry(),
         data_frame,
-        segment_count,
-        page_count,
-        executable_start,
-        executable_end,
+        segment_count: plan.segment_count(),
+        page_count: plan.page_count(),
+        executable_start: plan.executable_start(),
+        executable_end: plan.executable_end(),
     })
 }
 
 fn build_process(pid: u8, token: u64, elf_bytes: &[u8]) -> Result<UserProcess, ProcessBuildError> {
+    let plan = ImagePlan::parse(elf_bytes).map_err(|error| match error {
+        ImageError::InvalidElf => ProcessBuildError::InvalidElf,
+        ImageError::InvalidLayout => ProcessBuildError::InvalidLayout,
+    })?;
     let space = paging::create_user_address_space().map_err(|_| ProcessBuildError::Paging)?;
-    let loaded = match load_elf(space, elf_bytes) {
+    let loaded = match load_elf(space, &plan) {
         Ok(loaded) => loaded,
         Err(error) => {
             paging::destroy_user_address_space(space).expect("partial ELF reclaim failed");

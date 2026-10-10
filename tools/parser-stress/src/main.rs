@@ -1,11 +1,20 @@
 //! Deterministic host stress harness against the production kernel library.
 //! This is bounded mutation testing, not a coverage-guided fuzzer or safety proof.
-use kernel::{elf::ElfImage, ipv6, net, socket};
+use kernel::{elf::ElfImage, ipv6, native_image, net, socket};
 use std::{env, fs, path::PathBuf, process};
 
 const DEFAULT_SEED: u64 = 0x0047_454e_4f53;
 const MAX_INPUT: usize = 65_536;
-const TARGETS: &[&str] = &["all", "elf", "ipv4", "ipv6", "udp", "tcp", "socket"];
+const TARGETS: &[&str] = &[
+    "all",
+    "elf",
+    "native-elf",
+    "ipv4",
+    "ipv6",
+    "udp",
+    "tcp",
+    "socket",
+];
 
 struct Random(u64);
 impl Random {
@@ -48,6 +57,41 @@ fn check_elf(bytes: &[u8]) -> bool {
         assert!(count <= 16);
     }
     assert!(count > 0);
+    true
+}
+
+fn check_native_elf(bytes: &[u8]) -> bool {
+    let Ok(plan) = native_image::Plan::parse(bytes) else {
+        return false;
+    };
+    let mut addresses = std::collections::BTreeSet::new();
+    let mut executable_pages = 0;
+    let mut data_pages = 0;
+    let mut entry_mapped = false;
+    for page in plan.pages() {
+        subslice(bytes, page.file_bytes());
+        assert!(page.file_bytes().len() <= 4096);
+        assert!(page.address().is_multiple_of(4096));
+        assert!((native_image::USER_CODE..native_image::USER_STACK_GUARD).contains(&page.address()));
+        assert!(addresses.insert(page.address()));
+        assert!(!(page.writable() && page.executable()));
+        if page.executable() {
+            executable_pages += 1;
+            entry_mapped |= (page.address()..page.address() + 4096).contains(&plan.entry());
+        }
+        if page.process_data() {
+            data_pages += 1;
+            assert_eq!(page.address(), native_image::USER_DATA);
+            assert!(page.writable());
+        }
+    }
+    assert_eq!(addresses.len(), usize::from(plan.page_count()));
+    assert!((1..=10).contains(&addresses.len()));
+    assert!((1..=16).contains(&plan.segment_count()));
+    assert!((1..=8).contains(&executable_pages));
+    assert_eq!(data_pages, 1);
+    assert!(entry_mapped);
+    assert!((plan.executable_start()..plan.executable_end()).contains(&plan.entry()));
     true
 }
 
@@ -292,6 +336,7 @@ fn socket_snapshot(
 fn exercise(target: &str, bytes: &[u8]) -> bool {
     match target {
         "elf" => check_elf(bytes),
+        "native-elf" => check_native_elf(bytes),
         "ipv4" => check_ipv4(bytes),
         "ipv6" => check_ipv6(bytes),
         "udp" => check_udp(bytes),
@@ -299,6 +344,7 @@ fn exercise(target: &str, bytes: &[u8]) -> bool {
         "socket" => check_socket(bytes),
         "all" => {
             check_elf(bytes);
+            check_native_elf(bytes);
             check_ipv4(bytes);
             check_ipv6(bytes);
             check_udp(bytes);
@@ -455,7 +501,8 @@ fn run() -> Result<(), String> {
     }
     if expected.is_some() && (input.is_none() || target == "all" || target == "socket") {
         return Err(
-            "--expect requires --input and a parser target (elf, ipv4, ipv6, udp, tcp)".into(),
+            "--expect requires --input and a parser target (elf, native-elf, ipv4, ipv6, udp, tcp)"
+                .into(),
         );
     }
     if let Some(input) = input {
@@ -469,6 +516,18 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let corpus: &[(&str, &str, bool, &[u8])] = &[
+        (
+            "native-elf-valid",
+            "native-elf",
+            true,
+            include_bytes!("../corpus/native-elf-valid.bin"),
+        ),
+        (
+            "native-elf-late-wx",
+            "native-elf",
+            false,
+            include_bytes!("../corpus/native-elf-late-wx.bin"),
+        ),
         (
             "elf-valid",
             "elf",

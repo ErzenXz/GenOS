@@ -465,7 +465,10 @@ impl<'a> Contract<'a> {
                 &positions,
             )?;
         }
-        self.ordered(&["MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
+        self.ordered(&[
+            "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
+            "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
+            "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
             "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
             "MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true",
             "USER_COPY_READY bounded=true permissions=true atomic=true stale=denied",
@@ -798,6 +801,8 @@ mod tests {
     #[test]
     fn memory_authority_proofs_require_unique_ordered_exact_results() {
         let markers = [
+            "NATIVE_IMAGE_PREFLIGHT_OK malformed=1 allocation_budget=0 invalid_layout=true valid_oom=true frames_unchanged=true",
+            "MEMORY_ROLLBACK_READY allocation_points=10 leaked_frames=0",
             "MEMORY_HYGIENE_READY bytes=4096 invalid_free=denied reused=zero",
             "FRAME_OWNERSHIP_READY stale=denied foreign=denied alias=denied pinned=denied reclaimed=true",
             "MEMORY_PRESSURE_READY owner_limit=64 isolated=true reclaimed=true",
@@ -811,6 +816,16 @@ mod tests {
         );
         let contract = Contract::phase(&markers, false);
         assert_eq!(contract.assess(&log), Ok(true));
+        for field in [
+            "allocation_budget=0",
+            "invalid_layout=true",
+            "valid_oom=true",
+            "frames_unchanged=true",
+        ] {
+            assert!(contract
+                .assess(&log.replace(field, "forged=false"))
+                .is_err());
+        }
         for (index, marker) in markers.iter().enumerate() {
             assert_ne!(
                 contract.assess(&log.replace(&format!("{marker}\n"), "")),

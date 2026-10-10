@@ -1,6 +1,6 @@
 # Production parser and socket stress harness
 
-This standalone host crate calls `kernel`'s actual public ELF, IPv4, IPv6, UDP,
+This standalone host crate calls `kernel`'s actual public ELF, native-image admission, IPv4, IPv6, UDP,
 TCP, ARP, checksum, TCP-classification, and socket-handle APIs through a local
 path dependency. It adds no network dependencies, production allocation, or
 hardware access. The host harness itself uses standard-library allocation.
@@ -12,14 +12,16 @@ cargo test --manifest-path tools/parser-stress/Cargo.toml --offline
 ```
 
 The default seed is `0x47454e4f53`, with 25,000 deterministic mutations. Every run
-first checks 12 retained corpus inputs and every proper prefix of those inputs
-(693 truncations). The corpus includes accepted ELF/network headers, overflowing
+first checks 14 retained corpus inputs and every proper prefix of those inputs
+(17,109 truncations). The corpus includes accepted ELF/network headers, overflowing
 ELF offsets, truncated ELF payloads, IPv4 fragments, truncated IPv6 options,
-invalid TCP offsets, and a socket lifecycle. Mutation operators truncate, insert,
+invalid TCP offsets, and a socket lifecycle. Two native ELF fixtures exercise a
+valid fixed-address image and rejection of W+X in its final load segment. Mutation operators truncate, insert,
 flip bits, alter byte ranges, generate random bytes, and resize to boundary
 lengths up to 65,536 bytes. Arithmetic overflow checks stay enabled in release.
 
 The parser assertions check bounded borrowed slices, coherent load segments,
+native page uniqueness, W^X, executable/data budgets and entry bounds,
 transport payload lengths, accepted TCP classifier properties, and basic IPv6
 constraints. Valid corpus seeds force deeper parsing than uniform random bytes
 alone. The socket command target exercises creation, connection, listener setup,
@@ -27,7 +29,7 @@ queue limits, shutdown, stale and forged handles, owner isolation, incarnation
 isolation, and teardown. Rejected handles must leave both owners' socket state
 unchanged. Each input executes at most 64 socket commands.
 
-Use `--target elf|ipv4|ipv6|udp|tcp|socket` to focus mutation input on one target;
+Use `--target elf|native-elf|ipv4|ipv6|udp|tcp|socket` to focus mutation input on one target;
 the deterministic initial corpus still runs for all targets. `--target all` is
 the default. `--iterations` accepts 0 through 10,000,000. Seeds accept decimal
 or `0x` hexadecimal values, including zero.
@@ -51,7 +53,7 @@ an explicit parser target; sockets and `all` perform invariant checks instead.
 After fixing a failure, minimize and copy its input into `corpus/`, add an entry
 to the corpus table in `src/main.rs`, and record the bug and expected result in
 this document. Files in `target/failures/` are temporary artifacts and must be
-retained by the caller before cleaning the build. Eleven inputs are boundary fixtures. `socket-zero-slot.bin` is a minimized
+retained by the caller before cleaning the build. Thirteen inputs are boundary fixtures. `socket-zero-slot.bin` is a minimized
 regression from seed 0: a correctly tagged handle with slot byte zero caused
 `then_some(slot - 1)` to underflow before rejection. The decoder now evaluates
 the subtraction only after its range check, and host tests exercise every slot

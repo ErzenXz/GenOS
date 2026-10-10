@@ -122,8 +122,10 @@ not implemented; SMP remains disabled. **Roadmap:** F3, F5, H-SMP.
 ## Module and unsafe-code review
 
 Endpoint authority, pathname rules, native saved CPU frames/return checks and
-bounded round-robin scheduling now have production modules with executable host
-tests. Much process/loader/syscall/lifecycle coordination remains in
+bounded round-robin scheduling and whole-image native ELF admission now have
+production modules with executable host tests. Native admission precedes root
+allocation; paging, stack construction and process publication remain coordinated
+in userspace. Much process/loader/syscall/lifecycle coordination remains in
 `kernel/src/userspace.rs`, and other shared globals need decomposition. Presentation
 now uses neutral text/geometry types and a dependency checker, but the generated
 [lexical inventory](unsafe-inventory.json)

@@ -13,18 +13,23 @@ fn retained_corpus_and_truncations_pass() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("corpus=12 truncations=693 mutations=0")
+        String::from_utf8_lossy(&output.stdout).contains("corpus=14 truncations=17109 mutations=0")
     );
 }
 
 #[test]
 fn replay_uses_production_acceptance_and_rejects_invalid_cli() {
-    for (fixture, expectation) in [("elf-valid.bin", "accept"), ("elf-overflow.bin", "reject")] {
+    for (target, fixture, expectation) in [
+        ("elf", "elf-valid.bin", "accept"),
+        ("elf", "elf-overflow.bin", "reject"),
+        ("native-elf", "native-elf-valid.bin", "accept"),
+        ("native-elf", "native-elf-late-wx.bin", "reject"),
+    ] {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("corpus")
             .join(fixture);
         let result = command()
-            .args(["--target", "elf", "--expect", expectation, "--input"])
+            .args(["--target", target, "--expect", expectation, "--input"])
             .arg(fixture)
             .output()
             .unwrap();

@@ -11,15 +11,10 @@ const NO_EXECUTE: u64 = 1 << 63;
 const TABLE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const PAGE_2M_ADDRESS_MASK: u64 = 0x000f_ffff_ffe0_0000;
 const PAGE_1G_ADDRESS_MASK: u64 = 0x000f_ffff_c000_0000;
-pub const PAGE_SIZE: u64 = 4096;
-
-pub const USER_BASE: u64 = 0x0000_4000_0000_0000;
-pub const USER_CODE: u64 = USER_BASE + 0x1000;
-pub const USER_DATA: u64 = USER_BASE + 0x2000;
-pub const USER_STACK_GUARD: u64 = USER_BASE + 0xb000;
-pub const USER_STACK_BOTTOM: u64 = USER_BASE + 0xc000;
-pub const USER_STACK_PAGES: usize = 4;
-pub const USER_STACK_TOP: u64 = USER_STACK_BOTTOM + USER_STACK_PAGES as u64 * PAGE_SIZE;
+pub use kernel::native_image::{
+    PAGE_SIZE, USER_BASE, USER_CODE, USER_DATA, USER_STACK_BOTTOM, USER_STACK_GUARD,
+    USER_STACK_PAGES, USER_STACK_TOP,
+};
 const USER_PML4_INDEX: usize = 128;
 
 static mut KERNEL_ROOT: u64 = 0;
