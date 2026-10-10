@@ -1,19 +1,20 @@
 # Required verification and exact-head execution
 
-The `main` branch requires the sixty-three GitHub Actions checks listed in
+The `main` branch requires the sixty-four GitHub Actions checks listed in
 [`required-ci-checks.json`](../tools/required-ci-checks.json). Each context is bound
 to GitHub Actions App ID 15368. Required checks use strict base freshness and apply
 to administrators; force pushes and branch deletion are disabled. This policy was
-created and read back through the GitHub API on October 10, 2026. No approval-count
+created on October 10, 2026 and strengthened/read back on October 11. No approval-count
 requirement was added. Independent review and reference reproduction remain
 separate roadmap requirements.
 
 The contract covers the CI, exception-entry and foundation-containment workflows:
 host/static/release/documentation/unsafe checks, parser seeds, normal boots,
-single-core and boot-memory admission, twelve user/kernel exceptions, and thirty-three
+single-core and boot-memory admission, twelve user/kernel exceptions, and thirty-four
 foundation fixtures, including scoped current-process borrow reentry and a
 fresh-volume write failure through the production quarantine and shell, plus a
-falsified post-CR3 observation through the production CPU-local gate. Matrix jobs use `fail-fast: false`; a failing CPU fixture must
+falsified post-CR3 observation through the production CPU-local gate, and real
+keyboard IRQ delivery deferred across a scoped input borrow. Matrix jobs use `fail-fast: false`; a failing CPU fixture must
 not hide unrelated results. The weekly extended validation workflow remains
 scheduled qualification, rather than a pull-request check or completed soak.
 PR workflows explicitly check out the reviewed head; push runs check out their

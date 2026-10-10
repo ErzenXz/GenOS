@@ -51,6 +51,7 @@ evidence separately.
 
 `python3 tools/test_input_irq.py` archives clean source and inserts only a bounded
 coordinator window and its boot call. It holds the production input borrow with
+an intentional bounded fixture delay, extending the normal short scope, and
 IF clear while the host sends a real QMP key-down event. A serial handshake
 releases the window after QMP acknowledges the input request. Before release the
 guest requires a ready keyboard byte, unchanged hardware IRQ count and an empty
