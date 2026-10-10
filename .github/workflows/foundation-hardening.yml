@@ -58,6 +58,21 @@ jobs:
           - name: input-irq-deferred
             script: test_input_irq.py
             args: ''
+          - name: memory-before-init
+            script: test_memory_access.py
+            args: --case before-init
+          - name: memory-init-repeat
+            script: test_memory_access.py
+            args: --case init-repeat
+          - name: memory-init-if
+            script: test_memory_access.py
+            args: --case init-if-enabled
+          - name: memory-reentrant
+            script: test_memory_access.py
+            args: --case reentrant
+          - name: allocation-irq-deferred
+            script: test_memory_access.py
+            args: --case irq-deferred
           - name: storage-create-failure
             script: test_storage_startup.py
             args: ''
@@ -150,6 +165,7 @@ jobs:
             build/storage-startup-evidence/
             build/cpu-paging-evidence/
             build/input-irq-evidence/
+            build/memory-access-evidence/
             build/fault-containment-evidence/
           if-no-files-found: warn
           retention-days: 14

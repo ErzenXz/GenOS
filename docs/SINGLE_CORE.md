@@ -86,6 +86,10 @@ within it. They are not a claim that every shared global has been audited.
   eight; all borrows end before caller IF restoration. See
   [input ownership](INPUT_OWNERSHIP.md) for boot-only configuration and emergency
   exclusions. This does not close the remaining device/global-state audit.
+- The [memory adapter](MEMORY_ACCESS.md) now scopes bitmap, grants and fault
+  configuration together, denies pre-initialization/reentrant access and requires
+  one-time initialization with IF clear. No ordinary IRQ or emergency handler
+  allocates or reclaims memory; worst-case masked duration remains unqualified.
 - Emergency entries have dedicated guarded stacks. The assembly
   [entry ownership guard](FAULT_CONTAINMENT.md) redirects every IST while an
   entry is active and halts nested entries before Rust. NMI/#MC are fatal;
