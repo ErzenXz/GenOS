@@ -57,6 +57,14 @@ class CpuPagingHarnessTests(unittest.TestCase):
             with self.subTest(log=bad), self.assertRaises(ValueError):
                 validate_log(bad)
 
+    def test_partial_dispatch_or_unknown_output_after_arming_is_rejected(self):
+        good = valid_log()
+        for line in ['USER_PREEMPT pid=2', 'USER_SYSCALL_OK', 'USER_EXIT pid=2 code=0',
+                     'USER_ELF_LOADED pid=4 root=0x6000', 'unexpected diagnostic']:
+            for bad in [good + line + '\n', good.replace(HALT, line + '\n' + HALT)]:
+                with self.subTest(log=bad), self.assertRaises(ValueError):
+                    validate_log(bad)
+
     def test_qmp_rejects_stopped_reset_missing_duplicate_malformed_and_unordered_evidence(self):
         good = valid_qmp()
         cases = [good[1:], good + [good[-1]], good + [good[0]], good + [good[2]],
