@@ -1699,3 +1699,92 @@ Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged. Broader
 ownership, IRQ latency/nesting, CPU/reference qualification, independent review,
 sustained workloads and later platform/application work remain open. The
 underlying remote ATA timeout remains unresolved.
+
+## October 11 immutable VirtIO RX completion batches
+
+`a986189a89da67849f670db0866ef945da905411` moves RX used-counter/batch ownership
+into the production `RxBatch<8>`. Before copying any packet or reposting any
+buffer, the driver captures and validates the whole bounded used-ring prefix:
+exact wrapping advance/count, every descriptor ID, uniqueness within that
+snapshot and every raw DMA extent. It applies acquire ordering after observing
+the device's used index and keeps the admitted records immutable while draining.
+New interrupt readiness remains pending for the next snapshot. Later snapshots
+may legitimately complete a descriptor that the coordinator copied/reposted
+from an earlier batch. Packet lengths above the unchanged 1518-byte frame budget
+but inside the valid DMA buffer retain the existing drop/repost policy.
+
+Duplicate, invalid-ID or invalid-extent batches quarantine before the first
+copy/repost, leave the caller's packet and owned used counter unchanged, and
+publish no success or notification. Later RX/TX entry remains denied even after
+a plausible late record. Quarantine does not establish reset/quiescence or free,
+scrub or reconstruct DMA storage. The [RX ownership review](RX_QUEUE_OWNERSHIP.md)
+records caller obligations, coherent/trusted-device assumptions and remaining
+raw-DMA, claim/initialization, mapping/reset/isolation work. ABI, permanent DMA
+capacity, network frame budget and the frozen reference remain unchanged; this
+does not close F3.2/F4/F6.4/H-DMA or qualify malicious/physical devices.
+
+- An archived-source counterexample on prior published
+  `6d149ad73b6602d3f935744dd40e641687777ee7` captures two used entries with the
+  same descriptor ID. The old production driver accepts the first packet and
+  advances available.index from eight to nine, returning that buffer before
+  validating the duplicate. The failing assertion, patch, source/archive
+  identity, command and hashes remain at `build/rx-duplicate-counterexample/`.
+  Notifications target borrowed RAM; no hardware DMA runs in that host fixture.
+- **360 workspace unit tests**, **nine compile-fail doctests**, **135 Python tests**
+  and strict kernel host/normal/validation lint passed. Logs remain at
+  `build/rx-batch-final-host-tests.log`, `build/rx-batch-final-python-tests.log`
+  and `build/rx-batch-final-*-clippy.log`. The seven new pure tests cover ordered
+  drain, all 28 duplicate-position pairs in a full batch, malformed extents/IDs
+  after a valid prefix, stale/excess/incomplete snapshots, pending-batch
+  replacement, legitimate later reuse, empty/wrapping indices, quarantine and
+  separate packet-size admission. Existing TX regressions remain intact.
+- Follow-up `c6757356a10cbfc65f0b941b1f84652b031415f0` keeps the original
+  one-interrupt/two-packet coalescing check separate from the new arrival/IRQ
+  during a pending batch. Its complete **360 unit/nine compile-fail** run passed
+  at `build/rx-batch-isolated-host-tests.log`. The diff changes only the driver's
+  `cfg(test)` fixture and its inventory. The production prefix is byte-identical
+  to `a986189`; all other sources and Miri selections are unchanged. Exact
+  correspondence and the host-log hash remain at
+  `build/rx-batch-production-correspondence.json`. The reviewed inventory now
+  records **404 lexical sites across 105 sources**, four added host-fixture
+  unsafe blocks across these commits and no added production unsafe block or
+  unsafe Send/Sync implementation. Inventory-drift checks failed as expected
+  before explicit source/context review and baseline replacement.
+- Pinned `nightly-2026-09-21` strict-provenance Miri with seed 1 passed **114
+  selected tests**, including all seven RX-state tests, plus the unchanged native
+  20,000-operation allocator stress, on clean `a986189`. Manifest, per-module
+  logs and hashes remain at `build/pure-rust-evidence/1791676687144625000/`.
+  Actual DMA, MMIO/PIO, interrupt and CPU/page-table semantics remain excluded.
+- The complete `cargo xtask test` suite passed **18 clean-source workflows** on
+  `a986189`, including modern VirtIO network/no-HTTP, storage
+  creation/restore/read-only/recovery/failure, serial input, external SDK,
+  memory preflight/ten allocation cutoffs, six CPU protection probes and normal
+  debug/release process/file workflows. Paths/hashes are indexed at
+  `build/a986189-system-evidence-index.json`; output remains at
+  `build/rx-batch-system-tests.log`. Final checks verified clean source,
+  manifest/log identity and hashes, the archived counterexample and the host-only
+  follow-up correspondence before this documentation update. Healthy transport
+  tests do not inject a real malformed device batch or establish DMA isolation.
+  Local QEMU 11.1.2 remains portability evidence against frozen 11.1.1.
+
+The previous TX head `6d149ad73b6602d3f935744dd40e641687777ee7` completed all
+**74 required checks: 70 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38096425211) passed the
+complete remote system suite. All five coordinator refusal cases and production
+storage-create-failure passed in
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38096425216).
+Strict initial-RIP/NMI-IRET and
+[user/kernel #XM](https://github.com/ErzenXz/GenOS/actions/runs/38096425274)
+still failed. Retained artifacts and indexed paths/hashes remain at
+`build/remote-evidence/6d149ad/`; 29 manifests include workflow duplication rather
+than 29 distinct required checks. The exact-head policy/execution read at
+`build/ci-policy-evidence/6d149ad-final-audit/` passed its contract audit while
+explicitly recording failed verification. Required-success replay fails at
+`build/ci-policy-evidence/6d149ad-required-success/`. Main protection remains
+unchanged at 74 strict app-bound checks; all four CPU requirements stay enforced.
+The new RX head requires its own remote execution.
+
+Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged. Broader
+ownership, IRQ latency/nesting, CPU/reference qualification, independent review,
+sustained workloads and later platform/application work remain open. The
+underlying remote ATA timeout remains unresolved.
