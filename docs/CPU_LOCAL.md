@@ -39,6 +39,7 @@ entry halts and provides no recoverable unwinding promise.
 
 | Object | Owner and lifetime | Exclusion and retirement |
 | --- | --- | --- |
+| Boot phase / GDT / IDT | BSP boot owner; tables filled once before LIDT | Irreversible architecture/controller completion phases; no later IDT setters; controller reentry and premature enablement halt; see [interrupt admission](INTERRUPT_ADMISSION.md) |
 | `INIT_IMAGE` / `SHELL_IMAGE` | Boot publisher, then immutable boot-lifetime bytes | One atomic publication; no replacement, mutable borrow or integer pointer reconstruction |
 | `CPU_PAGING` | One record for the admitted BSP | Permanent supervisor root, irreversible bootstrap/sealed phase; active-root copies published after CR3 readback with IF clear |
 | PS/2 `STATE` / `ACCESS` | IRQ-shared on the admitted BSP | One masked, non-escaping scope for decoders, queue, bounds and all observations; borrow/publication end before IF restores |

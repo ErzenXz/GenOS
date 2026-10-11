@@ -1977,3 +1977,89 @@ schedules or C5's later 72-hour console workload. Local QEMU 11.1.2 remains
 portability evidence against frozen 11.1.1. Full roadmap scope, the original
 **51/100** console count, Experimental status and draft/unmerged PR #9 remain
 unchanged; independent review and all four strict CPU failures stay open.
+
+
+## October 11 interrupt startup admission and descriptor publication
+
+The initializer formerly rewrote the live IDT and reprogrammed PIC/PIT on every
+safe call. The new repeat-before-seal fixture on clean `9884f31` reproduced two
+`IRQ_READY` lines and `INTERRUPT_ADMISSION_RETURNED`. Its original failed manifest,
+archive/fixture/image identities and raw evidence remain at
+`build/interrupt-admission-evidence/1791680141130631000/repeat-before-seal/`.
+No injected exception or validator waiver turns that invalid continuation into
+passing qualification.
+
+Qualified core **`4f9f4f7d2c0f4a1b46c746eba0a765e2a3f1a48d`** fills all IDT vectors,
+including IRQ/MSI-X/syscall overrides and syscall DPL, in the original guarded
+architecture pass before LIDT. The later setters are removed. An irreversible BSP
+phase gate publishes completed architecture setup, claims PIC/PIT setup once and
+admits interrupt enablement only after controller readiness. Rejected calls clear
+IF and halt before controller I/O or STI. Main still seals IDT/kernel mappings
+before enabling IRQs. [The contract](INTERRUPT_ADMISSION.md) records remaining
+unsafe/raw CPL0, TSS/emergency, hardware and SMP obligations.
+
+- All **four new VM cases** passed on that clean source: setup before architecture,
+  repeat before sealing, repeat after sealing with IRQs enabled, and enablement
+  before controller setup. Evidence is at
+  `build/interrupt-admission-evidence/1791680251579028000/`. Call-only fixtures
+  preserve production checks/hardware code and require exact ordered refusal,
+  no CPU exception or continued boot, and running QMP status after deliberate
+  halt. Raw QMP/serial/build/command files and hashes remain retained.
+- All **five original BSP fixtures** passed, including one/four-vCPU normal boot,
+  repeated entry, repeated architecture initialization and injected non-BSP role.
+  Evidence is at `build/bsp-evidence/1791680301554812000/`; the injected role case
+  does not simulate an AP trampoline.
+- **371 workspace unit tests**, **13 compile-fail doctests**, **154 Python tests**
+  and strict kernel host/normal/validation Clippy passed. Logs use
+  `build/interrupt-phase-workspace-tests.log`, `build/interrupt-phase-python-tests.log`
+  and `build/interrupt-phase-*-clippy.log`. The inventory now records **405 lexical
+  sites across 107 sources**, removing four lexical unsafe-function sites from
+  the two setters and their unsafe pointer signatures. No new unsafe block,
+  unsafe Send/Sync or assembly is added; the complete caller audit remains open.
+- Pinned strict-provenance Miri/seed 1 passed **131 selected tests**, adding all
+  eight boot/table/controller identity, ordering/readiness and competing-claim
+  tests. Native 20,000-operation allocator stress and the bounded model's
+  3,257,436 sequences / 19,248,492 transitions passed again, including retained
+  injected-oracle and safe replay records. Exact commands/results/log hashes
+  remain at `build/pure-rust-evidence/1791680252680995000/`.
+- The full suite passed **18 system workflows** on this clean core, including
+  network/no-HTTP, storage creation/restore/read-only/failure/recovery, SDK,
+  serial input, memory/ten allocation cutoffs, six CPU protection probes, and
+  normal debug/release boots with real process/file I/O. The manifest index is
+  `build/4f9f4f7-system-evidence-index.json`; the command log is
+  `build/interrupt-phase-system-tests.log`.
+- A fresh **512-cycle** Ring 3 run passed on the new core with 256 exits, 256 kills,
+  5120 reclaimed frames, all 255 nonzero PIDs and exact baseline 1263 after
+  every cycle. Evidence is at `build/lifecycle-churn-evidence/1791680372534999000/`;
+  archived-source/fixture/raw-QMP replay passed at
+  `build/interrupt-phase-lifecycle-replay.json`. This short run explicitly does
+  not qualify 10,000 cycles. The earlier full-count result retains its earlier
+  core/harness identity and is not reattributed to this changed architecture.
+
+Combined source/archive, fixture reconstruction, serial/QMP, manifest/log and
+policy checks remain at `build/interrupt-delivery-verification.json`. The core
+was committed clean before execution. Subsequent publication changes are Markdown
+only; correspondence records that fact instead of claiming tests executed on a
+later documentation SHA. These self-consistency checks are not signed attestation
+or independent review.
+
+Previous published **`ae586e1d53cd6016253546e97a7097347c402eb6`** completed **76
+required checks: 72 passed and four failed**. [Main CI](https://github.com/ErzenXz/GenOS/actions/runs/38099810766)
+passed; [Foundation](https://github.com/ErzenXz/GenOS/actions/runs/38099810756)
+passed the new 512-cycle regression and retains initial-RIP/NMI-IRET failures; [Exception entry](https://github.com/ErzenXz/GenOS/actions/runs/38099810773)
+retains user/kernel #XM failures. All workflow artifacts remain under
+`build/remote-evidence/ae586e1/`; integrity checks cover **94 manifests and 145
+artifact hashes**, including duplication. The completed 76-check reporting audit
+is `build/ci-policy-evidence/ae586e1-completed-audit/`, with verification false;
+explicit retained-contract required-success rejection is preserved separately at
+`build/ci-policy-evidence/ae586e1-required-success/`.
+
+Main now requires **80 strict app-bound checks**, adding only the four
+`Foundation interrupt-*` cases. Readback preserves every unrelated protection
+field in `build/ci-policy-evidence/interrupt-admission-policy-1791680279140833000/`.
+The next published head needs its own complete 80-check execution; configuration
+and policy updates do not establish remote success. No failing CPU lane is removed
+or relaxed. Local QEMU 11.1.2 remains portability evidence against frozen 11.1.1.
+Full roadmap scope, the original **51/100** console count, Experimental status and
+draft/unmerged PR #9 remain unchanged. Wider ownership/IRQ review, 24-hour mixed
+pressure, frozen-reference qualification and independent review remain open.
