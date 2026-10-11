@@ -25,6 +25,7 @@ HALTS = {
     'vfs-borrow': 'VFS_TRANSACTION_REJECTED policy=halt',
     'network-borrow': 'NETWORK_ACCESS_REJECTED policy=halt',
     'network-repeat': 'NETWORK_INIT_REJECTED policy=halt',
+    'network-device-repeat': 'NETWORK_DEVICE_INIT_REJECTED policy=halt',
     'storage-borrow': 'STORAGE_ACCESS_REJECTED policy=halt',
     'storage-repeat': 'STORAGE_MOUNT_REJECTED policy=halt',
 }
@@ -59,9 +60,18 @@ pub fn run_borrow_probe() {
 '''
     elif module == 'network':
         anchor = '    network::init();'
-        call = '    network::run_borrow_probe();\n' if case.endswith('borrow') else anchor + '\n'
+        call = ('    network::run_device_repeat_probe();\n' if case == 'network-device-repeat'
+                else '    network::run_borrow_probe();\n' if case.endswith('borrow') else anchor + '\n')
         after[names[0]] = replace_once(after[names[0]], anchor, anchor + '\n' + window + call + returned)
-        if case.endswith('borrow'):
+        if case == 'network-device-repeat':
+            after[names[1]] += '''
+pub fn run_device_repeat_probe() {
+    with_network(|stack| {
+        let _ = stack.device.discover();
+    });
+}
+'''
+        elif case.endswith('borrow'):
             after[names[1]] += '''
 pub fn run_borrow_probe() {
     with_network(|stack| {

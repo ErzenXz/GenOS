@@ -72,6 +72,6 @@ copy a taken buffer before reposting it, preserve the device-read/write access
 directions and never fabricate completion or reset authority. The current driver
 still assumes an admitted coherent x86 platform and a trusted device that obeys
 VirtIO ownership. A malicious device can ignore descriptors or write after
-completion; this change supplies no IOMMU isolation. Raw DMA globals, device
-claim/initialization, PCI/MMIO admission, reset/removal, SMP and broader interrupt
-timing still need review. F3.2, F4.2/F4.4, F6.4 and H-DMA remain open.
+completion; this change supplies no IOMMU isolation. The [permanent allocation claim](PERMANENT_DMA.md) now removes raw DMA globals
+and makes discovery irreversible. PCI/MMIO admission, reset/removal, SMP and
+broader interrupt timing still need review. F3.2, F4.2/F4.4, F6.4 and H-DMA remain open.

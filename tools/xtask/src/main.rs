@@ -2359,7 +2359,8 @@ mod tests {
         assert!(driver.contains("NETWORK_ICMP_ECHO_OK"));
         assert!(device.contains("VIRTIO_F_VERSION_1"));
         assert!(device.contains("VIRTIO_PCI_CAP_COMMON_CFG"));
-        assert!(device.contains("VIRTIO_RX_QUEUE_MEMORY"));
+        assert!(device.contains("PermanentDma<VirtioDmaMemory>"));
+        assert!(device.contains("dma: DmaClaim<VirtioDmaMemory>"));
         assert!(device.contains("VIRTIO_NET_MSIX_READY"));
         assert!(device.contains("record_virtio_interrupt"));
         assert!(device.contains("VIRTIO_RECOVERY_POLL_INTERVAL"));

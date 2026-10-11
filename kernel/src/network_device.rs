@@ -5,6 +5,7 @@ use core::{
 
 use crate::{arch, serial};
 use kernel::{
+    permanent_dma::{DmaClaim, PermanentDma},
     rx_queue::{RxBatch, RxCompletion, RX_BUFFER_BYTES, RX_HEADER_BYTES, RX_MAX_FRAME},
     tx_queue::{TxQueue, TX_RING_SIZE},
 };
@@ -129,7 +130,12 @@ impl NetworkDevice {
     }
 
     pub fn discover(&mut self) -> bool {
-        let mut virtio = VirtioNet::new();
+        // Claim before any discovery/PIO/MMIO. Dropping a failed owner never
+        // authorizes rediscovery or reuse of its possibly exposed DMA memory.
+        let dma = VIRTIO_DMA
+            .try_claim()
+            .unwrap_or_else(|_| reject_device_init());
+        let mut virtio = VirtioNet::new(dma);
         if virtio.init() {
             *self = Self::Virtio(virtio);
             return true;
@@ -285,11 +291,32 @@ struct VirtioRxBuffers([[u8; VIRTIO_BUFFER_BYTES]; VIRTQUEUE_SIZE]);
 #[repr(C, align(4096))]
 struct VirtioTxBuffer([u8; VIRTIO_BUFFER_BYTES]);
 
-static mut VIRTIO_RX_QUEUE_MEMORY: VirtqueueMemory = VirtqueueMemory::empty();
-static mut VIRTIO_TX_QUEUE_MEMORY: VirtqueueMemory = VirtqueueMemory::empty();
-static mut VIRTIO_RX_BUFFERS: VirtioRxBuffers =
-    VirtioRxBuffers([[0; VIRTIO_BUFFER_BYTES]; VIRTQUEUE_SIZE]);
-static mut VIRTIO_TX_BUFFER: VirtioTxBuffer = VirtioTxBuffer([0; VIRTIO_BUFFER_BYTES]);
+#[repr(C, align(4096))]
+struct VirtioDmaMemory {
+    rx_queue: VirtqueueMemory,
+    tx_queue: VirtqueueMemory,
+    rx_buffers: VirtioRxBuffers,
+    tx_buffer: VirtioTxBuffer,
+}
+
+impl VirtioDmaMemory {
+    const fn new() -> Self {
+        Self {
+            rx_queue: VirtqueueMemory::empty(),
+            tx_queue: VirtqueueMemory::empty(),
+            rx_buffers: VirtioRxBuffers([[0; VIRTIO_BUFFER_BYTES]; VIRTQUEUE_SIZE]),
+            tx_buffer: VirtioTxBuffer([0; VIRTIO_BUFFER_BYTES]),
+        }
+    }
+}
+
+static VIRTIO_DMA: PermanentDma<VirtioDmaMemory> = PermanentDma::new(VirtioDmaMemory::new());
+
+fn reject_device_init() -> ! {
+    arch::disable_interrupts();
+    serial::println("NETWORK_DEVICE_INIT_REJECTED policy=halt");
+    arch::halt_loop()
+}
 
 static VIRTIO_INTERRUPT_EPOCH: AtomicU64 = AtomicU64::new(0);
 static VIRTIO_INTERRUPT_PENDING: AtomicBool = AtomicBool::new(false);
@@ -358,6 +385,8 @@ struct MsixCapability {
 }
 
 pub struct VirtioNet {
+    dma: DmaClaim<VirtioDmaMemory>,
+    init_started: bool,
     common: u64,
     rx_notify: u64,
     tx_notify: u64,
@@ -370,8 +399,10 @@ pub struct VirtioNet {
 }
 
 impl VirtioNet {
-    const fn new() -> Self {
+    fn new(dma: DmaClaim<VirtioDmaMemory>) -> Self {
         Self {
+            dma,
+            init_started: false,
             common: 0,
             rx_notify: 0,
             tx_notify: 0,
@@ -437,8 +468,9 @@ impl VirtioNet {
     }
 
     unsafe fn prepare_receive_queue(&mut self) {
-        let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
-        let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0) as *mut [u8; VIRTIO_BUFFER_BYTES];
+        let queue = addr_of_mut!((*self.dma.as_mut_ptr()).rx_queue);
+        let buffers =
+            addr_of_mut!((*self.dma.as_mut_ptr()).rx_buffers.0) as *mut [u8; VIRTIO_BUFFER_BYTES];
         for index in 0..VIRTQUEUE_SIZE {
             write_volatile(
                 addr_of_mut!((*queue).descriptors[index]),
@@ -470,6 +502,10 @@ impl VirtioNet {
 
 impl FrameDevice for VirtioNet {
     fn init(&mut self) -> bool {
+        if self.init_started {
+            reject_device_init();
+        }
+        self.init_started = true;
         let Some(location) = discover_virtio_net() else {
             return false;
         };
@@ -483,6 +519,7 @@ impl FrameDevice for VirtioNet {
         self.common = regions.common;
 
         unsafe {
+            let memory = self.dma.as_mut_ptr();
             mmio_write_u8(self.common, COMMON_DEVICE_STATUS, 0);
             let mut reset = false;
             for _ in 0..VIRTIO_RESET_POLL_LIMIT {
@@ -541,21 +578,15 @@ impl FrameDevice for VirtioNet {
             }
             serial::println("VIRTIO_NET_MSIX_READY vector=48 queues=rx,tx");
 
-            write_volatile(
-                addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY),
-                VirtqueueMemory::empty(),
-            );
-            write_volatile(
-                addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY),
-                VirtqueueMemory::empty(),
-            );
+            write_volatile(addr_of_mut!((*memory).rx_queue), VirtqueueMemory::empty());
+            write_volatile(addr_of_mut!((*memory).tx_queue), VirtqueueMemory::empty());
             let Some(rx_notify_offset) =
-                self.configure_queue(VIRTIO_RX_QUEUE, addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY))
+                self.configure_queue(VIRTIO_RX_QUEUE, addr_of_mut!((*memory).rx_queue))
             else {
                 return self.fail();
             };
             let Some(tx_notify_offset) =
-                self.configure_queue(VIRTIO_TX_QUEUE, addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY))
+                self.configure_queue(VIRTIO_TX_QUEUE, addr_of_mut!((*memory).tx_queue))
             else {
                 return self.fail();
             };
@@ -601,9 +632,9 @@ impl FrameDevice for VirtioNet {
             return false;
         };
         unsafe {
-            let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
+            let queue = addr_of_mut!((*self.dma.as_mut_ptr()).tx_queue);
             let mut observed_interrupt = VIRTIO_INTERRUPT_EPOCH.load(Ordering::Acquire);
-            let buffer = addr_of_mut!(VIRTIO_TX_BUFFER.0) as *mut u8;
+            let buffer = addr_of_mut!((*self.dma.as_mut_ptr()).tx_buffer.0) as *mut u8;
             core::ptr::write_bytes(buffer, 0, total_length);
             core::ptr::copy_nonoverlapping(
                 frame.as_ptr(),
@@ -672,7 +703,7 @@ impl FrameDevice for VirtioNet {
             return false;
         }
         unsafe {
-            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            let queue = addr_of_mut!((*self.dma.as_mut_ptr()).rx_queue);
             let pending = self.rx.pending();
             // Preserve new interrupt readiness while draining the admitted
             // snapshot. Replacing it could mix completions from before/after
@@ -723,7 +754,8 @@ impl FrameDevice for VirtioNet {
             let within_profile = frame_length <= MAX_FRAME;
             if within_profile {
                 packet.owner = PacketOwner::Driver;
-                let buffers = addr_of!(VIRTIO_RX_BUFFERS.0) as *const [u8; VIRTIO_BUFFER_BYTES];
+                let buffers = addr_of!((*self.dma.as_mut_ptr()).rx_buffers.0)
+                    as *const [u8; VIRTIO_BUFFER_BYTES];
                 core::ptr::copy_nonoverlapping(
                     buffers
                         .add(descriptor)
@@ -1202,15 +1234,30 @@ fn ne2000_wait_register(port: u16, mask: u8) -> bool {
 mod completion_tests {
     use super::*;
 
+    // Native-only fixture: each device gets independent, intentionally leaked
+    // storage matching the production static lifetime. No hardware DMA runs.
+    fn host_device() -> VirtioNet {
+        let storage = std::boxed::Box::leak(std::boxed::Box::new(PermanentDma::new(
+            VirtioDmaMemory::new(),
+        )));
+        VirtioNet::new(storage.try_claim().unwrap())
+    }
+
     #[test]
     fn dma_completion_ownership_rejects_reuse_after_timeout_or_invalid_tx() {
+        assert_eq!(core::mem::size_of::<VirtioDmaMemory>(), 7 * 4096);
+        assert_eq!(core::mem::align_of::<VirtioDmaMemory>(), 4096);
+        assert_eq!(
+            core::mem::size_of::<PermanentDma<VirtioDmaMemory>>(),
+            8 * 4096
+        );
         let mut notification = 0u16;
-        let mut device = VirtioNet::new();
+        let mut device = host_device();
         device.rx_notify = core::ptr::addr_of_mut!(notification) as u64;
-        // SAFETY: this is the only test touching the driver's DMA fixtures.
-        // No device or other test owns these static queue/buffer locations.
+        // SAFETY: each fixture has its sole permanent claim and no hardware
+        // device owns it. Only this test touches shared driver metrics.
         unsafe {
-            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            let queue = addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue);
             queue.write(VirtqueueMemory::empty());
             device.prepare_receive_queue();
             for index in 0..2 {
@@ -1218,7 +1265,7 @@ mod completion_tests {
                     id: index as u32,
                     length: (VIRTIO_NET_HEADER_BYTES + 60) as u32,
                 };
-                let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+                let buffers = addr_of_mut!((*device.dma.as_mut_ptr()).rx_buffers.0);
                 (&mut (*buffers)[index])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60]
                     .fill(index as u8 + 1);
             }
@@ -1242,11 +1289,11 @@ mod completion_tests {
         // Separately admit another two-descriptor batch, then let a new
         // completion/IRQ arrive after its first buffer was copied/reposted.
         unsafe {
-            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            let queue = addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue);
             (*queue).used.ring[2] = VirtqUsedElement { id: 0, length: 72 };
             (*queue).used.ring[3] = VirtqUsedElement { id: 1, length: 72 };
             (*queue).used.index = 4;
-            let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+            let buffers = addr_of_mut!((*device.dma.as_mut_ptr()).rx_buffers.0);
             (&mut (*buffers)[0])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(3);
             (&mut (*buffers)[1])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(4);
         }
@@ -1254,10 +1301,10 @@ mod completion_tests {
         assert!(device.receive(&mut packet));
         assert_eq!(packet.bytes[0], 3);
         unsafe {
-            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            let queue = addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue);
             (*queue).used.ring[4] = VirtqUsedElement { id: 0, length: 72 };
             (*queue).used.index = 5;
-            let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+            let buffers = addr_of_mut!((*device.dma.as_mut_ptr()).rx_buffers.0);
             (&mut (*buffers)[0])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(5);
         }
         VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
@@ -1278,7 +1325,7 @@ mod completion_tests {
         device.rx = RxBatch::new(u16::MAX);
         // SAFETY: exclusively owned fixture queue, as above.
         unsafe {
-            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            let queue = addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue);
             (*queue).used.ring[7] = VirtqUsedElement { id: 0, length: 72 };
             (*queue).used.ring[0] = VirtqUsedElement { id: 1, length: 72 };
             (*queue).used.index = 1;
@@ -1290,7 +1337,9 @@ mod completion_tests {
         assert!(!device.receive(&mut packet));
         // A device cannot claim more completions than it owns descriptors.
         unsafe {
-            (*addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY)).used.index = 10;
+            (*addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue))
+                .used
+                .index = 10;
         }
         VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
         assert!(!device.receive(&mut packet));
@@ -1307,7 +1356,7 @@ mod completion_tests {
                 length: 2049,
             },
         ] {
-            let mut device = VirtioNet::new();
+            let mut device = host_device();
             device.rx_notify = addr_of_mut!(notification) as u64;
             packet.bytes.fill(0xaa);
             packet.len = 7;
@@ -1315,7 +1364,7 @@ mod completion_tests {
             let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);
             let frames_before = VIRTIO_RX_FRAMES.load(Ordering::Relaxed);
             unsafe {
-                let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+                let queue = addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue);
                 queue.write(VirtqueueMemory::empty());
                 device.prepare_receive_queue();
                 (*queue).used.ring[0] = VirtqUsedElement { id: 0, length: 72 };
@@ -1350,12 +1399,12 @@ mod completion_tests {
         // An oversized packet inside a valid DMA extent retains the existing
         // drop/repost policy, preserving caller bytes without quarantining RX.
         for length in [1531, VIRTIO_BUFFER_BYTES as u32] {
-            let mut device = VirtioNet::new();
+            let mut device = host_device();
             device.rx_notify = addr_of_mut!(notification) as u64;
             let frames_before = VIRTIO_RX_FRAMES.load(Ordering::Relaxed);
             let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);
             unsafe {
-                let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+                let queue = addr_of_mut!((*device.dma.as_mut_ptr()).rx_queue);
                 queue.write(VirtqueueMemory::empty());
                 device.prepare_receive_queue();
                 (*queue).used.ring[0] = VirtqUsedElement { id: 0, length };
@@ -1380,10 +1429,10 @@ mod completion_tests {
         // Queue/buffer storage is still exclusive to this single host fixture;
         // notification targets borrowed RAM, and no MMIO/PIO or DMA executes.
         for (used, id, success) in [(1, 0, true), (1, 1, false), (2, 0, false), (0, 0, false)] {
-            let mut device = VirtioNet::new();
+            let mut device = host_device();
             device.tx_notify = addr_of_mut!(notification) as u64;
             unsafe {
-                let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
+                let queue = addr_of_mut!((*device.dma.as_mut_ptr()).tx_queue);
                 queue.write(VirtqueueMemory::empty());
                 (*queue).used.index = used;
                 (*queue).used.ring[0] = VirtqUsedElement { id, length: 0 };
@@ -1400,8 +1449,8 @@ mod completion_tests {
                 // Timeout or corrupt completion does not retire DMA ownership.
                 // A late plausible completion must not undo quarantine either.
                 unsafe {
-                    let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);
-                    let buffer_before = addr_of!(VIRTIO_TX_BUFFER.0).read();
+                    let queue = addr_of_mut!((*device.dma.as_mut_ptr()).tx_queue);
+                    let buffer_before = addr_of!((*device.dma.as_mut_ptr()).tx_buffer.0).read();
                     let descriptor_before = (*queue).descriptors[0];
                     let available_before = (*queue).available.index;
                     let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);
@@ -1409,7 +1458,10 @@ mod completion_tests {
                     (*queue).used.ring[0] = VirtqUsedElement { id: 0, length: 0 };
                     assert!(!device.transmit(&[0x99; 60]));
                     assert!(!device.receive(&mut packet));
-                    assert_eq!(addr_of!(VIRTIO_TX_BUFFER.0).read(), buffer_before);
+                    assert_eq!(
+                        addr_of!((*device.dma.as_mut_ptr()).tx_buffer.0).read(),
+                        buffer_before
+                    );
                     let descriptor_after = (*queue).descriptors[0];
                     assert_eq!(descriptor_after.address, descriptor_before.address);
                     assert_eq!(descriptor_after.length, descriptor_before.length);

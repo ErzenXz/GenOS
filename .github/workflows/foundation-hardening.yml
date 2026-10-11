@@ -82,6 +82,9 @@ jobs:
           - name: coordinator-network-repeat
             script: test_coordinator_access.py
             args: --case network-repeat
+          - name: coordinator-network-device-repeat
+            script: test_coordinator_access.py
+            args: --case network-device-repeat
           - name: coordinator-storage-borrow
             script: test_coordinator_access.py
             args: --case storage-borrow

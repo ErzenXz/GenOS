@@ -58,8 +58,9 @@ are recorded in [the verification ledger](VERIFICATION.md).
 
 The pure state machine supplies no physical-buffer capability or hardware proof.
 The coordinator still provides CPU-side exclusivity; the actual driver still
-trusts coherent x86 device behavior and admitted mappings. Raw permanent DMA
-globals, broader RX/device ownership, PCI/MMIO admission, reset
+trusts coherent x86 device behavior and admitted mappings. The [permanent allocation claim](PERMANENT_DMA.md) now removes raw DMA globals
+and rejects repeated discovery before device I/O. Broader device ownership,
+PCI/MMIO admission, reset
 completion, device removal, IOMMU isolation and SMP require further work. This
 fix does not close F3.2, F4.2, F4.4, F6.4 or H-DMA, or change the frozen VM profile.
 
