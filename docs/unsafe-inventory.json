@@ -5,7 +5,7 @@
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 245,
+    "unsafe_block": 246,
     "unsafe_extern": 7,
     "unsafe_fn": 71,
     "unsafe_impl": 3,
@@ -258,9 +258,9 @@
       "sha256": "0a97f40bef7e800a400961603c77b8e4d068dc30d87c6dde943c69445f0705ab"
     },
     {
-      "lines": 1406,
+      "lines": 1427,
       "path": "kernel/src/network_device.rs",
-      "sha256": "3e73a171180fe2232fda06d3ca051ef16a801d814ece135bed9c5d0cfdf07fbe"
+      "sha256": "eafd167050843e3ef65830a96b17bef10a9f73c16c1c38d668830aa093fbca26"
     },
     {
       "lines": 337,
@@ -2364,72 +2364,82 @@
     },
     {
       "column": 9,
-      "construct_sha256": "d2f98118d9ae58bd3db7404737a1698a92c5c0baa7e548c25f71b6ad6a4a4752",
-      "context": "        assert_eq!(packet.bytes[0], 1);\n        // A new completion/IRQ arrives after descriptor zero was reposted.\n        // Finish the immutable old batch before admitting that next snapshot.\n        unsafe {\n            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);\n            (*queue).used.ring[2] = VirtqUsedElement { id: 0, length: 72 };\n            (*queue).used.index = 3;",
-      "context_start_line": 1232,
-      "end_line": 1241,
+      "construct_sha256": "b33bf1d7755a8a66d9bcfed2226c9a522ff284621cf9948a585b65bf061860e9",
+      "context": "\n        // Separately admit another two-descriptor batch, then let a new\n        // completion/IRQ arrive after its first buffer was copied/reposted.\n        unsafe {\n            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);\n            (*queue).used.ring[2] = VirtqUsedElement { id: 0, length: 72 };\n            (*queue).used.ring[3] = VirtqUsedElement { id: 1, length: 72 };",
+      "context_start_line": 1241,
+      "end_line": 1252,
       "kind": "unsafe_block",
-      "line": 1235,
+      "line": 1244,
+      "path": "kernel/src/network_device.rs"
+    },
+    {
+      "column": 9,
+      "construct_sha256": "e8223492580bd125ac8040351b03e38dfcff086c6dc3deffbcdbf2d942e661ee",
+      "context": "        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);\n        assert!(device.receive(&mut packet));\n        assert_eq!(packet.bytes[0], 3);\n        unsafe {\n            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);\n            (*queue).used.ring[4] = VirtqUsedElement { id: 0, length: 72 };\n            (*queue).used.index = 5;",
+      "context_start_line": 1253,
+      "end_line": 1262,
+      "kind": "unsafe_block",
+      "line": 1256,
       "path": "kernel/src/network_device.rs"
     },
     {
       "column": 9,
       "construct_sha256": "4998ce481657d4b0e3d219a230587a8c279f01ca79a5071eb78c52fd32a341b3",
       "context": "        // The same contract holds when the 16-bit used index wraps.\n        device.rx = RxBatch::new(u16::MAX);\n        // SAFETY: exclusively owned fixture queue, as above.\n        unsafe {\n            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);\n            (*queue).used.ring[7] = VirtqUsedElement { id: 0, length: 72 };\n            (*queue).used.ring[0] = VirtqUsedElement { id: 1, length: 72 };",
-      "context_start_line": 1256,
-      "end_line": 1264,
+      "context_start_line": 1277,
+      "end_line": 1285,
       "kind": "unsafe_block",
-      "line": 1259,
+      "line": 1280,
       "path": "kernel/src/network_device.rs"
     },
     {
       "column": 9,
       "construct_sha256": "70922b43ac47b3ce993a12c019adacf202402668494bace88c2d8c5374e28284",
       "context": "        assert_eq!(device.rx.used_index(), 1);\n        assert!(!device.receive(&mut packet));\n        // A device cannot claim more completions than it owns descriptors.\n        unsafe {\n            (*addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY)).used.index = 10;\n        }\n        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);",
-      "context_start_line": 1268,
-      "end_line": 1273,
+      "context_start_line": 1289,
+      "end_line": 1294,
       "kind": "unsafe_block",
-      "line": 1271,
+      "line": 1292,
       "path": "kernel/src/network_device.rs"
     },
     {
       "column": 13,
       "construct_sha256": "3627543ea44b2ac4cd773c25ee312d1aa8a3543487a6ed9a8ac342d35b875c04",
       "context": "            packet.owner = PacketOwner::Stack;\n            let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);\n            let frames_before = VIRTIO_RX_FRAMES.load(Ordering::Relaxed);\n            unsafe {\n                let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);\n                queue.write(VirtqueueMemory::empty());\n                device.prepare_receive_queue();",
-      "context_start_line": 1293,
-      "end_line": 1318,
+      "context_start_line": 1314,
+      "end_line": 1339,
       "kind": "unsafe_block",
-      "line": 1296,
+      "line": 1317,
       "path": "kernel/src/network_device.rs"
     },
     {
       "column": 13,
       "construct_sha256": "4ba6400ad86b916445c55845183b3fe1abe143a5c9639d1d9dce408201bd8e8a",
       "context": "            device.rx_notify = addr_of_mut!(notification) as u64;\n            let frames_before = VIRTIO_RX_FRAMES.load(Ordering::Relaxed);\n            let notifications_before = VIRTIO_QUEUE_NOTIFICATIONS.load(Ordering::Relaxed);\n            unsafe {\n                let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);\n                queue.write(VirtqueueMemory::empty());\n                device.prepare_receive_queue();",
-      "context_start_line": 1333,
-      "end_line": 1347,
+      "context_start_line": 1354,
+      "end_line": 1368,
       "kind": "unsafe_block",
-      "line": 1336,
+      "line": 1357,
       "path": "kernel/src/network_device.rs"
     },
     {
       "column": 13,
       "construct_sha256": "09e7d73eea6c99a719c8f5e8078d9505a566ac7559fcf34a270f21785f2d4253",
       "context": "        for (used, id, success) in [(1, 0, true), (1, 1, false), (2, 0, false), (0, 0, false)] {\n            let mut device = VirtioNet::new();\n            device.tx_notify = addr_of_mut!(notification) as u64;\n            unsafe {\n                let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);\n                queue.write(VirtqueueMemory::empty());\n                (*queue).used.index = used;",
-      "context_start_line": 1361,
-      "end_line": 1369,
+      "context_start_line": 1382,
+      "end_line": 1390,
       "kind": "unsafe_block",
-      "line": 1364,
+      "line": 1385,
       "path": "kernel/src/network_device.rs"
     },
     {
       "column": 17,
       "construct_sha256": "6f5fddce499f9a6326d131bd6f3112b453be94e6627af07e99c5918777b06c9b",
       "context": "            if !success {\n                // Timeout or corrupt completion does not retire DMA ownership.\n                // A late plausible completion must not undo quarantine either.\n                unsafe {\n                    let queue = addr_of_mut!(VIRTIO_TX_QUEUE_MEMORY);\n                    let buffer_before = addr_of!(VIRTIO_TX_BUFFER.0).read();\n                    let descriptor_before = (*queue).descriptors[0];",
-      "context_start_line": 1378,
-      "end_line": 1402,
+      "context_start_line": 1399,
+      "end_line": 1423,
       "kind": "unsafe_block",
-      "line": 1381,
+      "line": 1402,
       "path": "kernel/src/network_device.rs"
     },
     {

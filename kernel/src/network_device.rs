@@ -1230,27 +1230,48 @@ mod completion_tests {
         let mut packet = PacketBuffer::empty();
         assert!(device.receive(&mut packet));
         assert_eq!(packet.bytes[0], 1);
-        // A new completion/IRQ arrives after descriptor zero was reposted.
-        // Finish the immutable old batch before admitting that next snapshot.
-        unsafe {
-            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
-            (*queue).used.ring[2] = VirtqUsedElement { id: 0, length: 72 };
-            (*queue).used.index = 3;
-            let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
-            (&mut (*buffers)[0])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(3);
-        }
-        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
         assert!(
             device.receive(&mut packet),
             "a coalesced completion must not wait for recovery polling"
         );
         assert_eq!(packet.bytes[0], 2);
+        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 2);
+        assert_eq!(VIRTIO_RECOVERY_COMPLETIONS.load(Ordering::Relaxed), 0);
+        assert!(!device.receive(&mut packet));
+
+        // Separately admit another two-descriptor batch, then let a new
+        // completion/IRQ arrive after its first buffer was copied/reposted.
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            (*queue).used.ring[2] = VirtqUsedElement { id: 0, length: 72 };
+            (*queue).used.ring[3] = VirtqUsedElement { id: 1, length: 72 };
+            (*queue).used.index = 4;
+            let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+            (&mut (*buffers)[0])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(3);
+            (&mut (*buffers)[1])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(4);
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        assert!(device.receive(&mut packet));
+        assert_eq!(packet.bytes[0], 3);
+        unsafe {
+            let queue = addr_of_mut!(VIRTIO_RX_QUEUE_MEMORY);
+            (*queue).used.ring[4] = VirtqUsedElement { id: 0, length: 72 };
+            (*queue).used.index = 5;
+            let buffers = addr_of_mut!(VIRTIO_RX_BUFFERS.0);
+            (&mut (*buffers)[0])[VIRTIO_NET_HEADER_BYTES..VIRTIO_NET_HEADER_BYTES + 60].fill(5);
+        }
+        VIRTIO_INTERRUPT_PENDING.store(true, Ordering::Release);
+        assert!(
+            device.receive(&mut packet),
+            "finish the immutable old batch first"
+        );
+        assert_eq!(packet.bytes[0], 4);
         assert!(
             device.receive(&mut packet),
             "new IRQ readiness survives the old batch drain"
         );
-        assert_eq!(packet.bytes[0], 3);
-        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 3);
+        assert_eq!(packet.bytes[0], 5);
+        assert_eq!(VIRTIO_RX_INTERRUPT_COMPLETIONS.load(Ordering::Relaxed), 5);
         assert_eq!(VIRTIO_RECOVERY_COMPLETIONS.load(Ordering::Relaxed), 0);
         assert!(!device.receive(&mut packet));
         // The same contract holds when the 16-bit used index wraps.
