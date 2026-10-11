@@ -34,6 +34,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| Permanent aligned allocation and irreversible CPU claim | 6 |
 | Immutable RX completion batch admission and drain | 7 |
 | Single-buffer TX publication, completion and quarantine | 6 |
 | Owned PS/2 decoding, pointer bounds and bounded event queue | 6 |
@@ -51,7 +52,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **114** |
+| **Total** | **120** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -92,6 +93,12 @@ raw extents, pending-batch replacement denial and wrap. The production driver
 host fixture separately verifies rejection before copying/reposting a valid
 prefix, preserved IRQ readiness and the unchanged oversized packet drop policy.
 Neither executes device DMA; see [the RX boundary](RX_QUEUE_OWNERSHIP.md).
+
+The permanent DMA allocation addition interprets six claim/lifetime/provenance
+tests, including contention using a Send-but-not-Sync payload. Four additional
+compile-fail checks cover static storage, non-cloneable/non-shared tokens and the
+Send payload bound. Device DMA and reset remain outside this scope; see
+[the allocation boundary](PERMANENT_DMA.md).
 
 The 20,000-operation randomized allocator stress exceeded the exploratory
 240-second Miri budget. That failure remains evidence, not a pass. It is an

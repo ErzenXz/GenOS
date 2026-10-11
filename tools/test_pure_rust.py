@@ -25,6 +25,7 @@ MIRI_FLAGS = "-Zmiri-strict-provenance -Zmiri-seed=1"
 # Its Miri exploratory run exceeded 240 seconds; it was not a passing Miri case.
 STRESS = "physmem::tests::randomized_fragmented_allocations_never_alias_live_grants"
 SUITES = [
+    ("permanent_dma", "kernel", "permanent_dma::tests", 6, []),
     ("rx_queue", "kernel", "rx_queue::tests", 7, []),
     ("tx_queue", "kernel", "tx_queue::tests", 6, []),
     ("framebuffer", "kernel", "display::framebuffer::tests", 11, []),

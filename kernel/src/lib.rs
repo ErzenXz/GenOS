@@ -26,6 +26,7 @@ pub mod native_image;
 pub mod net;
 pub mod page_table;
 pub mod path_policy;
+pub mod permanent_dma;
 pub mod physmem;
 pub mod protection;
 pub mod recovery;
@@ -83,7 +84,7 @@ mod arch {
     }
 }
 #[cfg(test)]
-#[allow(dead_code)] // Compile the production driver; only RX completion is invoked.
+#[allow(dead_code)] // Compile production TX/RX paths without privileged hardware I/O.
 #[path = "network_device.rs"]
 mod network_device_under_test;
 #[cfg(test)]

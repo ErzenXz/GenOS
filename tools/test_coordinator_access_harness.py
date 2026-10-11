@@ -52,6 +52,9 @@ class CoordinatorAccessHarnessTests(unittest.TestCase):
                 patch=patch_fixture(root,case)
                 self.assertTrue((root/names[1]).read_text().startswith(original))
                 self.assertIn('COORDINATOR_ACCESS_WINDOW',patch)
+                if case == 'network-device-repeat':
+                    self.assertIn('network::run_device_repeat_probe()',patch)
+                    self.assertIn('let _ = stack.device.discover();',patch)
                 snapshot=[(root/name).read_text() for name in names]
                 with self.assertRaises(ValueError):
                     patch_fixture(root,case)
