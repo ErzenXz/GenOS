@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from audit_lifecycle_churn import REQUIRED_FILES, audit
+from audit_lifecycle_churn import REQUIRED_FILES, archived_template, audit
 from test_cpu_paging import CAPABILITIES_ID, START_ID, STATUS_ID
 from test_cpu_paging_harness import valid_qmp
 from test_lifecycle_churn_harness import valid_log
@@ -31,6 +31,13 @@ def save(root, m): (root/'manifest.json').write_text(json.dumps(m))
 
 
 class LifecycleAuditTests(unittest.TestCase):
+    def test_archived_templates_are_literals_and_are_never_executed(self):
+        self.assertEqual(archived_template(b"FIXTURE = 'old version __CYCLES__'"), 'old version __CYCLES__')
+        for source in [b'', b"FIXTURE = 7", b"FIXTURE = 'missing placeholder'",
+                       b"FIXTURE = '__CYCLES__'; FIXTURE = '__CYCLES__'",
+                       b"FIXTURE = __import__('os').system('false')"]:
+            with self.subTest(source=source), self.assertRaises(ValueError): archived_template(source)
+
     def test_short_pass_is_explicitly_not_qualification(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);evidence(root)
