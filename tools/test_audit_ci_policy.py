@@ -161,6 +161,32 @@ class CiPolicyTests(unittest.TestCase):
             self.assertFalse(manifest['verification_passed'])
             self.assertIn('API unavailable', manifest['failure'])
 
+    def test_historical_contract_replay_cannot_override_a_live_policy_read(self):
+        tool = Path(__file__).with_name('audit_ci_policy.py')
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            historical = dict(contract(), repository='ErzenXz/GenOS', branch='main')
+            for name, value in [('contract.json', historical), ('protection.json', policy()), ('runs.json', report())]:
+                (root/name).write_text(json.dumps(value))
+            base = [sys.executable, str(tool), '--head', HEAD, '--contract', str(root/'contract.json')]
+            refused = subprocess.run(base, capture_output=True, text=True, timeout=10)
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn('only allowed with retained', refused.stderr)
+            command = base + ['--protection', str(root/'protection.json'), '--check-runs', str(root/'runs.json'),
+                              '--require-success', '--evidence', str(root/'audit')]
+            passed = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            self.assertEqual(passed.returncode, 0, passed.stderr)
+            manifest = json.loads((root/'audit/manifest.json').read_text())
+            self.assertEqual(manifest['read_mode'], 'retained-replay')
+            self.assertEqual(manifest['contract_source'], str(root/'contract.json'))
+            self.assertTrue(manifest['verification_passed'])
+            failed = report(); failed['check_runs'][0]['conclusion'] = 'failure'
+            (root/'runs.json').write_text(json.dumps(failed))
+            command[-1] = str(root/'failed-audit')
+            rejected = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse(json.loads((root/'failed-audit/manifest.json').read_text())['verification_passed'])
+
 
 if __name__ == '__main__':
     unittest.main()
