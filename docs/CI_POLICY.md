@@ -1,6 +1,6 @@
 # Required verification and exact-head execution
 
-The `main` branch requires the seventy-five GitHub Actions checks listed in
+The `main` branch requires the seventy-six GitHub Actions checks listed in
 [`required-ci-checks.json`](../tools/required-ci-checks.json). Each context is bound
 to GitHub Actions App ID 15368. Required checks use strict base freshness and apply
 to administrators; force pushes and branch deletion are disabled. This policy was
@@ -10,7 +10,7 @@ separate roadmap requirements.
 
 The contract covers the CI, exception-entry and foundation-containment workflows:
 host/static/release/documentation/unsafe checks, parser seeds, normal boots,
-single-core and boot-memory admission, twelve user/kernel exceptions, and forty-five
+single-core and boot-memory admission, twelve user/kernel exceptions, and forty-six
 foundation fixtures, including scoped current-process borrow reentry and a
 fresh-volume write failure through the production quarantine and shell, plus a
 falsified post-CR3 observation through the production CPU-local gate, and real
@@ -22,7 +22,10 @@ borrows and repeated initialization/mount, without device or CPU fault injection
 An additional VFS lane reenters the rollback adapter during a held snapshot
 callback and requires its distinct transaction refusal. A sixth coordinator lane
 calls device discovery directly after an unavailable first attempt and requires
-the irreversible DMA-claim refusal before further hardware I/O.
+the irreversible DMA-claim refusal before further hardware I/O. The independent
+512-cycle lifecycle lane executes real Ring 3 exit/kill/reap across diagnostic
+byte-counter and PID reuse boundaries, requiring exact frame/slot cleanup. It
+is short regression evidence; the weekly job retains the full 10,000-cycle run.
 Matrix jobs use `fail-fast: false`; a failing CPU fixture must
 not hide unrelated results. The weekly extended validation workflow remains
 scheduled qualification, rather than a pull-request check or completed soak.
@@ -60,7 +63,11 @@ python3 tools/audit_ci_policy.py --head COMMIT_SHA --protection PATH/protection.
 
 API responses are evidence obtained by the caller, not signed attestations or
 independent reviewer approval. Replay verifies that snapshot; a fresh live read
-is needed to establish current enforcement. Future workflow/check renames require
+is needed to establish current enforcement. If the versioned contract has since
+changed, add `--contract PATH/contract.json` with the original retained contract.
+That override requires both retained responses and is refused for live reads;
+the manifest records replay mode and the contract source. All failure, head and
+app-binding checks still apply. Future workflow/check renames require
 updating both the versioned contract and actual branch protection, then retaining
 a new readback and exact-head execution audit. Neither side may silently remove
 checks to allow a failing candidate to merge.

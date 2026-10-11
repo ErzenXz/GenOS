@@ -203,11 +203,15 @@ permissions; no remote result is claimed for those additions. The baseline lanes
 The QEMU harness retains phase-specific serial logs and reproducibility metadata.
 Local commands cover normal debug/release boot, BSP admission, deterministic parser
 stress and a checked lexical unsafe inventory. The new CI definitions also configure
-those lanes and weekly repetition. Configuration is not execution: there is no new
-remote CI or completed 24-hour/72-hour qualification result. The separate audited
+those lanes and weekly repetition. Configuration is not execution: exact-head
+remote results are retained in the verification ledger, with four strict CPU
+failures still blocking integration. No 24-hour/72-hour qualification is complete.
+The separate audited
 1000 fresh release boots passed on their recorded source/profile. The scheduled
 180-minute job cannot establish the longer soak targets; those need an appropriate
-dedicated test environment. Coverage-guided fuzzing and semantic unsafe review remain
+dedicated test environment. A separate local [10,000-cycle Ring 3 workload](LIFECYCLE_QUALIFICATION.md)
+now passes exact per-cycle reclamation; it does not replace mixed-pressure soak
+qualification. Coverage-guided fuzzing and semantic unsafe review remain
 open. See [current evidence](VERIFICATION.md) and [research](research/README.md).
 
 ## Target CI lanes

@@ -34,6 +34,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| Saturating syscall diagnostic totals and concurrent event ordering | 3 |
 | Permanent aligned allocation and irreversible CPU claim | 6 |
 | Immutable RX completion batch admission and drain | 7 |
 | Single-buffer TX publication, completion and quarantine | 6 |
@@ -52,7 +53,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **120** |
+| **Total** | **123** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
@@ -93,6 +94,11 @@ raw extents, pending-batch replacement denial and wrap. The production driver
 host fixture separately verifies rejection before copying/reposting a valid
 prefix, preserved IRQ readiness and the unchanged oversized packet drop policy.
 Neither executes device DMA; see [the RX boundary](RX_QUEUE_OWNERSHIP.md).
+
+The syscall diagnostic addition interprets three total/linearization tests,
+including the former byte-counter overflow, exact totals above 255 and saturation
+at u64::MAX. The real [lifecycle workload](LIFECYCLE_QUALIFICATION.md) found the
+original panic and executes actual syscall/cleanup paths separately.
 
 The permanent DMA allocation addition interprets six claim/lifetime/provenance
 tests, including contention using a Send-but-not-Sync payload. Four additional

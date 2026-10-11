@@ -118,10 +118,16 @@ a later run, while the unique `normal-evidence` directories retain each attempt.
 
 The separate `Long validation` workflow schedules 1000 boots weekly and supports
 a manually selected count. It also runs three million-input parser campaigns in
-independent jobs. Successful and failed runs retain artifacts. Adding this lane
-does not claim its 1000-boot gate has already passed; the gate remains open until
-a completed run supplies that evidence. Fresh boots do not replace sustained
+independent jobs. Successful and failed runs retain artifacts. The separate
+audited local 1000-boot run passed on its recorded source/profile; configuration
+does not prove a new remote execution. Fresh boots do not replace sustained
 single-boot memory-pressure or lifecycle churn testing.
+
+The [lifecycle churn command](LIFECYCLE_QUALIFICATION.md) now executes 10,000
+actual Ring 3 exit/kill/reap cycles in one validation boot, with source/trace
+replay and exact per-cycle frame/slot baselines. The weekly workflow configures
+that fixed-count lane separately. Its local pass is debug-validation portability
+evidence, not a completed 24-hour mixed-pressure or 72-hour console soak.
 
 
 ## Interactive output policy
