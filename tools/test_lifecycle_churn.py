@@ -144,7 +144,7 @@ def check_cycles(cycles: int) -> None:
         raise ValueError('cycles must be between 2 and 10000')
 
 
-def patch_fixture(root: Path, cycles: int) -> str:
+def patch_fixture(root: Path, cycles: int, *, template: str = FIXTURE) -> str:
     check_cycles(cycles)
     names = ['kernel/src/main.rs', 'kernel/src/userspace.rs']
     before = {name: (root / name).read_text() for name in names}
@@ -154,7 +154,7 @@ def patch_fixture(root: Path, cycles: int) -> str:
     anchor = '        serial::println("PROCESS_GENERATION_STRESS_READY");'
     after[names[0]] = replace_once(after[names[0]], anchor,
         anchor + '\n        userspace::run_lifecycle_churn_probe();')
-    after[names[1]] += FIXTURE.replace('__CYCLES__', str(cycles))
+    after[names[1]] += template.replace('__CYCLES__', str(cycles))
     for name in names:
         (root / name).write_text(after[name])
     return ''.join(''.join(difflib.unified_diff(before[name].splitlines(True), after[name].splitlines(True),

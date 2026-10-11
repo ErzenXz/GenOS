@@ -2,6 +2,7 @@
 """Replay retained lifecycle evidence; short passes cannot satisfy the 10000 gate."""
 from __future__ import annotations
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -16,6 +17,20 @@ from test_lifecycle_churn import QUALIFICATION_CYCLES, check_cycles, patch_fixtu
 
 REQUIRED_FILES = {'build.log', 'fixture.patch', 'qemu-command.json', 'qemu.log',
                   'qmp-received.jsonl', 'qmp-sent.jsonl', 'qmp.json', 'serial.log'}
+
+
+def archived_template(source: bytes) -> str:
+    # Read the archived literal, never import/execute archived Python. Fixture
+    # templates evolve; replay must use the exact reviewed source's version.
+    values = [node.value for node in ast.parse(source).body
+              if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
+                  and target.id == 'FIXTURE' for target in node.targets)]
+    if len(values) != 1:
+        raise ValueError('missing or duplicate archived fixture template')
+    value = ast.literal_eval(values[0])
+    if not isinstance(value, str) or value.count('__CYCLES__') != 1:
+        raise ValueError('malformed archived fixture template')
+    return value
 
 
 def audit(root: Path, cycles: int = QUALIFICATION_CYCLES, source: Path | None = None) -> dict:
@@ -62,13 +77,14 @@ def audit(root: Path, cycles: int = QUALIFICATION_CYCLES, source: Path | None = 
         with tempfile.TemporaryDirectory(prefix='genos-churn-replay-') as temporary:
             fixture = Path(temporary)
             with tarfile.open(fileobj=io.BytesIO(archive), mode='r:') as tree:
+                template = archived_template(tree.extractfile('tools/test_lifecycle_churn.py').read())
                 for name in ['kernel/src/main.rs', 'kernel/src/userspace.rs']:
                     member = tree.getmember(name)
                     if not member.isfile():
                         raise ValueError('source fixture input is not a regular file')
                     path = fixture / name; path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(tree.extractfile(member).read())
-            expected = patch_fixture(fixture, cycles)
+            expected = patch_fixture(fixture, cycles, template=template)
             if hashlib.sha256(expected.encode()).hexdigest() != manifest['fixture_sha256']:
                 raise ValueError('fixture is not the preserved production source plus probe')
     return {'status': 'passed', 'commit': manifest['commit'], **result,
