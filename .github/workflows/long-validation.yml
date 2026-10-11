@@ -73,3 +73,31 @@ jobs:
             build/parser-stress.log
             tools/parser-stress/target/failures/
           retention-days: 14
+
+  lifecycle-churn:
+    name: Single-boot 10000 Ring 3 lifecycles
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install developer VM dependencies
+        run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Check lifecycle evidence and fixture regressions
+        run: python3 -m unittest discover -s tools -p 'test_lifecycle_churn_harness.py'
+      - name: Execute and reclaim 10000 processes in one boot
+        shell: bash
+        run: |
+          mkdir -p build
+          python3 tools/test_lifecycle_churn.py 2>&1 | tee build/lifecycle-churn-run.log
+      - name: Retain completed cycles and the first failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lifecycle-churn-evidence
+          path: |
+            build/lifecycle-churn-run.log
+            build/lifecycle-churn-evidence/
+          if-no-files-found: warn
+          retention-days: 14
