@@ -31,7 +31,7 @@ Those are scoped local results. The VM candidate now has pinned arguments and an
 exact tool/firmware preflight; independent reproduction remains missing.
 The earlier missing-`workflow` publication restriction was resolved on October 10.
 [Draft PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the independent jobs
-and has remote results. The [required-check policy](CI_POLICY.md) binds all seventy-five
+and has remote results. The [required-check policy](CI_POLICY.md) binds all seventy-six
 verification jobs to GitHub Actions and is enforced on `main`, including admins.
 Strict CPU/IRET failures still block integration; publication is not a passing release.
 
@@ -42,6 +42,9 @@ Miri run on selected pure Rust modules and a bounded
 ownership model have scoped local evidence; neither covers the whole kernel or
 unbounded execution. The configured 180-minute long-run job is
 not a completed run and cannot establish the proposed 24/72-hour soak durations.
+The separate local [10,000-cycle lifecycle workload](LIFECYCLE_QUALIFICATION.md)
+passed with exact reclamation, but uses one serial child in a debug validation
+image and does not supply sustained mixed memory/IPC/I/O pressure.
 **Roadmap:** F0, F6, F7, C5, Stage 10.
 
 ## CPU state, boot and memory protection

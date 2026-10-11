@@ -137,16 +137,16 @@ must not deepen a known ownership or isolation violation.
 - [ ] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
   Publication is resolved: [draft PR #9](https://github.com/ErzenXz/GenOS/pull/9)
   publishes the versioned required GitHub Actions jobs. Last completed head
-  `d203b43` passed 70/74; the new driver-claim lane raises enforcement to 75
+  `226f8bb` passed 71/75; the lifecycle regression raises enforcement to 76
   and needs its own exact-head execution. Both user/kernel #XM and
   two IRET boundaries fail; the PR remains unmerged. This does not close F0.1.
 - [x] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
   [REFERENCE_VM.md](docs/REFERENCE_VM.md) records the `genos-q35-tcg-v3` values, admitted/excluded feature matrix, artifact identity and profile-upgrade procedure. `reference-check` rejects wrong compiler/QEMU/firmware identities. Independent artifact acquisition and reviewer reproduction remain F0.5; this item does not qualify other hosts or devices.
 - [x] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
-  All seventy-four prior named GitHub Actions checks completed independently on `d203b43`:
-  70 passed and four failed, with no hidden/skipped/cancelled lanes. `main`
-  now requires 75 contexts, including direct driver rediscovery refusal, bound
-  to the Actions app with strict base freshness and
+  All seventy-five prior named GitHub Actions checks completed independently on `226f8bb`:
+  71 passed and four failed, with no hidden/skipped/cancelled lanes. `main`
+  now requires 76 contexts, including direct driver rediscovery and lifecycle
+  overflow regression, bound to the Actions app with strict base freshness and
   admin enforcement; force pushes/deletion are disabled. The read-only
   [policy audit](docs/CI_POLICY.md) retains API readback/execution evidence and
   rejects missing, duplicate, wrong-app, stale or unexecuted lanes. Its success
@@ -296,11 +296,17 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
   Real normal release boots without a storage controller, with an empty controller, and with a NIC but no host test service each reached a fresh Ring 3 terminal within the declared 60-second budget. Retained per-run commands, environment/source/image identities and visible `echo`/`net`/`mem` transcripts live under `build/startup-dependency-evidence/`; see [verification](docs/VERIFICATION.md#september-23-dependency-and-format-slices).
 - [ ] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
 - [x] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
-  Pinned nightly Miri now covers 120 production-selected pure Rust tests, including permanent DMA claims, RX/TX ownership, scoped framebuffer and VFS snapshot additions; see [scope and exclusions](docs/PURE_RUST_VERIFICATION.md). The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. CPU/device execution, unsafe sites outside the selected modules and unbounded executions are not covered.
+  Pinned nightly Miri now covers 123 production-selected pure Rust tests, including syscall diagnostics, permanent DMA claims, RX/TX ownership, scoped framebuffer and VFS snapshot additions; see [scope and exclusions](docs/PURE_RUST_VERIFICATION.md). The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. CPU/device execution, unsafe sites outside the selected modules and unbounded executions are not covered.
 - [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
 - [x] **F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.
   `cargo xtask test-repeat 1000` passed all 1000 fresh normal release boots on clean source `7b8caa9` and profile `genos-q35-tcg-v3`, with one unchanged image SHA-256 `806f6095d7586020a3455547b4e7c23e90a44eaa89d9210e255a0a66f48c1b59`; there was no first failure. Every boot exercised real `uname`, process launch/status/kill/reap and persistent file I/O. All manifests and 2000 serial/QEMU logs were retained under `build/fifty-repeat-evidence/7b8caa9/`; the independent audit rejects missing/duplicate/out-of-order boots and checked every log hash. This is a fresh-boot lane, not F6.6's single-boot 24-hour pressure or C5's 72-hour console workload.
 - [ ] **F6.6:** qualify the existing kernel fixtures with at least 10000 lifecycle cycles and a proposed 24-hour single-boot memory/IPC/I/O pressure run. Record bounded caches, resource baselines, deadlines and coverage gaps. C5 later repeats and extends this with general applications and the complete console workflow; R1 does not depend on those later features.
+  The [single-boot lifecycle lane](docs/LIFECYCLE_QUALIFICATION.md) passed 10,000
+  actual Ring 3 cycles on clean `9a9913a`: 5,000 exits and 5,000 kills, exact
+  per-cycle frame/slot reclamation and all 255 nonzero PIDs reused. It found and
+  retained a production byte-counter panic, now fixed by saturating diagnostic
+  totals. This is debug-validation portability evidence on QEMU 11.1.2; the
+  proposed 24-hour mixed pressure and frozen-reference qualification remain open.
 
 ### F7 — Reviewable delivery process
 

@@ -1873,3 +1873,107 @@ draft/unmerged. Full roadmap work includes ownership, CPU/reference qualificatio
 independent review, sustained workloads and later platform/application stages;
 this change closes none of their broader gates. The underlying remote ATA timeout
 remains unresolved.
+
+## October 11 single-boot lifecycle churn and syscall diagnostic overflow
+
+Production source `2e537dcf57934744c25c60537107c8e04cbe813e` fixes a valid
+syscall panicking after its diagnostic byte counter overflows. Ping, ABI, report
+and output now use the pure `DiagnosticCounter`: 64-bit atomic event totals and
+returned values saturate without wrapping. Initial boot validation still
+requires exact totals, so extra calls are not hidden by saturation at a boot
+threshold. No allocation/handle authority, ABI 18, capacity budget, CPU entry
+policy or frozen reference changed. The four counters occupy 32 rather than
+four bytes before surrounding linker alignment; no unsafe code was introduced.
+
+The new [single-boot lifecycle workload](LIFECYCLE_QUALIFICATION.md) only adds a
+probe call and function to an immutable source archive. All original process
+construction, Ring 3 execution, syscall, context, scrub, handle cleanup and reap
+functions remain unchanged. It alternates normal exit and output-observed
+kill/reap, reuses one manager's slot with increasing incarnation, and requires
+exact live-frame/slot/active baselines, cumulative reclamation, consistent
+allocator/ledger state and restored IF after every cycle. The host parser also
+requires ordered real production image-load, spawn, user output, terminal,
+reclamation and reap records per cycle. The fixed VM budget is 1800 seconds,
+separate from the 600-second build budget.
+
+- The first full run on clean `19f53ad248e5ff9f10fc967b794250e16f71ba1a`
+  completed 231 cycles and panicked at cycle 232, source line 6503, in the
+  production `PING_COUNT.fetch_add(...) + 1`. No fault was injected. Raw logs,
+  exact source/archive/image identity and hashes remain at
+  `build/lifecycle-churn-evidence/1791678519435789000/`; the counterexample audit
+  is `build/lifecycle-counterexample-audit.json`. The initial 20-cycle pass on
+  that same source is explicitly exploratory, not a 10,000-cycle qualification.
+- The first corrected-kernel 10,000-cycle run and 512-cycle counterpart both
+  reached their final VM summaries, then failed host admission because the
+  initial parser wrongly excluded PIDs 1–3. Production admits every nonzero
+  byte PID. Both failed manifests remain unchanged under runs
+  `1791678682128761000` and `1791679092228681000`; they are not relabeled as
+  passes. The corrected harness checks the entire 1–255 succession and requires
+  PID reuse only after 255 cycles. Fresh runs below provide passing admission.
+- Clean harness source `9a9913a5dd657df90bd8d3d3063893b6df83b7f6` passed
+  **10,000 cycles: 5,000 normal exits, 5,000 kills, 100,000 reclaimed process
+  frames**, with all 255 PIDs reused and the live-frame baseline **1263** after
+  every cycle. Source/fixture/image and raw serial/QEMU/QMP evidence remain at
+  `build/lifecycle-churn-evidence/1791679263430032000/`. A separate **512-cycle**
+  run on the same source passed at `build/lifecycle-churn-evidence/1791679263430055000/`,
+  with 256 exits, 256 kills and 5120 reclaimed frames. It explicitly does not
+  satisfy the 10,000-cycle count. These totals are cumulative page lifetimes,
+  not simultaneous pressure or physical-remanence erasure guarantees.
+- **369 workspace unit tests**, **13 compile-fail doctests**, **148 Python tests**
+  and strict kernel host/normal/validation Clippy passed. Three new pure tests
+  cross the former byte limit, verify u64 saturation and concurrent event totals.
+  Logs use `build/lifecycle-counter-*-tests.log`,
+  `build/lifecycle-counter-*-clippy.log` and
+  `build/lifecycle-delivery-final-python-tests.log`. Inventory source/context
+  review retains **409 lexical sites across 107 sources**, with no new unsafe
+  block, unsafe Send/Sync or assembly operation.
+- Pinned strict-provenance Miri/seed 1 passed **123 selected tests** plus the
+  unchanged native allocator stress on clean `2e537dc`; the bounded model again
+  passed 3,257,436 sequences and 19,248,492 transitions with its injected-oracle
+  counterexample and safe replay. Exact per-command results/hashes remain at
+  `build/pure-rust-evidence/1791678682128786000/`. The complete system suite also
+  passed **18 clean-source workflows** on that core, including network/no-HTTP,
+  storage failures/recovery, SDK, memory/ten allocation cutoffs, six protection
+  probes and normal debug/release boots. Its manifest/log hashes are indexed at
+  `build/2e537dc-system-evidence-index.json`; output remains at
+  `build/lifecycle-counter-system-tests.log`.
+- `tools/audit_lifecycle_churn.py` checks source/archive identity, the archived
+  literal fixture template without executing archived Python, artifact hashes,
+  every lifecycle record, raw QMP correspondence and live status. It rejects
+  failed manifests and cannot admit a short run as 10,000 cycles. Replay results
+  remain at `build/lifecycle-10000-replay.json` and
+  `build/lifecycle-boundary-replay.json`. Final combined checks at
+  `build/lifecycle-delivery-verification.json` also prove all compiled kernel,
+  bootloader, userspace, ABI, compiler/configuration and Miri/model inputs remain
+  unchanged from `2e537dc`; subsequent changes affect harness/audit/CI/docs only.
+
+Previous published `226f8bb3e9bc4b89a00ed560c86dcb87432147f4` completed **75
+required checks: 71 passed and four failed**. Its
+[main CI](https://github.com/ErzenXz/GenOS/actions/runs/38098174888) passed;
+[foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38098174866)
+passed direct-device rediscovery refusal and retains only initial-RIP/NMI-IRET
+failures; [exception entry](https://github.com/ErzenXz/GenOS/actions/runs/38098174903)
+retains user/kernel #XM failures. All artifacts remain under
+`build/remote-evidence/226f8bb/`; integrity checks cover 93 manifests and 137
+artifact hashes, including workflow duplication. The early policy read correctly
+failed while Build and boot was pending at `build/ci-policy-evidence/226f8bb-final-audit/`.
+The completed 75-check audit is `build/ci-policy-evidence/226f8bb-completed-audit/`;
+required-success rejection remains at `build/ci-policy-evidence/226f8bb-required-success/`.
+Explicit historical-contract replay is retained separately; that option requires
+both recorded responses and cannot override live enforcement.
+
+Main now requires **76 strict app-bound checks**, adding only
+`Foundation lifecycle-counter-boundary` with 512 cycles and a 180-second VM
+budget. Every other policy field is preserved in
+`build/ci-policy-evidence/lifecycle-counter-policy-1791679362567210000/`.
+The weekly/manual long-validation workflow runs the full fixed 10,000-cycle
+command and retains first-failure evidence. Configuration is not remote execution
+of that long run, and the new published head needs its own 76-check execution.
+
+F6.6 remains open: this serial one-child workload is a debug validation kernel
+with optimized userspace and does not establish 24-hour mixed memory/IPC/I/O
+pressure, sustained release behavior, concurrent-child/cancellation/device
+schedules or C5's later 72-hour console workload. Local QEMU 11.1.2 remains
+portability evidence against frozen 11.1.1. Full roadmap scope, the original
+**51/100** console count, Experimental status and draft/unmerged PR #9 remain
+unchanged; independent review and all four strict CPU failures stay open.

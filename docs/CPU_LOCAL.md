@@ -44,6 +44,7 @@ entry halts and provides no recoverable unwinding promise.
 | PS/2 `STATE` / `ACCESS` | IRQ-shared on the admitted BSP | One masked, non-escaping scope for decoders, queue, bounds and all observations; borrow/publication end before IF restores |
 | Memory `STATE` / `ACCESS` | BSP memory coordinator; boot then ready | One masked, reentry-checked scope for bitmap, ledger, fault counter and snapshots; initialization once with IF clear |
 | VirtIO DMA allocation / claim | Permanent static bytes; one driver CPU owner | Irreversible static claim before discovery; no drop/failure/reset-based reclamation; token is neither Clone nor Sync; see [DMA obligations](PERMANENT_DMA.md) |
+| Ping/ABI/report/output totals | Atomic syscall diagnostics; no allocation or handle authority | 64-bit saturating totals preserve exact initial boot counts and never wrap; see [lifecycle regression](LIFECYCLE_QUALIFICATION.md) |
 | `CURRENT_PROCESS` binding | One admitted BSP; per-slice publication | Owner reference suspended; kernel root restored before publication clears; IF restored last |
 | Slot access flag | One synchronous entry callback | Set before dereference; nested access denied; private scope guard releases before assembly resumes |
 | `UserProcess` fields | Coordinator outside a slice; scoped entry borrow during a slice | No owner access while published; reclaim occurs only after leaving the slice |
