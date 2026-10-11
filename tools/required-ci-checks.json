@@ -236,6 +236,10 @@
       "app_id": 15368
     },
     {
+      "context": "Foundation lifecycle-counter-boundary",
+      "app_id": 15368
+    },
+    {
       "context": "Foundation memory-before-init",
       "app_id": 15368
     },

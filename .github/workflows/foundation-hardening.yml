@@ -73,6 +73,9 @@ jobs:
           - name: allocation-irq-deferred
             script: test_memory_access.py
             args: --case irq-deferred
+          - name: lifecycle-counter-boundary
+            script: test_lifecycle_churn.py
+            args: --cycles 512 --timeout 180
           - name: coordinator-vfs-borrow
             script: test_coordinator_access.py
             args: --case vfs-borrow
@@ -185,6 +188,7 @@ jobs:
             build/input-irq-evidence/
             build/memory-access-evidence/
             build/coordinator-access-evidence/
+            build/lifecycle-churn-evidence/
             build/fault-containment-evidence/
           if-no-files-found: warn
           retention-days: 14
