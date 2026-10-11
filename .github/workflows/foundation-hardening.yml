@@ -73,6 +73,18 @@ jobs:
           - name: allocation-irq-deferred
             script: test_memory_access.py
             args: --case irq-deferred
+          - name: interrupt-before-arch
+            script: test_interrupt_admission.py
+            args: --case before-arch
+          - name: interrupt-repeat-before-seal
+            script: test_interrupt_admission.py
+            args: --case repeat-before-seal
+          - name: interrupt-repeat-after-seal
+            script: test_interrupt_admission.py
+            args: --case repeat-after-seal
+          - name: interrupt-enable-before-init
+            script: test_interrupt_admission.py
+            args: --case enable-before-init
           - name: lifecycle-counter-boundary
             script: test_lifecycle_churn.py
             args: --cycles 512 --timeout 180
@@ -188,6 +200,7 @@ jobs:
             build/input-irq-evidence/
             build/memory-access-evidence/
             build/coordinator-access-evidence/
+            build/interrupt-admission-evidence/
             build/lifecycle-churn-evidence/
             build/fault-containment-evidence/
           if-no-files-found: warn

@@ -359,7 +359,7 @@ pub fn init() {
             idt_ptr.add(index).write(IdtEntry::new(
                 index,
                 crate::interrupts::vector_handler(index),
-                false,
+                index == crate::userspace::SYSCALL_VECTOR,
             ));
         }
         let ptr = DescriptorTablePointer {
@@ -375,6 +375,24 @@ pub fn init() {
     }
     init_machine_check();
     crate::serial::println("EXCEPTION_NESTING_READY policy=halt terminal=double-fault ist_slots=5");
+    if !BOOT_CLAIM.finish_table_init(features, apic_base) {
+        halt_loop();
+    }
+}
+
+pub fn begin_interrupt_init() -> bool {
+    let (features, apic_base) = boot_cpu_identity();
+    BOOT_CLAIM.begin_interrupt_init(features, apic_base)
+}
+
+pub fn finish_interrupt_init() -> bool {
+    let (features, apic_base) = boot_cpu_identity();
+    BOOT_CLAIM.finish_interrupt_init(features, apic_base)
+}
+
+pub fn interrupts_ready() -> bool {
+    let (features, apic_base) = boot_cpu_identity();
+    BOOT_CLAIM.interrupts_ready(features, apic_base)
 }
 
 fn init_machine_check() {
@@ -661,24 +679,6 @@ fn tss_descriptor(base: u64) -> (u64, u64) {
         | (((base >> 24) & 0xff) << 56);
     let high = base >> 32;
     (low, high)
-}
-
-pub unsafe fn set_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
-    if vector < 256 {
-        let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr
-            .add(vector)
-            .write(IdtEntry::new(vector, handler, false));
-    }
-}
-
-pub unsafe fn set_user_idt_handler(vector: usize, handler: unsafe extern "C" fn()) {
-    if vector < 256 {
-        let idt_ptr = core::ptr::addr_of_mut!(IDT.0) as *mut IdtEntry;
-        idt_ptr
-            .add(vector)
-            .write(IdtEntry::new(vector, handler, true));
-    }
 }
 
 pub fn enable_interrupts() {
