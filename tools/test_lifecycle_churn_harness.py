@@ -74,6 +74,8 @@ class LifecycleChurnHarnessTests(unittest.TestCase):
             bad = good.replace(marker, marker+token+'\n')
             with self.subTest(token=token), self.assertRaises(ValueError): validate_log(bad, 4)
         with self.assertRaises(ValueError): validate_log(good+'unexpected continuation\n', 4)
+        for token in ['KERNEL PANIC', 'BOOTLOADER_PANIC', 'OTHER_FAILED']:
+            with self.assertRaises(ValueError): validate_log(token+'\n'+good, 4)
 
     def test_fixture_preserves_all_production_functions(self):
         source = Path(__file__).resolve().parents[1]

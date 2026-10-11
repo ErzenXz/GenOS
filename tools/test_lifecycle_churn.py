@@ -164,6 +164,8 @@ def patch_fixture(root: Path, cycles: int) -> str:
 def validate_log(log: str, cycles: int) -> dict:
     check_cycles(cycles)
     lines = log.replace('\r', '').splitlines()
+    if any(token in log for token in ['KERNEL PANIC', 'BOOTLOADER_PANIC', '_FAILED']):
+        raise ValueError('boot or churn failed')
     windows = [(i, re.fullmatch(r'LIFECYCLE_CHURN_WINDOW cycles=(\d+) baseline=(\d+)', line))
                for i, line in enumerate(lines) if 'LIFECYCLE_CHURN_WINDOW' in line]
     if len(windows) != 1 or windows[0][1] is None:
