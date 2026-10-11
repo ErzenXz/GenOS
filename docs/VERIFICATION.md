@@ -1788,3 +1788,88 @@ Roadmap stays **51/100**, Experimental; PR #9 remains draft/unmerged. Broader
 ownership, IRQ latency/nesting, CPU/reference qualification, independent review,
 sustained workloads and later platform/application work remain open. The
 underlying remote ATA timeout remains unresolved.
+
+## October 11 permanent VirtIO allocation claim
+
+`321813eaecb83442325b3cde22cf54c8245592b1` replaces four raw mutable DMA globals
+with one static `PermanentDma<VirtioDmaMemory>`. Discovery claims before any
+PCI/PIO/MMIO access and moves its unique token into the driver. Failed or absent
+device initialization, fallback, drop and unwind never release that claim.
+Repeated discovery or owner initialization halts before hardware I/O with
+`NETWORK_DEVICE_INIT_REJECTED policy=halt`. Existing reset-before-queue-clear,
+TX quarantine and immutable RX batch policies remain intact. The allocation
+payload remains 28,672 bytes; the aligned wrapper reserves 32,768 bytes, adding
+one 4096-byte metadata/alignment page. ABI 18, frame/descriptor budgets and the
+frozen reference remain unchanged. [Caller obligations](PERMANENT_DMA.md) retain
+mapping/coherence, device directions, completion/reset, removal, isolation and
+SMP as separate requirements; this is no claim of DMA quiescence or release.
+
+- The archived old driver on `d203b4322a1d7a5440eff89aa6e6c5c6972ca4f4` returns
+  from a second direct discovery after its unavailable first attempt. The
+  no-NIC live VM counterexample, source/archive/image identity, fixture patch,
+  QMP transcript and hashes remain at `build/permanent-dma-old-counterexample/`.
+  The new strict refusal validator rejects that old continuation.
+- **366 workspace unit tests**, **13 compile-fail doctests**, **135 Python tests**
+  and strict kernel host/normal/validation Clippy passed. The initial workspace
+  run failed an obsolete source-wiring assertion for a removed raw global; the
+  corrected assertion requires the permanent allocation and owned token. Both
+  logs remain at `build/permanent-dma-host-tests.log` and
+  `build/permanent-dma-host-tests-rerun.log`; Python/lint logs use the same prefix.
+- Pinned `nightly-2026-09-21` Miri passed **120 selected tests** with strict
+  provenance/seed 1, including six permanent-claim cases. The unchanged native
+  20,000-operation allocator stress and bounded model also passed: **3,257,436
+  sequences / 19,248,492 transitions**, with retained injected-oracle failure
+  and safe production replay. Exact clean source/archive identity and per-command
+  log hashes remain at `build/pure-rust-evidence/1791677804558770000/`.
+  Four new compile-fail checks deny movable storage, token cloning/sharing and
+  sharing a non-Send payload. One interpreted thread schedule is not exhaustive
+  concurrency qualification, and no actual device DMA executes under Miri.
+- All **six coordinator refusal VM cases** passed on clean `321813e` under
+  `build/coordinator-access-evidence/1791677804558805000/`. The new
+  `network-device-repeat` case deliberately calls `stack.device.discover()`
+  under the ordinary coordinator borrow, independently of its outer init guard.
+  It requires distinct refusal and live QMP status, rejecting continued dispatch,
+  CPU faults, reset and stopped/exited guest substitutes. No NIC is attached.
+- The complete `cargo xtask test` passed **18 clean-source workflows** on
+  `321813e`, including healthy VirtIO/no-HTTP, production storage
+  create/restore/read-only/recovery/failure, SDK, serial input, memory pressure
+  and ten allocation cutoffs, six CPU protection probes and normal debug/release
+  workflows. Manifest identities/hashes are indexed at
+  `build/321813e-system-evidence-index.json`; output remains at
+  `build/permanent-dma-system-tests.log`. The final audit at
+  `build/permanent-dma-verification.json` checks the manifests, all pure-run log
+  hashes, coordinator evidence, old counterexample and policy records. Local
+  QEMU 11.1.2 remains portability evidence against frozen 11.1.1.
+- Explicit source/context review records **409 lexical unsafe/assembly sites
+  across 106 sources**. The delta is one production unsafe Sync implementation,
+  bounded by Send and the irreversible private claim, plus four pure-test raw
+  pointer blocks. No unsafe Send implementation was added. Existing driver raw
+  accesses now derive from its token; mapping, bounds, ordering and actual
+  CPU/device access obligations still apply. Inventory presence is no whole-kernel
+  unsafe review or certification.
+
+Previous published `d203b43` completed **74 required checks: 70 passed, four
+failed**. [Main CI](https://github.com/ErzenXz/GenOS/actions/runs/38097246727)
+passed; [foundation containment](https://github.com/ErzenXz/GenOS/actions/runs/38097246729)
+and [exception entry](https://github.com/ErzenXz/GenOS/actions/runs/38097246760)
+retain only the strict initial-RIP/NMI-IRET and user/kernel #XM failures.
+All artifacts are retained at `build/remote-evidence/d203b43/`; its integrity audit
+checked 92 manifests and 129 retained artifact hashes. Manifest duplication across
+workflows is not a required-check count. The read-only audit at
+`build/ci-policy-evidence/d203b43-final-audit/` uses that head's historical
+74-check contract, records failed verification and retains required-success
+rejection. Distribution QEMU/firmware remains portability evidence.
+
+Main protection is now **75 strict app-bound checks**, adding only
+`Foundation coordinator-network-device-repeat`. Fresh before/request/response/
+after and contract hashes remain at
+`build/ci-policy-evidence/permanent-dma-policy-1791677861428065000/`. Readback
+compares every unrelated field exactly, normalizing only required-array ordering.
+All four strict CPU checks remain enforced. The new published head requires
+separate exact-head remote execution.
+
+The original console checklist remains **51/100**, Experimental. PR #9 stays
+draft/unmerged. Full roadmap work includes ownership, CPU/reference qualification,
+independent review, sustained workloads and later platform/application stages;
+this change closes none of their broader gates. The underlying remote ATA timeout
+remains unresolved.

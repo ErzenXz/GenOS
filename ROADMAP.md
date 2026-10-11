@@ -136,15 +136,17 @@ must not deepen a known ownership or isolation violation.
 - [x] September 22 local checks passed the complete suite, six malformed-boot cases, five BSP cases, eight original exceptions, strict reference acceptance and ten consecutive release boots. [Exact commits and limits](docs/VERIFICATION.md#september-22-foundation-implementation-and-verification) are part of the claim; no release level advanced.
 - [ ] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
   Publication is resolved: [draft PR #9](https://github.com/ErzenXz/GenOS/pull/9)
-  publishes all seventy-four required GitHub Actions jobs. Last completed head
-  `6d149ad` passed 70/74; user/kernel #XM and
+  publishes the versioned required GitHub Actions jobs. Last completed head
+  `d203b43` passed 70/74; the new driver-claim lane raises enforcement to 75
+  and needs its own exact-head execution. Both user/kernel #XM and
   two IRET boundaries fail; the PR remains unmerged. This does not close F0.1.
 - [x] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
   [REFERENCE_VM.md](docs/REFERENCE_VM.md) records the `genos-q35-tcg-v3` values, admitted/excluded feature matrix, artifact identity and profile-upgrade procedure. `reference-check` rejects wrong compiler/QEMU/firmware identities. Independent artifact acquisition and reviewer reproduction remain F0.5; this item does not qualify other hosts or devices.
 - [x] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
-  All seventy-four named GitHub Actions checks completed independently on `6d149ad`:
+  All seventy-four prior named GitHub Actions checks completed independently on `d203b43`:
   70 passed and four failed, with no hidden/skipped/cancelled lanes. `main`
-  requires every context bound to the Actions app, strict base freshness and
+  now requires 75 contexts, including direct driver rediscovery refusal, bound
+  to the Actions app with strict base freshness and
   admin enforcement; force pushes/deletion are disabled. The read-only
   [policy audit](docs/CI_POLICY.md) retains API readback/execution evidence and
   rejects missing, duplicate, wrong-app, stale or unexecuted lanes. Its success
