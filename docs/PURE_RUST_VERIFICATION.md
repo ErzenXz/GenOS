@@ -34,6 +34,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 
 | Production module | Interpreted tests |
 | --- | ---: |
+| BSP boot/table/controller phases and readiness | 8 |
 | Saturating syscall diagnostic totals and concurrent event ordering | 3 |
 | Permanent aligned allocation and irreversible CPU claim | 6 |
 | Immutable RX completion batch admission and drain | 7 |
@@ -53,7 +54,7 @@ in `rustc -Vv`; these pure modules do not execute target CPU instructions.
 | Bitmap allocator, release preparation and volatile scrubbing | 14 |
 | Checked user-copy range/transfer planning | 3 |
 | Bootloader ELF admission and bounded copy plan | 14 |
-| **Total** | **123** |
+| **Total** | **131** |
 
 The October 10 scope additions exercise current-process publication/borrow
 retirement, immutable image publication, and CPU-local paging phase transitions,
