@@ -74,18 +74,24 @@ def main() -> None:
                         help='also require all lanes to pass; default audits execution and enforcement')
     parser.add_argument('--protection', type=Path, help='replay a retained branch protection response')
     parser.add_argument('--check-runs', type=Path, help='replay a retained exact-head check-runs response')
+    parser.add_argument('--contract', type=Path, help='historical contract; requires both retained responses, never overrides a live read')
     parser.add_argument('--evidence', type=Path, help='new directory for retained read-only API evidence')
     options = parser.parse_args()
     if bool(options.protection) != bool(options.check_runs):
         parser.error('--protection and --check-runs must be supplied together')
+    if options.contract and not options.protection:
+        parser.error('--contract is only allowed with retained --protection and --check-runs')
     if re.fullmatch('[0-9a-f]{40}', options.head) is None:
         parser.error('--head must be an exact forty-digit commit')
-    contract = json.loads((Path(__file__).resolve().parent / 'required-ci-checks.json').read_text())
+    contract_path = options.contract or Path(__file__).resolve().parent / 'required-ci-checks.json'
+    contract = json.loads(contract_path.read_text())
     repo, branch = contract['repository'], contract['branch']
     if re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) is None or branch != 'main':
         parser.error('invalid repository or branch in policy contract')
     manifest = {'status': 'incomplete', 'head': options.head,
-                'require_success': options.require_success, 'verification_passed': False}
+                'require_success': options.require_success, 'verification_passed': False,
+                'read_mode': 'retained-replay' if options.protection else 'live-read',
+                'contract_source': str(contract_path)}
     if options.evidence:
         options.evidence.mkdir(parents=True, exist_ok=False)
         (options.evidence / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
