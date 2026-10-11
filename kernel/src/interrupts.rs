@@ -62,6 +62,14 @@ extern "C" {
 }
 
 pub fn vector_handler(vector: usize) -> unsafe extern "C" fn() {
+    match vector {
+        32 => return genos_irq0_stub,
+        33 => return genos_irq1_stub,
+        44 => return genos_irq12_stub,
+        crate::network_device::VIRTIO_MSIX_VECTOR => return genos_irq48_stub,
+        userspace::SYSCALL_VECTOR => return userspace::syscall_handler(),
+        _ => {}
+    }
     // SAFETY: the linked assembly emits exactly 256 immutable function pointers.
     // Array indexing checks the caller's vector before reading the table.
     unsafe { genos_vector_table[vector] }
@@ -69,22 +77,31 @@ pub fn vector_handler(vector: usize) -> unsafe extern "C" fn() {
 
 pub fn init() {
     arch::disable_interrupts();
-    // SAFETY: BSP initialization, with maskable interrupts disabled, owns IDT
-    // mutation and the legacy PIC/PIT. Every other vector was installed by arch.
+    if !arch::begin_interrupt_init() {
+        crate::serial::println("INTERRUPT_INIT_REJECTED policy=halt");
+        arch::halt_loop();
+    }
+    // SAFETY: the irreversible BSP phase claim admits controller setup once,
+    // after the complete IDT was published by arch. IF is clear. No IDT writes
+    // occur here; a failed setup retains its claim and cannot enable IRQs.
     unsafe {
-        arch::set_idt_handler(32, genos_irq0_stub);
-        arch::set_idt_handler(33, genos_irq1_stub);
-        arch::set_idt_handler(44, genos_irq12_stub);
-        arch::set_idt_handler(crate::network_device::VIRTIO_MSIX_VECTOR, genos_irq48_stub);
-        arch::set_user_idt_handler(userspace::SYSCALL_VECTOR, userspace::syscall_handler());
         remap_pic();
         init_pit_100hz();
+    }
+    if !arch::finish_interrupt_init() {
+        crate::serial::println("INTERRUPT_INIT_REJECTED policy=halt");
+        arch::halt_loop();
     }
     crate::serial::println("EXCEPTION_ENTRY_READY vectors=256 fatal_ist=dedicated");
     crate::serial::println("IRQ_READY");
 }
 
 pub fn enable() {
+    if !arch::interrupts_ready() {
+        arch::disable_interrupts();
+        crate::serial::println("INTERRUPT_ENABLE_REJECTED policy=halt");
+        arch::halt_loop();
+    }
     if ENABLE_HARDWARE_INTERRUPTS {
         arch::enable_interrupts();
         crate::serial::println("IRQ_HARDWARE_ON");

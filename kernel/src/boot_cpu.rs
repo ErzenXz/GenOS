@@ -73,6 +73,25 @@ impl BootClaim {
         self.advance(features, apic_base, 1, 2)
     }
 
+    /// Publish only after GDT/TSS/IDT and auxiliary CPU setup have completed.
+    pub fn finish_table_init(&self, features: Features, apic_base: Option<u64>) -> bool {
+        self.advance(features, apic_base, 2, 3)
+    }
+
+    /// Claim controller setup once, after architecture publication. A failed
+    /// setup never releases this claim or admits interrupt enablement.
+    pub fn begin_interrupt_init(&self, features: Features, apic_base: Option<u64>) -> bool {
+        self.advance(features, apic_base, 3, 4)
+    }
+
+    pub fn finish_interrupt_init(&self, features: Features, apic_base: Option<u64>) -> bool {
+        self.advance(features, apic_base, 4, 5)
+    }
+
+    pub fn interrupts_ready(&self, features: Features, apic_base: Option<u64>) -> bool {
+        features.is_bsp(apic_base) && self.phase.load(Ordering::Acquire) == 5
+    }
+
     fn advance(&self, features: Features, apic_base: Option<u64>, from: u8, to: u8) -> bool {
         features.is_bsp(apic_base)
             && self
@@ -162,6 +181,88 @@ mod tests {
                 .sum::<usize>(),
             1
         );
+    }
+
+    #[test]
+    fn interrupt_setup_and_enablement_require_completed_prior_phases() {
+        let gate = BootClaim::new();
+        let bsp = Some(APIC_BASE_BSP);
+        for phase in 0..=5 {
+            assert_eq!(gate.interrupts_ready(supported(), bsp), phase == 5);
+            assert!(!gate.interrupts_ready(supported(), Some(0)));
+            assert!(!gate.interrupts_ready(supported(), None));
+            assert!(!gate.interrupts_ready(Features::from_cpuid(0, 0), bsp));
+            let operations = [
+                SelfOperation::Claim,
+                SelfOperation::Tables,
+                SelfOperation::TablesDone,
+                SelfOperation::Interrupts,
+                SelfOperation::InterruptsDone,
+            ];
+            // Every wrong-order transition is refused without consuming the
+            // rightful next phase, including an interrupted/failed init.
+            for (index, operation) in operations.iter().enumerate() {
+                if index != phase {
+                    assert!(!operation.run(&gate, supported(), bsp));
+                }
+                assert!(!operation.run(&gate, supported(), Some(0)));
+                assert!(!operation.run(&gate, Features::from_cpuid(0, 0), bsp));
+            }
+            if phase < 5 {
+                assert!(operations[phase].run(&gate, supported(), bsp));
+            }
+        }
+    }
+
+    enum SelfOperation {
+        Claim,
+        Tables,
+        TablesDone,
+        Interrupts,
+        InterruptsDone,
+    }
+
+    impl SelfOperation {
+        fn run(&self, gate: &BootClaim, features: Features, base: Option<u64>) -> bool {
+            match self {
+                Self::Claim => gate.claim(features, base),
+                Self::Tables => gate.begin_table_init(features, base),
+                Self::TablesDone => gate.finish_table_init(features, base),
+                Self::Interrupts => gate.begin_interrupt_init(features, base),
+                Self::InterruptsDone => gate.finish_interrupt_init(features, base),
+            }
+        }
+    }
+
+    #[test]
+    fn simultaneous_controller_claims_grant_exactly_one_owner() {
+        let gate = Arc::new(BootClaim::new());
+        let bsp = Some(APIC_BASE_BSP);
+        assert!(gate.claim(supported(), bsp));
+        assert!(gate.begin_table_init(supported(), bsp));
+        assert!(gate.finish_table_init(supported(), bsp));
+        let barrier = Arc::new(Barrier::new(32));
+        let entrants: Vec<_> = (0..32)
+            .map(|_| {
+                let gate = Arc::clone(&gate);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    gate.begin_interrupt_init(supported(), Some(APIC_BASE_BSP))
+                })
+            })
+            .collect();
+        assert_eq!(
+            entrants
+                .into_iter()
+                .map(|entrant| usize::from(entrant.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
+        assert!(!gate.interrupts_ready(supported(), bsp));
+        assert!(gate.finish_interrupt_init(supported(), bsp));
+        assert!(gate.interrupts_ready(supported(), bsp));
+        assert!(!gate.begin_interrupt_init(supported(), bsp));
     }
 
     #[test]

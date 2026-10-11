@@ -232,6 +232,22 @@
       "app_id": 15368
     },
     {
+      "context": "Foundation interrupt-before-arch",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation interrupt-enable-before-init",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation interrupt-repeat-after-seal",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation interrupt-repeat-before-seal",
+      "app_id": 15368
+    },
+    {
       "context": "Foundation irq-stack-guard",
       "app_id": 15368
     },
