@@ -10,7 +10,7 @@ def valid_log(cycles=4):
              'USER_STALE_PROCESS_HANDLE_REJECTED_OK', 'PROCESS_GENERATION_STRESS_READY',
              f'LIFECYCLE_CHURN_WINDOW cycles={cycles} baseline=5']
     for cycle in range(1, cycles + 1):
-        pid = 4 + (cycle - 1) % 252
+        pid = (3 + cycle - 1) % 255 + 1
         hold = cycle % 2 == 0
         lines += [f'LIFECYCLE_CHURN_BEGIN cycle={cycle} mode={"kill" if hold else "exit"}',
                   f'USER_ELF_LOADED pid={pid} root=0x550000',
@@ -28,7 +28,7 @@ def valid_log(cycles=4):
 
 class LifecycleChurnHarnessTests(unittest.TestCase):
     def test_exact_scopes_and_pid_reuse_pass(self):
-        for cycles in [2, 3, 253, QUALIFICATION_CYCLES]:
+        for cycles in [2, 3, 255, 256, QUALIFICATION_CYCLES]:
             result = validate_log(valid_log(cycles), cycles)
             self.assertEqual(result['cycles'], cycles)
             self.assertEqual(result['normal_exits'], (cycles + 1) // 2)

@@ -118,7 +118,7 @@ pub fn run_lifecycle_churn_probe() {
         crate::serial::print_u64(total_frames);
         crate::serial::println(" active=0 slots=0 output=1 consistent=yes if=restored");
     }
-    assert!(CYCLES < 253 || pid_reused);
+    assert!(CYCLES <= 255 || pid_reused);
     assert!(crate::interrupts::ticks() > ticks_before);
     crate::serial::print("LIFECYCLE_CHURN_COMPLETE cycles=");
     crate::serial::print_u64(CYCLES);
@@ -189,6 +189,7 @@ def validate_log(log: str, cycles: int) -> dict:
     cursor = 1
     reclaimed = 0
     pids = set()
+    previous_pid = None
     for cycle in range(1, cycles + 1):
         mode = 'kill' if cycle % 2 == 0 else 'exit'
         if cursor >= len(tail) or tail[cursor] != f'LIFECYCLE_CHURN_BEGIN cycle={cycle} mode={mode}':
@@ -203,8 +204,11 @@ def validate_log(log: str, cycles: int) -> dict:
         if match is None:
             raise ValueError('malformed cycle result')
         ordinal, pid, incarnation, live, total = map(int, match.groups())
-        if ordinal != cycle or incarnation != cycle or live != baseline or not 4 <= pid <= 255 or total <= reclaimed:
+        if ordinal != cycle or incarnation != cycle or live != baseline or not 1 <= pid <= 255 or total <= reclaimed:
             raise ValueError('stale identity, leaked frames or wrong cycle')
+        if previous_pid is not None and pid != previous_pid % 255 + 1:
+            raise ValueError('unexpected nonzero PID succession')
+        previous_pid = pid
         records = tail[begin + 1:cursor]
         required = [f'USER_ASYNC_SPAWN pid={pid} task={TASK} mode={"hold" if mode == "kill" else "normal"}',
                     f'USER_OUTPUT pid={pid} text=hello from INIT.ELF in ring 3',
@@ -233,7 +237,7 @@ def validate_log(log: str, cycles: int) -> dict:
     count, exits, kills, frames, base, ticks = map(int, final.groups())
     if (count, exits, kills, frames, base) != (cycles, (cycles + 1) // 2, cycles // 2, reclaimed, baseline) or ticks == 0:
         raise ValueError('wrong completion totals or missing hardware ticks')
-    if cycles >= 253 and len(pids) >= cycles:
+    if cycles >= 256 and len(pids) >= cycles:
         raise ValueError('missing PID reuse')
     if sum('LIFECYCLE_CHURN_' in line for line in lines) != 2 * cycles + 2:
         raise ValueError('extra, embedded or stale churn record')
