@@ -72,10 +72,14 @@ pub const MAX_ASYNC_PROCESSES: usize = 4;
 static PROBE_PASSED: AtomicBool = AtomicBool::new(false);
 static CONTEXT_PASSED: AtomicBool = AtomicBool::new(false);
 static COPY_OUT_PASSED: AtomicBool = AtomicBool::new(false);
-static PING_COUNT: AtomicU8 = AtomicU8::new(0);
-static ABI_COUNT: AtomicU8 = AtomicU8::new(0);
-static REPORT_COUNT: AtomicU8 = AtomicU8::new(0);
-static WRITE_COUNT: AtomicU8 = AtomicU8::new(0);
+static PING_COUNT: kernel::diagnostic_counter::DiagnosticCounter =
+    kernel::diagnostic_counter::DiagnosticCounter::new(0);
+static ABI_COUNT: kernel::diagnostic_counter::DiagnosticCounter =
+    kernel::diagnostic_counter::DiagnosticCounter::new(0);
+static REPORT_COUNT: kernel::diagnostic_counter::DiagnosticCounter =
+    kernel::diagnostic_counter::DiagnosticCounter::new(0);
+static WRITE_COUNT: kernel::diagnostic_counter::DiagnosticCounter =
+    kernel::diagnostic_counter::DiagnosticCounter::new(0);
 static COMPLETED_PROCESSES: AtomicU8 = AtomicU8::new(0);
 static ADDRESS_SPACES: AtomicU8 = AtomicU8::new(0);
 static TOTAL_YIELDS: AtomicU8 = AtomicU8::new(0);
@@ -6500,15 +6504,15 @@ fn dispatch_syscall(frame: &mut UserContext, process: &mut UserProcess) -> u64 {
     match syscall::dispatch(number, args) {
         Ok(SyscallAction::Return(value)) => {
             if number == syscall::SYSCALL_PING && value == syscall::PING_REPLY {
-                let count = PING_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-                if count == PROCESS_COUNT as u8 {
+                let count = PING_COUNT.record();
+                if count == PROCESS_COUNT as u64 {
                     crate::serial::trace::println("USER_SYSCALL_OK");
                 }
             }
             if number == syscall::SYSCALL_ABI_VERSION && value == syscall::USER_ABI_VERSION {
                 process.preemption_armed = true;
-                let count = ABI_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-                if count == PROCESS_COUNT as u8 {
+                let count = ABI_COUNT.record();
+                if count == PROCESS_COUNT as u64 {
                     crate::serial::trace::println("USER_ABI_OK");
                 }
             }
@@ -6529,8 +6533,8 @@ fn dispatch_syscall(frame: &mut UserContext, process: &mut UserProcess) -> u64 {
             if let Some(value) = copy_user_u64(process, address, length) {
                 process.report = value;
                 frame.rax = value;
-                let count = REPORT_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
-                if count == HEALTHY_PROCESS_COUNT {
+                let count = REPORT_COUNT.record();
+                if count == u64::from(HEALTHY_PROCESS_COUNT) {
                     crate::serial::trace::println("USER_COPY_OK");
                 }
             } else {
@@ -6543,12 +6547,12 @@ fn dispatch_syscall(frame: &mut UserContext, process: &mut UserProcess) -> u64 {
                 process.output = text;
                 process.output_pending = true;
                 frame.rax = length;
-                let count = WRITE_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
+                let count = WRITE_COUNT.record();
                 crate::serial::trace::print("USER_OUTPUT pid=");
                 crate::serial::trace::print_u64(process.pid as u64);
                 crate::serial::trace::print(" text=");
                 crate::serial::trace::println(text.as_str());
-                if count == HEALTHY_PROCESS_COUNT {
+                if count == u64::from(HEALTHY_PROCESS_COUNT) {
                     crate::serial::trace::println("USER_OUTPUT_OK");
                 }
             } else {
@@ -7389,10 +7393,10 @@ fn verify_processes(processes: &[UserProcess; PROCESS_COUNT], switches: u8) -> b
                 && process.report == process.token
                 && process.completion_order > faulting.completion_order
         })
-        && PING_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
-        && ABI_COUNT.load(Ordering::Acquire) == PROCESS_COUNT as u8
-        && REPORT_COUNT.load(Ordering::Acquire) == HEALTHY_PROCESS_COUNT
-        && WRITE_COUNT.load(Ordering::Acquire) == HEALTHY_PROCESS_COUNT
+        && PING_COUNT.get() == PROCESS_COUNT as u64
+        && ABI_COUNT.get() == PROCESS_COUNT as u64
+        && REPORT_COUNT.get() == u64::from(HEALTHY_PROCESS_COUNT)
+        && WRITE_COUNT.get() == u64::from(HEALTHY_PROCESS_COUNT)
         && LOCAL_FAULTS.load(Ordering::Acquire) == 1
 }
 

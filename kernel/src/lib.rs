@@ -10,6 +10,7 @@ pub mod console_text;
 pub mod context_slot;
 pub mod cpu_context;
 pub mod cpu_paging;
+pub mod diagnostic_counter;
 pub mod display;
 pub mod elf;
 pub mod endpoint;
