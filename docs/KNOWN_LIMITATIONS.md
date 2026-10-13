@@ -31,13 +31,13 @@ Those are scoped local results. The VM candidate now has pinned arguments and an
 exact tool/firmware preflight; independent reproduction remains missing.
 The earlier missing-`workflow` publication restriction was resolved on October 10.
 [Draft PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the independent jobs
-and has remote results. The [required-check policy](CI_POLICY.md) binds all eighty
+is integrated. The [required-check policy](CI_POLICY.md) binds all eighty-three
 verification jobs to GitHub Actions and is enforced on `main`, including admins.
 The four strict CPU/IRET probes now pass on an explicit KVM CPU variant;
 the frozen TCG limitations remain. Publication is not a passing release.
 
 The audited 1000 fresh release boots passed on their recorded source/profile.
-Coverage-guided fuzzing, complete operation and fault matrices,
+Remaining coverage-guided targets, complete operation and fault matrices,
 sustained qualification and independent reference reproduction remain open. A pinned
 Miri run on selected pure Rust modules and a bounded
 ownership model have scoped local evidence; neither covers the whole kernel or

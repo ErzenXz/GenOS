@@ -137,10 +137,13 @@ coverage and sustained tests. General application launch and bounded streams com
 before pipelines; scalable recoverable storage comes before trusting editor saves.
 
 Current work includes scoped proofs, not a stable release. CI workflow publication
-is now authorized and [draft PR #9](https://github.com/ErzenXz/GenOS/pull/9) has remote
-verification results. All eighty verification checks are required on `main` under
+is now authorized and [PR #9](https://github.com/ErzenXz/GenOS/pull/9) is integrated.
+All eighty-three verification checks are required on `main` under
 the [published policy](docs/CI_POLICY.md). An explicit hardware CPU variant now
 passes the four strict exception/return probes that TCG could not deliver.
+The logical timer now preserves fallback time when hardware interrupts start;
+the coverage lane retains immutable source/input evidence and includes handle
+operation sequences. These remain bounded foundation results.
 See [current limitations](docs/KNOWN_LIMITATIONS.md), [verification](docs/VERIFICATION.md),
 and the [September 2026 primary-source research](docs/research/README.md).
 

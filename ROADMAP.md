@@ -150,12 +150,14 @@ must not deepen a known ownership or isolation violation.
 - [x] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
   All seventy-six prior named GitHub Actions checks completed independently on `ae586e1`:
   72 passed and four failed, with no hidden/skipped/cancelled lanes. `main`
-  now requires 80 contexts, including direct driver rediscovery, lifecycle
+  now requires 83 contexts, including direct driver rediscovery, lifecycle
   overflow regression and four interrupt-phase admission cases, bound to the Actions app with strict base freshness and
   admin enforcement; force pushes/deletion are disabled. The read-only
   [policy audit](docs/CI_POLICY.md) retains API readback/execution evidence and
   rejects missing, duplicate, wrong-app, stale or unexecuted lanes. Its success
   mode refuses any failed lane. This closes enforcement/execution only.
+  A real fallback-to-PIT clock regression and two immutable-source coverage
+  lanes are additionally enforced, with all unrelated policy fields preserved.
 - [x] **F0.4:** test the harness itself: omitted, duplicated, forged, wrong-phase and stale success evidence must fail. Retain incomplete/failing manifests and stderr, not just successful runs.
   Normal, validation, network, memory, CPU and fault evidence now use exact, ordered contracts with negative and live-prefix tests. Deliberately failed reruns and their manifests remain retained; these markers are test evidence, not authenticated remote attestations.
 - [ ] **F0.5:** reproduce clean builds on the supported host lanes, publish artifact hashes/provenance and make another reviewer reproduce the documented reference run.
@@ -292,6 +294,10 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
   globals, with irreversible bootstrap admission and hardware CR3 readback before
   publishing root switches. Scheduler and interrupt-local ownership still need
   the complete per-CPU boundary; no SMP support is implied.
+  The [logical tick clock](docs/TICK_CLOCK.md) now scopes fallback and IRQ updates
+  together. A retained real-PIT counterexample observed 3 → 1 on prior main;
+  the corrected fixture observes 3 → 4 → 6 with caller IF preserved. Remaining
+  scheduler/interrupt-local objects and masked-latency qualification stay open.
 - [ ] **F5.4:** test delayed/nested interrupt delivery during allocation, context changes, request cancellation and device completion, with forward progress and ownership checks.
 - [x] **F5.5:** define local TLB retirement now and the future acknowledged cross-CPU shootdown contract. Actual SMP implementation belongs to Stage 8 and cannot be enabled early.
   [The local ordering and future acknowledgment contract](docs/TLB_RETIREMENT.md) documents disabled PCID/global retention, conservative invalidation/CR3 switches and real-CPU root/reuse tests. AP admission remains disabled; no cross-CPU shootdown code is claimed.
@@ -305,14 +311,16 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] **F6.1:** finish the normal startup cost/dependency audit. Optional devices must fail within declared deadlines and cannot make the local terminal depend on a test server or fixture.
   Real normal release boots without a storage controller, with an empty controller, and with a NIC but no host test service each reached a fresh Ring 3 terminal within the declared 60-second budget. Retained per-run commands, environment/source/image identities and visible `echo`/`net`/`mem` transcripts live under `build/startup-dependency-evidence/`; see [verification](docs/VERIFICATION.md#september-23-dependency-and-format-slices).
 - [ ] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
-  Ten host-only libFuzzer targets now reuse production parser and bounded-state
+  Eleven host-only libFuzzer targets now reuse production parser and bounded-state
   assertions for ELF, native ELF, IPv4/IPv6, UDP/TCP, sockets, boot maps, paths
-  and RX/TX descriptors. The pinned runtime, locked source hashes, replay path
+  RX/TX descriptors and handle-table operation sequences. The pinned runtime,
+  locked source hashes, immutable per-run source/input evidence and replay path
   and local evidence are documented in [coverage fuzzing](tools/coverage-fuzz/README.md).
+  Two required CI targets additionally require fresh corpus discovery.
   Partition/snapshot, DHCP/DNS and syscall sequences remain outside this lane;
   the gate stays open.
 - [x] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
-  Pinned nightly Miri now covers 131 production-selected pure Rust tests, including boot/interrupt phases, syscall diagnostics, permanent DMA claims, RX/TX ownership, scoped framebuffer and VFS snapshot additions; see [scope and exclusions](docs/PURE_RUST_VERIFICATION.md). The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. CPU/device execution, unsafe sites outside the selected modules and unbounded executions are not covered.
+  Pinned nightly Miri now covers 136 production-selected pure Rust tests, including boot/interrupt phases, logical clock transition, syscall diagnostics, permanent DMA claims, RX/TX ownership, scoped framebuffer and VFS snapshot additions; see [scope and exclusions](docs/PURE_RUST_VERIFICATION.md). The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. CPU/device execution, unsafe sites outside the selected modules and unbounded executions are not covered.
 - [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
 - [x] **F6.5:** execute the configured 1000-boot lane and retain successes, first failure and source/profile identity. Five earlier local boots do not satisfy it.
   `cargo xtask test-repeat 1000` passed all 1000 fresh normal release boots on clean source `7b8caa9` and profile `genos-q35-tcg-v3`, with one unchanged image SHA-256 `806f6095d7586020a3455547b4e7c23e90a44eaa89d9210e255a0a66f48c1b59`; there was no first failure. Every boot exercised real `uname`, process launch/status/kill/reap and persistent file I/O. All manifests and 2000 serial/QEMU logs were retained under `build/fifty-repeat-evidence/7b8caa9/`; the independent audit rejects missing/duplicate/out-of-order boots and checked every log hash. This is a fresh-boot lane, not F6.6's single-boot 24-hour pressure or C5's 72-hour console workload.
