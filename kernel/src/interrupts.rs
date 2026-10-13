@@ -2,6 +2,8 @@ use core::arch::global_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use kernel::exception::{pic_eoi_policy, process_local, ExceptionFrame};
+use kernel::scoped_cell::ScopedCell;
+use kernel::tick_clock::Clock;
 
 use crate::{arch, input_hw, userspace};
 
@@ -14,8 +16,7 @@ const PIC_READ_ISR: u8 = 0x0b;
 const ENABLE_HARDWARE_INTERRUPTS: bool = true;
 
 static TICKS: AtomicU64 = AtomicU64::new(0);
-static FALLBACK_TICKS: AtomicU64 = AtomicU64::new(0);
-static FALLBACK_SPINS: AtomicU64 = AtomicU64::new(0);
+static CLOCK: ScopedCell<Clock> = ScopedCell::new(Clock::new());
 static KEYBOARD_IRQS: AtomicU64 = AtomicU64::new(0);
 static MOUSE_IRQS: AtomicU64 = AtomicU64::new(0);
 static NETWORK_IRQS: AtomicU64 = AtomicU64::new(0);
@@ -110,23 +111,30 @@ pub fn enable() {
     }
 }
 
+// One BSP owns the logical clock. Callbacks return owned values, never enable
+// IRQs or dispatch, and retire the scoped borrow before caller IF is restored.
+fn with_clock<R>(operation: impl for<'a> FnOnce(&'a mut Clock) -> R) -> R {
+    arch::without_interrupts(|| match CLOCK.try_with(operation) {
+        Ok(value) => value,
+        Err(_) => {
+            crate::serial::println("TICK_CLOCK_ACCESS_REJECTED policy=halt");
+            arch::halt_loop();
+        }
+    })
+}
+
 pub fn ticks() -> u64 {
-    let hardware = TICKS.load(Ordering::Relaxed);
-    if hardware > 0 {
-        hardware
-    } else {
-        FALLBACK_TICKS.load(Ordering::Relaxed)
-    }
+    with_clock(|clock| clock.ticks())
 }
 
 pub fn poll_fallback_tick() -> u64 {
-    if TICKS.load(Ordering::Relaxed) == 0 {
-        let spins = FALLBACK_SPINS.fetch_add(1, Ordering::Relaxed) + 1;
-        if spins & 0x0fff == 0 {
-            FALLBACK_TICKS.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    ticks()
+    with_clock(Clock::poll_fallback)
+}
+
+#[allow(dead_code)]
+// Raw IRQ observation for diagnostics; scheduling uses the logical clock.
+pub fn hardware_ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
 }
 
 #[allow(dead_code)]
@@ -143,6 +151,7 @@ pub fn stats() -> InterruptStats {
 #[no_mangle]
 extern "C" fn genos_irq0_rust(frame: *mut userspace::UserContext) -> u64 {
     TICKS.fetch_add(1, Ordering::Relaxed);
+    with_clock(Clock::hardware_tick);
     let preempted = userspace::timer_preempt(frame);
     unsafe { pic_eoi(0) };
     u64::from(preempted)
