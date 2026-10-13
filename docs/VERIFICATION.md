@@ -2450,3 +2450,21 @@ local execution, not a claim that configured remote CI already passed. The
 frozen checklist stays **54/100**: these complete five bounded F1.2 tasks, while
 full FP/flag interactions, larger profiles, physical/independent reference
 qualification and the wider roadmap remain open. GenOS remains Experimental.
+
+The negative timer fixture was subsequently made deterministic on `c4e4492`:
+it jumps over the whole admitted capture interval rather than exiting only the
+loop condition. Fresh evidence `1791900056139874447` passes without allowing a
+delayed VM to supply two legitimate intervening captures. Production entry and
+the positive fixture are unchanged.
+
+PR #14's first CI head `5dec57f` passed 82 required checks but failed the storage
+startup validator's obsolete assertion of exactly three deliberate CPU faults.
+The retained artifact `11819423664` has SHA-256
+`18f4624356b27d001bb2c1694d0c09360152a77d7a3315c019fc868cb13935be`.
+Its serial contains exactly the original page fault, two #MF faults and the new
+two #UD faults, with all new integer proofs before storage injection. The
+validator now requires those five exact ordered frame/termination identities and
+all five integer markers; arbitrary faults remain denied. The original failed
+manifest is unchanged. A read-only replay passes the corrected validator, and
+a fresh clean `433bbff` local storage run independently passes at
+`build/storage-startup-evidence/1791900252905092637`. All 189 Python tests pass.
