@@ -208,9 +208,9 @@
       "sha256": "f64bbef73bde9ab31ea2cc701918fa4b52631dcac132f4f57fe8012ceedb745c"
     },
     {
-      "lines": 132,
+      "lines": 134,
       "path": "kernel/src/integer_probe.S",
-      "sha256": "caad0d147343befd639875b10607a30535edfbf1d3f458c0af45406de8bdfb55"
+      "sha256": "897df2836e568320f2e5766ad732b8226f3b71fbdc142bb6180841cac54dcf94"
     },
     {
       "lines": 198,
@@ -1844,10 +1844,10 @@
     },
     {
       "column": 1,
-      "construct_sha256": "caad0d147343befd639875b10607a30535edfbf1d3f458c0af45406de8bdfb55",
+      "construct_sha256": "897df2836e568320f2e5766ad732b8226f3b71fbdc142bb6180841cac54dcf94",
       "context": "// Validation-only fixed-address Ring 3 ELF, admitted by the production loader.\n// Snapshots use a balanced user-stack PUSH/POP to save RAX without modifying\n// any register or flag. All accesses are aligned; AC never tests misalignment.\n// No error-code word, privilege transition or kernel call is synthesized here.\n.pushsection .rodata\n.balign 16\n.global genos_integer_probe_elf",
       "context_start_line": 1,
-      "end_line": 132,
+      "end_line": 134,
       "kind": "assembly_file",
       "line": 1,
       "path": "kernel/src/integer_probe.S"

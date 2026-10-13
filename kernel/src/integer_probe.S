@@ -70,6 +70,8 @@ genos_integer_probe_elf:
 
 genos_integer_code:
     integer_snapshot 0
+    movabs rax, {user_data}
+    mov [rax], rdi
     // Arm real PIT scheduling through the existing ABI handshake.
     mov eax, {abi_version}
     xor edi, edi
