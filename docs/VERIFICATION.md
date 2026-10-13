@@ -2394,3 +2394,59 @@ missing or duplicate status proof. All eight CI transcripts pass a read-only
 replay with the corrected validator; that replay is not a fresh CI execution.
 All 184 Python tests pass. Future CI artifact uploads explicitly retain hidden
 per-file dependency receipts as well as the original package and modified source.
+
+## October 13 five native integer-state tasks
+
+Clean source `75fc71981d74fd1a01e82d4a2ab2608d90a867fe` passed the five
+[native integer-state tasks](CPU_STATE.md#five-native-integer-state-tasks): fresh
+registers, direct syscall return, yielding return, actual PIT capture with
+arithmetic/DF/AC/ID patterns, and fault/reuse isolation. Six real Ring 3 processes
+in two rounds use distinct values in all fifteen GPRs, exact RSP/CS/SS snapshots,
+two qualified timer captures each, two real #UD terminations and four healthy
+exits. Every process is reclaimed and each round returns to its frame baseline.
+The existing loader, context entry/return and syscall ABI are unchanged.
+
+Four independent clean-archive VM cases passed on distribution QEMU 10.0.13 and
+OVMF SHA-256 `624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0`:
+
+| Case | Retained evidence under `build/integer-context-evidence/` | Required result |
+| --- | --- | --- |
+| `intact` | `1791899707125239960` | All five ordered success markers, actual fault/yield/peer-exit records, live QEMU |
+| `gpr-corrupt` | `1791899727806060450` | All three peers reject altered direct-return GPR snapshots, cleanup, no success marker |
+| `flags-corrupt` | `1791899745971483391` | All three peers reject altered flag snapshots, cleanup, no success marker |
+| `timer-skipped` | `1791899765110257991` | Insufficient qualified captures reject, cleanup, no success marker |
+
+Each retains the original source archive/hash, private patch/hash, image hash,
+build and QEMU commands, environment identity, serial/QEMU logs and manifest.
+The intact image SHA-256 is
+`e1218c839c6cdca4ba5a9caa2add9aeb0b8d8290a92772071362ea9b395270b4`.
+Reference QEMU/firmware mismatches are explicit; these are portability proofs.
+Debug and release normal-image boots also passed with real shell process control
+and persistent file I/O, and no validation proof markers.
+
+The first three retained runs (`1791899377031012554`, `1791899435382778361`,
+`1791899500155374266`) rejected RF differences in timer frames: local TCG saved
+`0x250ed7` where the fixture required `0x240ed7`, even after replacing PAUSE with
+non-REP NOP. The proof now explicitly compares PUSHFQ-visible flags; only RF is
+projected out of timer frames. No DF/AC/arithmetic/ID bit is masked, and all user
+snapshot bits remain exact. A host test flips every flag bit and permits only
+the declared RF exclusion. Full RF semantics remain open. A fourth retained
+failure (`1791899636140637031`) exposed a fixture token-publication omission;
+publishing the actually observed initial RDI token fixed the selected #UD branch.
+Original failed manifests remain unchanged.
+
+Host verification passed 383 workspace unit tests, thirteen compile-fail docs,
+189 Python tests, ten parser harness tests, all 85,037 retained-input prefixes
+and 100,000 deterministic mutations. Normal and validation kernel/tool linting,
+formatting, dependency direction, Markdown links and the refreshed lexical unsafe
+inventory passed. The inventory has 417 sites across 125 source files: four new
+validation sites (assembly file, global assembly, extern symbols and the bounded
+immutable ELF slice); normal entry code adds no unsafe operation.
+
+Aggregate validation now requires the five exact, unique, ordered proofs before
+shell readiness; normal images forbid them. Existing Build and boot CI runs all
+four cases before its full suite and retains their artifacts. This section records
+local execution, not a claim that configured remote CI already passed. The
+frozen checklist stays **54/100**: these complete five bounded F1.2 tasks, while
+full FP/flag interactions, larger profiles, physical/independent reference
+qualification and the wider roadmap remain open. GenOS remains Experimental.
