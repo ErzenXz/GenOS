@@ -356,6 +356,7 @@ jobs:
         if: always()
         with:
           name: boot-memory-${{ matrix.case }}-evidence
+          include-hidden-files: true
           path: |
             build/boot-memory-run.log
             build/boot-memory-evidence/

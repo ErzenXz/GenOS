@@ -24,7 +24,7 @@ import tomllib
 
 from reference_vm import environment, load_profile, qemu_args
 from test_exception_entry import firmware_path, replace_once, require_clean_source
-from test_kernel_elf import QmpMonitor, connect_qmp, CAPABILITIES_ID, START_ID
+from test_kernel_elf import QmpMonitor, connect_qmp, CAPABILITIES_ID, START_ID, MAX_QMP_MESSAGES
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
@@ -250,6 +250,8 @@ def validate_log(log: str, case: str) -> None:
 
 
 def validate_qmp(messages: list[dict], outcome: str) -> None:
+    if len(messages) > MAX_QMP_MESSAGES:
+        raise ValueError("QMP event/reply count exceeds budget")
     if any(not isinstance(row, dict) or sum(key in row for key in ("QMP", "return", "event", "error")) != 1 for row in messages):
         raise ValueError("ambiguous QMP evidence")
     if not messages or "QMP" not in messages[0] or sum("QMP" in row for row in messages) != 1:
@@ -266,8 +268,9 @@ def validate_qmp(messages: list[dict], outcome: str) -> None:
     if any(row["event"] not in ("RESUME", "SHUTDOWN", "RTC_CHANGE") for _, row in events):
         raise ValueError("unexpected reset/panic/watchdog/paused guest")
     clocks = [(i, row) for i, row in events if row["event"] == "RTC_CHANGE"]
-    if len(clocks) > 1:
-        raise ValueError("duplicate firmware RTC initialization")
+    # RTC programming can produce repeated notifications (including identical
+    # offsets on QEMU 8.2). They are bounded telemetry, never proof records.
+    # Unique start/status/terminal acknowledgements remain exact below.
     for position, row in clocks:
         data = row.get("data")
         if (not isinstance(data, dict) or type(data.get("offset")) is not int

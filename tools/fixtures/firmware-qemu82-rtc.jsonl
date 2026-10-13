@@ -1,0 +1,7 @@
+{"QMP": {"version": {"qemu": {"micro": 2, "minor": 2, "major": 8}, "package": "Debian 1:8.2.2+ds-0ubuntu1.18"}, "capabilities": ["oob"]}}
+{"return": {}, "id": "genos-capabilities"}
+{"timestamp": {"seconds": 1791896335, "microseconds": 352173}, "event": "RESUME"}
+{"return": {}, "id": "genos-start"}
+{"timestamp": {"seconds": 1791896336, "microseconds": 480518}, "event": "RTC_CHANGE", "data": {"offset": 0, "qom-path": "/machine/unattached/device[2]/rtc"}}
+{"timestamp": {"seconds": 1791896336, "microseconds": 708356}, "event": "RTC_CHANGE", "data": {"offset": 0, "qom-path": "/machine/unattached/device[2]/rtc"}}
+{"return": {"status": "running", "singlestep": false, "running": true}, "id": "genos-firmware-status"}
