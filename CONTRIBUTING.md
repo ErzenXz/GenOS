@@ -268,7 +268,7 @@ Review unsafe source changes with `python3 tools/check_unsafe.py --diff`, then
 explicitly regenerate the baseline with `--write-baseline` and check it with
 `--check`. A baseline is retained context, not a safety approval. The full QEMU
 suite and the exception, BSP and boot-memory harnesses require committed source
-for exact evidence. `python3 tools/test_boot_memory.py` runs all six malformed
+for exact evidence. `python3 tools/test_boot_memory.py` runs all thirteen loader/map and malformed
 handoff cases; `--case loader-version` selects one. Its host parser/fixture tests
 are included by `python3 -m unittest discover -s tools -p 'test_*.py'`. The local CI
 configuration assigns each boot-memory case an independent matrix job and retains
@@ -302,3 +302,16 @@ independent real fault, NMI, machine-check and return-state cases; `--case irq-p
 selects one. It retains QMP transcripts as well as source/image/fault evidence.
 Nested termination, first kernel fatal handling and software process denial are
 distinct proof outcomes and cannot substitute for one another.
+
+The loader decoder group can be run independently with
+`python3 tools/test_boot_memory.py --loader-admission`. It covers descriptor
+version/stride/length, empty/capacity, range/alignment and overlap. Each case
+requires its exact expected decoder error before kernel entry. Cases use bounded
+stack-backed fixture bytes after the real firmware exit and never allocate or
+call boot services there. The runner retains every case's manifest, including
+failures, and fails the overall group after attempting remaining cases.
+The existing `Boot memory admission (loader-version)` CI context now runs this
+entire group; the five other contexts keep their separate handoff cases. Required
+context names and repository protection policy are unchanged. These decoder
+fixtures do not emulate firmware map growth, stale-key retries or allocation
+failures; those remain F1.1 qualification work.
