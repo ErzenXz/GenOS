@@ -54,5 +54,6 @@ Do not silently rewrite an accepted ADR to make history appear cleaner. Small co
 | 0012 | [Bounded GFS2 snapshot commit](0012-bounded-gfs2-snapshot-commit.md) | Proposed |
 | 0013 | [Bounded user CPU context](0013-bounded-user-cpu-context.md) | Proposed |
 | 0014 | [Terminal entry ownership](0014-terminal-entry-ownership.md) | Proposed |
+| 0015 | [Monotonic logical clock](0015-monotonic-logical-clock.md) | Proposed |
 
 Add accepted ADRs to this index in the same pull request.

@@ -43,6 +43,7 @@ pub mod socket;
 pub mod stack;
 pub mod syscall;
 pub mod tasks;
+pub mod tick_clock;
 pub mod tx_queue;
 pub mod user_copy;
 pub mod vfs;
