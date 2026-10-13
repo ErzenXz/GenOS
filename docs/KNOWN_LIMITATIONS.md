@@ -205,6 +205,13 @@ passive slots are global, with a two-slot per-owner limit; socket send/receive q
 are 128 bytes. The control-plane IPv6 work includes SLAAC/DAD/router echo. Claims
 that there is no MSI-X or no IPv6 at all describe an older baseline.
 
+N1.1's [complete maintained TCP inventory](TCP_REQUIREMENTS.md) now maps all 119
+RFC 9293 requirement identifiers and companion timing/congestion specifications
+to source, tests and explicit gaps. It separates malformed traffic from valid
+unsupported features and resource limits. Structural TCP option validation is
+implemented; mandatory MSS/urgent/TIME-WAIT/ISN and full RTO/congestion behavior
+remain visible gaps. Matrix completion does not establish Internet conformance.
+
 Missing work includes general longer-lived streams and larger flight/windows,
 broader retransmission/persist/reset behavior, fairness across process owners,
 readiness sets, complete device reset/quiescence and fault handling, and reproducible

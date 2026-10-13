@@ -150,7 +150,10 @@ pub fn parse_tcp(payload: &[u8]) -> Option<TcpPacket<'_>> {
         return None;
     }
     let header_len = usize::from(payload[12] >> 4).checked_mul(4)?;
-    if header_len < TCP_HEADER_BYTES || header_len > payload.len() {
+    if header_len < TCP_HEADER_BYTES
+        || header_len > payload.len()
+        || !tcp_options_valid(&payload[TCP_HEADER_BYTES..header_len])
+    {
         return None;
     }
     Some(TcpPacket {
@@ -162,6 +165,28 @@ pub fn parse_tcp(payload: &[u8]) -> Option<TcpPacket<'_>> {
         window: u16::from_be_bytes([payload[14], payload[15]]),
         payload: &payload[header_len..],
     })
+}
+
+/// Validate only option structure, not negotiation. Unknown well-formed kinds
+/// remain valid input. The data offset bounds this walk to at most 40 bytes.
+fn tcp_options_valid(mut options: &[u8]) -> bool {
+    while let Some((&kind, rest)) = options.split_first() {
+        match kind {
+            0 => return rest.iter().all(|byte| *byte == 0), // EOL padding
+            1 => options = rest,                            // NOP has no length field
+            _ => {
+                let Some(&length) = rest.first() else {
+                    return false;
+                };
+                let length = usize::from(length);
+                if length < 2 || length > options.len() || (kind == 2 && length != 4) {
+                    return false;
+                }
+                options = &options[length..];
+            }
+        }
+    }
+    true
 }
 
 pub fn is_initial_tcp_syn(packet: &TcpPacket<'_>) -> bool {
@@ -322,6 +347,42 @@ mod tests {
         assert!(is_tcp_handshake_ack(&ack, 0x1020_3040, 0x5060_7080));
         assert!(!is_initial_tcp_syn(&ack));
         assert!(!is_tcp_handshake_ack(&ack, 0x1020_3041, 0x5060_7080));
+    }
+
+    #[test]
+    fn tcp_options_admit_unknown_and_unaligned_options_without_eating_payload() {
+        for options in [
+            &[30, 4, 0xab, 0xcd][..],            // valid unsupported option
+            &[1, 2, 4, 0x02, 0x00, 0, 0, 0][..], // unaligned MSS, EOL/padding
+            &[1; 40][..],                        // maximum option extent
+        ] {
+            let mut segment = [0u8; 65];
+            let header = TCP_HEADER_BYTES + options.len();
+            segment[12] = ((header / 4) as u8) << 4;
+            segment[20..header].copy_from_slice(options);
+            segment[header..header + 5].copy_from_slice(b"bytes");
+            assert_eq!(parse_tcp(&segment[..header + 5]).unwrap().payload, b"bytes");
+            for length in 0..header {
+                assert!(parse_tcp(&segment[..length]).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn tcp_options_reject_bad_lengths_known_mss_shape_and_nonzero_eol_padding() {
+        for options in [
+            [30, 0, 0, 0],
+            [30, 1, 0, 0],
+            [30, 5, 0, 0],
+            [1, 1, 1, 30],
+            [2, 3, 0, 0],
+            [0, 0, 0, 1],
+        ] {
+            let mut segment = [0u8; 24];
+            segment[12] = 6 << 4;
+            segment[20..].copy_from_slice(&options);
+            assert!(parse_tcp(&segment).is_none(), "accepted {options:?}");
+        }
     }
 
     #[test]

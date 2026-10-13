@@ -273,9 +273,9 @@
       "sha256": "ff89f0c928e0586a948b6aa23fc7eebb3e40ab1b9b8a1172db14f3748df4efaf"
     },
     {
-      "lines": 353,
+      "lines": 414,
       "path": "kernel/src/net.rs",
-      "sha256": "6cfdb882677a294f02247e9af53d2b5ed463261fc6fd25d8af283badfbf41367"
+      "sha256": "b0ff6b11efef6d55cd0fb809dd559db18e0502921867ebd4f199ee0024e43494"
     },
     {
       "lines": 2763,
@@ -288,9 +288,9 @@
       "sha256": "707ab9d5f51102297b0b2abc1b11cb3ff19725096cfac9b9a2941a2920ed13ee"
     },
     {
-      "lines": 337,
+      "lines": 370,
       "path": "kernel/src/network_tests.rs",
-      "sha256": "770500802f37313157d5ac783e90128a108a37fdecfd6fa1eb02649431e7293a"
+      "sha256": "967711f0d640960665eb347c81157d9cafb4533274388bd88295b42b609bf310"
     },
     {
       "lines": 113,
@@ -513,9 +513,9 @@
       "sha256": "cba1299cbfcb968864cc1cb4f3a4b7de3535c3d7fff9f688c9cca24b08fb577e"
     },
     {
-      "lines": 408,
+      "lines": 432,
       "path": "tools/parser-stress/src/main.rs",
-      "sha256": "79dcbeeba446bf025214cb165d86d5acfe998c8b0ad4f13680fc1cb5aa68b35c"
+      "sha256": "3a74337f7ab7597a5f4c9f86d75972d81c53a3e3ffb14667a95520927787e7a5"
     },
     {
       "lines": 81,
@@ -533,9 +533,9 @@
       "sha256": "683f754a1de85c1fb8c471bcc9717722a2492983f55dc1f490c622ca82ac84bc"
     },
     {
-      "lines": 75,
+      "lines": 79,
       "path": "tools/parser-stress/tests/cli.rs",
-      "sha256": "2cfebf90a4edb045be4173e5fe4b1504a99274bb77a3838731073df90bfad556"
+      "sha256": "5c81d5f6babe6b04bbcf0a8c2a7e11680406e70dc23e86dd93e7ff1461a9b2e3"
     },
     {
       "lines": 85,

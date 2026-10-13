@@ -93,6 +93,7 @@ The GenOS 0.56 experimental baseline includes:
 - exclusive TCP listener authority and bounded backlog;
 - four global passive slots, two per process owner, bounded concurrent streams and readiness waits;
 - deterministic host-side and QEMU network proofs.
+- a [maintained TCP requirement/test inventory](docs/TCP_REQUIREMENTS.md) covering all 119 RFC 9293 identifiers and explicit timing/congestion gaps.
 
 ### GenOS 0.55 additions
 

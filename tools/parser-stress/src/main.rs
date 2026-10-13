@@ -257,6 +257,30 @@ fn run() -> Result<(), String> {
             include_bytes!("../corpus/tcp-offset-invalid.bin"),
         ),
         (
+            "tcp-option-zero-length",
+            "tcp",
+            false,
+            include_bytes!("../corpus/tcp-option-zero-length.bin"),
+        ),
+        (
+            "tcp-eol-nonzero-padding",
+            "tcp",
+            false,
+            include_bytes!("../corpus/tcp-eol-nonzero-padding.bin"),
+        ),
+        (
+            "tcp-unknown-option-valid",
+            "tcp",
+            true,
+            include_bytes!("../corpus/tcp-unknown-option-valid.bin"),
+        ),
+        (
+            "tcp-mss-unaligned-valid",
+            "tcp",
+            true,
+            include_bytes!("../corpus/tcp-mss-unaligned-valid.bin"),
+        ),
+        (
             "socket-zero-slot",
             "socket",
             true,

@@ -88,6 +88,7 @@ jobs:
           cargo test --workspace
           cargo test --manifest-path tools/parser-stress/Cargo.toml --offline
           python3 -m unittest discover -s tools -p 'test_*.py'
+          python3 tools/check_tcp_matrix.py
 
   release-checks:
     name: Release target checks

@@ -13,7 +13,7 @@ fn retained_corpus_and_truncations_pass() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("corpus=33 truncations=85037 mutations=0")
+        String::from_utf8_lossy(&output.stdout).contains("corpus=37 truncations=85137 mutations=0")
     );
 }
 
@@ -24,6 +24,10 @@ fn replay_uses_production_acceptance_and_rejects_invalid_cli() {
         ("elf", "elf-overflow.bin", "reject"),
         ("native-elf", "native-elf-valid.bin", "accept"),
         ("native-elf", "native-elf-late-wx.bin", "reject"),
+        ("tcp", "tcp-option-zero-length.bin", "reject"),
+        ("tcp", "tcp-eol-nonzero-padding.bin", "reject"),
+        ("tcp", "tcp-unknown-option-valid.bin", "accept"),
+        ("tcp", "tcp-mss-unaligned-valid.bin", "accept"),
     ] {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("corpus")

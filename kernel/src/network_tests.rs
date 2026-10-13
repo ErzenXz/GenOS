@@ -335,3 +335,36 @@ fn checksum_corruption_and_foreign_tuple_never_change_stream_state() {
     packet(&mut stack, foreign, 1000, 5000, 0x18, 256, b"wrong", 3);
     assert_eq!(op(&stack).receive_len, 0);
 }
+
+#[test]
+fn malformed_tcp_options_cannot_mutate_a_stream_but_unknown_valid_options_deliver() {
+    let (mut stack, peer) = connected();
+    for (options, valid) in [([30, 0, 0, 0], false), ([30, 4, 0xab, 0xcd], true)] {
+        // Real Ethernet/IPv4/TCP bytes, with correct checksums: rejection must
+        // come from option structure, not an accidentally corrupted packet.
+        let mut segment = [0u8; 28];
+        segment[..2].copy_from_slice(&peer.remote_port.to_be_bytes());
+        segment[2..4].copy_from_slice(&peer.local_port.to_be_bytes());
+        segment[4..8].copy_from_slice(&1000u32.to_be_bytes());
+        segment[8..12].copy_from_slice(&5000u32.to_be_bytes());
+        segment[12] = 6 << 4;
+        segment[13] = 0x18;
+        segment[14..16].copy_from_slice(&256u16.to_be_bytes());
+        segment[20..24].copy_from_slice(&options);
+        segment[24..].copy_from_slice(b"safe");
+        let checksum = transport_checksum(peer.target.to_be_bytes(), stack.address, 6, &segment);
+        segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+        let mut sender = self::stack();
+        sender.address = peer.target.to_be_bytes();
+        assert!(sender.send_ipv4(stack.device.mac(), stack.address, 6, &segment));
+        stack
+            .device
+            .incoming
+            .push_back(sender.device.outgoing.pop().unwrap());
+        stack.pump_passive_rx(1);
+        assert_eq!(op(&stack).receive_len, if valid { 4 } else { 0 });
+        assert_eq!(op(&stack).remote_sequence, if valid { 1004 } else { 1000 });
+        assert!(!op(&stack).failed);
+    }
+    assert_eq!(&op(&stack).receive[..4], b"safe");
+}

@@ -179,6 +179,13 @@ A pull request that adds or changes unsafe code must identify each affected bloc
 
 ## Tests and boot markers
 
+TCP changes must update [the requirement matrix](docs/TCP_REQUIREMENTS.md).
+Review its source receipts, implementation/test references, supported behavior
+and explicit gaps; update `production_sha256` from the final reviewed source,
+then run `python3 tools/check_tcp_matrix.py --write-doc` and the normal guard.
+The guard requires all 119 RFC 9293 identifiers, all 25 topics, compiled host
+test names and guest producer/validator bindings. It does not certify conformance.
+
 Use the lowest test layer that can prove the contract, then add a system test when hardware or privilege boundaries matter.
 
 - Pure parsers and state machines should have host tests.
