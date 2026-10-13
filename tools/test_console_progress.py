@@ -25,7 +25,8 @@ class ConsoleProgressTests(unittest.TestCase):
             console_progress.audit(changed, BASELINE)
 
     def test_new_checkmark_changes_only_the_numerator(self):
-        current = ROADMAP.replace("- [ ] **F0.1:**", "- [x] **F0.1:**", 1)
+        pending = next(entry["text"] for entry in console_progress.extract(ROADMAP) if not entry["complete"])
+        current = ROADMAP.replace("- [ ] " + pending, "- [x] " + pending, 1)
         self.assertNotEqual(current, ROADMAP)
         before = console_progress.audit(ROADMAP, BASELINE)
         after = console_progress.audit(current, BASELINE)
