@@ -5,6 +5,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 #[path = "xstate_probe.rs"]
 mod xstate_probe;
 
+#[cfg(feature = "validation-boot")]
+#[path = "integer_probe.rs"]
+mod integer_probe;
+
 use genos_abi::{
     UserChannelMessage, UserDirectoryEntry, UserFileStat, UserInputEvent, UserNetworkConfig,
     UserProcessHeader, UserProcessStatus, UserSocketStatus, UserSystemInfo, USER_ABI_VERSION,

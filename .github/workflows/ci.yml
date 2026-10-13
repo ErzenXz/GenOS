@@ -157,7 +157,12 @@ jobs:
           cargo -V
 
       - name: Build image and run multi-phase QEMU suite
-        run: make test
+        run: |
+          python3 tools/test_integer_context.py
+          python3 tools/test_integer_context.py --case gpr-corrupt
+          python3 tools/test_integer_context.py --case flags-corrupt
+          python3 tools/test_integer_context.py --case timer-skipped
+          make test
 
       - name: Write CI evidence manifest
         if: always()
@@ -194,6 +199,7 @@ jobs:
             build/validation-evidence/
             build/normal-evidence/
             build/exception-evidence/
+            build/integer-context-evidence/
           if-no-files-found: warn
           retention-days: 14
 

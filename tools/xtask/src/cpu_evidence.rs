@@ -18,6 +18,13 @@ pub const BOOT_SEQUENCE: &[&str] = &[
 const PROBE: &str = "USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true";
 const PREEMPTIONS: &str = "USER_XSTATE_PREEMPTIONS count=";
 const CONTEXT: &str = "USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true";
+pub const INTEGER: &[&str] = &[
+    "USER_INTEGER_FRESH_OK processes=6 gprs=15 rsp=initial flags=0x202",
+    "USER_INTEGER_DIRECT_OK processes=6 preserved=14 rax=unknown-syscall flags=exact",
+    "USER_INTEGER_YIELD_OK processes=6 gprs=15 args=zero flags=exact",
+    "USER_INTEGER_TIMER_OK processes=6 captures=12 flags=arithmetic,df,ac,id",
+    "USER_INTEGER_REUSE_OK rounds=2 faults=2 vector=6 exits=4 reclaimed=true",
+];
 
 pub fn validation_ready(output: &str) -> bool {
     let lines: Vec<_> = output.lines().collect();
@@ -54,10 +61,27 @@ pub fn validation_ready(output: &str) -> bool {
                 .map(|count| (index, count.parse::<u64>()))
         })
         .collect();
-    samples.len() == 1
-        && samples[0].1.as_ref().is_ok_and(|count| *count >= 14)
-        && probe < samples[0].0
-        && exact(CONTEXT).is_some_and(|context| context > samples[0].0)
+    if samples.len() != 1
+        || !samples[0].1.as_ref().is_ok_and(|count| *count >= 14)
+        || probe >= samples[0].0
+    {
+        return false;
+    }
+    let Some(mut previous) = exact(CONTEXT).filter(|context| *context > samples[0].0) else {
+        return false;
+    };
+    for marker in INTEGER {
+        let Some(position) = exact(marker) else {
+            return false;
+        };
+        if position <= previous {
+            return false;
+        }
+        previous = position;
+    }
+    lines
+        .iter()
+        .all(|line| !line.starts_with("USER_INTEGER_") || INTEGER.contains(line))
 }
 
 #[cfg(test)]
@@ -74,6 +98,7 @@ mod tests {
                 "USER_XSTATE_PREEMPTIONS count=14",
                 CONTEXT,
             ])
+            .chain(INTEGER.iter().copied())
             .collect();
         let good = records.join("\n");
         assert!(validation_ready(&good));
@@ -99,6 +124,13 @@ mod tests {
             assert!(!validation_ready(
                 &good.replace("count=14", &format!("count={count}"))
             ));
+        }
+        for forged in [
+            "USER_INTEGER_MISMATCH",
+            "USER_INTEGER_SAMPLE_MISMATCH pid=130 sample=0",
+            "USER_INTEGER_TIMER_OK processes=6 captures=11 flags=arithmetic,df,ac,id",
+        ] {
+            assert!(!validation_ready(&format!("{good}\n{forged}")));
         }
     }
 }

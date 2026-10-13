@@ -109,8 +109,8 @@ single stepping is a process-local #DB termination, not a debugger service.
 | CPUID, timestamp observations | Machine-wide observations, not private saved registers; no isolation or virtual-time promise |
 
 This inventory covers the admitted reference feature set. Larger CPU profiles,
-performance-monitoring access, future CET/UINTR/extended state, hostile AC/DF
-campaigns and other machine-wide observations need their own policy/evidence.
+performance-monitoring access, future CET/UINTR/extended state, exhaustive flag
+interactions and other machine-wide observations need their own policy/evidence.
 
 Kernel-origin faults halt, and supported process-local faults terminate only
 the current process. The [entry ownership guard](FAULT_CONTAINMENT.md) now
@@ -123,6 +123,74 @@ rollback uses a matched older kernel/userspace bundle. See
 [ADR-0013](adr/0013-bounded-user-cpu-context.md).
 
 ## Validation
+
+### Five native integer-state tasks
+
+The validation-only integer ELF adds five bounded F1.2 evidence tasks through
+the unchanged loader, mapper, constructor, syscall and timer paths:
+
+| Task | Required observation |
+| --- | --- |
+| Fresh state | Six Ring 3 snapshots: fourteen zero GPRs, only the declared RDI token, initial RSP, exact `0x202` flags and native CS/SS |
+| Direct syscall | All fifteen distinct nonzero GPR patterns before an unknown syscall; fourteen preserved and RAX replaced by the exact ABI error, with exact RSP/flags/selectors |
+| Yield | All fifteen GPRs across a real scheduled yield, including the six zero arguments required by the existing ABI and RAX's zero result |
+| Timer | Two actual PIT captures per process inside a flag-neutral MOV/LEA/JRCXZ loop; all GPRs, RSP, flags and selectors checked before progress is published |
+| Fault and reuse | Two real user #UD terminations, four healthy peer exits, unconditional address-space reclamation and exact frame baseline; repeat the same identities/slots with new patterns and clean initial state |
+
+Three simultaneously live processes run twice. Each process has a distinct value
+in every GPR; RBX points to a distinct offset in its private progress page.
+RCX is the timer loop's sole progress scratch: kernel captures admit only the
+MOV/LEA intermediate values `0, 1, 2, -1, -2`; all other saved words compare
+exactly. The before-loop snapshot requires `-2` and after-loop snapshot requires
+zero. Captures must have RIP inside the linked loop, so unrelated earlier
+preemptions cannot meet the two-capture requirement. The bounded coordinator
+allows at most 48 rounds and reclaims every constructed owner on failure.
+
+The patterns include arithmetic flags, DF, AC and ID, with different combinations
+in each round. All memory/stack accesses are aligned. User PUSHFQ observations
+and saved timer frames compare every flag bit, without masking DF/AC. The
+existing entry assembly clears live kernel DF/AC before Rust; this fixture
+qualifies private user preservation and successful entry/return, not every
+alignment exception, single-step/RF interaction or independently sampled kernel
+flag at every instruction. Fault snapshots precede UD2; exception GPR frames
+are not relabeled as resumable process contexts. No ABI or normal-image behavior
+changes; this suite runs after the xstate suite and the isolated exception
+harness omits both through the existing single probe entry.
+
+Only after both rounds and cleanup succeed are these five exact markers emitted:
+
+```text
+USER_INTEGER_FRESH_OK processes=6 gprs=15 rsp=initial flags=0x202
+USER_INTEGER_DIRECT_OK processes=6 preserved=14 rax=unknown-syscall flags=exact
+USER_INTEGER_YIELD_OK processes=6 gprs=15 args=zero flags=exact
+USER_INTEGER_TIMER_OK processes=6 captures=12 flags=arithmetic,df,ac,id
+USER_INTEGER_REUSE_OK rounds=2 faults=2 vector=6 exits=4 reclaimed=true
+```
+
+The aggregate validation evidence contract requires them once, in order, between
+CPU context and shell readiness. Normal images forbid them. Host tests flip
+every bit in all fifteen GPRs, RSP, flags and selectors to prove the comparison
+does not ignore a field. The independent harness additionally requires both
+actual #UD records, six yields and four peer exits in the correct phase:
+
+```sh
+python3 tools/test_integer_context.py
+python3 tools/test_integer_context.py --case gpr-corrupt
+python3 tools/test_integer_context.py --case flags-corrupt
+python3 tools/test_integer_context.py --case timer-skipped
+```
+
+The intact case builds an unchanged clean committed source archive. Three negative
+cases change only a saved user observation or the user loop in disposable copies;
+they require actual rejection, cleanup back to baseline and no positive marker.
+All cases retain the original source archive, private patch, source/image and
+environment identity, commands, serial output and failure manifests, and check
+QEMU remains live before host cleanup. It stops after these CPU proofs, without
+requiring external DNS. The existing Build and boot CI context runs it before
+the full suite and retains its evidence. That wiring alone is not passing CI
+or frozen-reference/physical qualification. F1.2 remains open.
+
+### Existing floating-point and selector tasks
 
 Host tests check required feature rejection, forbidden control-state modes,
 initial image size/alignment/zeroing, and coverage of every defined restorable

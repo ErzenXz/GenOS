@@ -78,6 +78,11 @@ invalid operation, but DIVSS returns without a trap. SIMD exception delivery
 and containment have scoped KVM evidence; the retained TCG failures remain
 in [VERIFICATION.md](VERIFICATION.md).
 This is a bounded policy, not exhaustive FP/flag or larger-feature qualification.
+Five additional [native integer-state tasks](CPU_STATE.md#five-native-integer-state-tasks)
+exercise fresh/direct/yield/timer/fault/reuse state in six Ring 3 processes, with
+exact GPR/RSP/flag/selector comparisons and twelve qualified timer captures.
+AC/DF/arithmetic/ID patterns use aligned accesses; alignment exceptions, full
+TF/RF interactions and physical CPU profiles remain unqualified. F1.2 remains open.
 
 Seven stacks now have fourteen inaccessible page guards and measured usage; all
 guards and a multipage Rust frame have real CPU fault probes. See

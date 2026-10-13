@@ -317,3 +317,12 @@ fixtures do not emulate firmware map growth, stale-key retries or allocation
 failures; those are separately covered by `python3 tools/test_firmware_lifecycle.py`.
 Its eight cases complete five bounded firmware tasks; see
 [the fault model and provenance](docs/FIRMWARE_QUALIFICATION.md).
+
+`python3 tools/test_integer_context.py` independently runs five native GPR/flag
+tasks in an unchanged clean validation source archive. It requires ordered exact
+markers, real fault/peer-completion records and a live VM; it retains its source,
+image identity, environment, commands, serial and failed manifest before cleanup.
+The Build and boot context executes it and the `gpr-corrupt`, `flags-corrupt` and
+`timer-skipped` rejection cases before the full suite. Aggregate validation
+also requires the five markers; normal/release images forbid them. See the
+[CPU-state scope](docs/CPU_STATE.md#five-native-integer-state-tasks).

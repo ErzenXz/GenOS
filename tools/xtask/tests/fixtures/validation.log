@@ -35,6 +35,11 @@ USER_FAULT_TERMINATED pid=122 vector=16 error=0x0 rip=0x4000000010a4 cr2=0x0
 USER_XSTATE_OK processes=6 rounds=2 components=x87,mmx,xmm0-15,mxcsr syscalls=direct,yield faults=2 fresh=6 reclaimed=true
 USER_XSTATE_PREEMPTIONS count=14
 USER_CPU_CONTEXT_OK processes=6 selectors=ds,es,fs,gs bases=zero pending_mf=2 fresh=6 reclaimed=true
+USER_INTEGER_FRESH_OK processes=6 gprs=15 rsp=initial flags=0x202
+USER_INTEGER_DIRECT_OK processes=6 preserved=14 rax=unknown-syscall flags=exact
+USER_INTEGER_YIELD_OK processes=6 gprs=15 args=zero flags=exact
+USER_INTEGER_TIMER_OK processes=6 captures=12 flags=arithmetic,df,ac,id
+USER_INTEGER_REUSE_OK rounds=2 faults=2 vector=6 exits=4 reclaimed=true
 USER_ELF_LAUNCH_OK pid=4 preemptions=1
 RAMFS_TEMP_CLEAN_OK
 RAMFS_TEMP_READY path=/TMP/SESSION.TXT
