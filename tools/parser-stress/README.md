@@ -29,7 +29,7 @@ queue limits, shutdown, stale and forged handles, owner isolation, incarnation
 isolation, and teardown. Rejected handles must leave both owners' socket state
 unchanged. Each input executes at most 64 socket commands.
 
-Use `--target elf|native-elf|ipv4|ipv6|udp|tcp|socket|boot-map|paths|descriptors` to focus mutation input on one target;
+Use `--target elf|native-elf|ipv4|ipv6|udp|tcp|socket|boot-map|paths|descriptors|handles` to focus mutation input on one target;
 the deterministic initial corpus still runs for all targets. `--target all` is
 the default. `--iterations` accepts 0 through 10,000,000. Seeds accept decimal
 or `0x` hexadecimal values, including zero.

@@ -247,6 +247,32 @@ jobs:
             tools/parser-stress/target/failures/
           retention-days: 14
 
+  coverage-feedback:
+    name: Coverage feedback (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [elf, handles]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install runtime compiler
+        run: sudo apt-get update && sudo apt-get install --yes clang
+      - name: Run instrumented production invariants on immutable source
+        run: python3 tools/test_coverage_fuzz.py --target ${{ matrix.target }} --runs 10000 --seed 47454 --require-growth
+      - name: Retain source, corpus, build and execution evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ matrix.target }}
+          path: build/coverage-fuzz/evidence/
+          if-no-files-found: error
+          retention-days: 14
+
   normal-boot:
     name: Normal debug and release boot
     runs-on: ubuntu-latest

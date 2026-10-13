@@ -17,6 +17,7 @@ const TARGETS: &[&str] = &[
     "boot-map",
     "paths",
     "descriptors",
+    "handles",
 ];
 
 struct Random(u64);
@@ -180,7 +181,7 @@ fn run() -> Result<(), String> {
     if expected.is_some()
         && (input.is_none()
             || target == "all"
-            || matches!(target.as_str(), "socket" | "descriptors"))
+            || matches!(target.as_str(), "socket" | "descriptors" | "handles"))
     {
         return Err(
             "--expect requires --input and a parser target (elf, native-elf, ipv4, ipv6, udp, tcp)"

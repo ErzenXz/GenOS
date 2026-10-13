@@ -208,9 +208,9 @@
       "sha256": "56141d678c84132716da844b9ddaff0898d73f9b2f705150993f4243087c03e9"
     },
     {
-      "lines": 282,
+      "lines": 291,
       "path": "kernel/src/interrupts.rs",
-      "sha256": "dc72d0f574b1a72f5ec4a0049d2bfe367995a052d7a737bf3b14d65f2829d23f"
+      "sha256": "dc4348799fb781ec38aaf10503b223e716cc3450732ec759fc7880ccfc1d2b33"
     },
     {
       "lines": 120,
@@ -228,9 +228,9 @@
       "sha256": "de208b2f6116d487e6c2a2b91416cf6b9b29689096b9a163dc482edeebbb17ba"
     },
     {
-      "lines": 94,
+      "lines": 95,
       "path": "kernel/src/lib.rs",
-      "sha256": "95662cdce8c38d69bb56fb54fd742935a1c553f18f2d098c4ca6d80ad8a982e8"
+      "sha256": "4a40567dc002a6722f24341915a765513f7090498ff13fc667dea898940bac88"
     },
     {
       "lines": 292,
@@ -408,6 +408,11 @@
       "sha256": "2d2f05e0dfe1c5197f3d1083dcd0d532f650f74e75012905aece3866b5e8f2d7"
     },
     {
+      "lines": 150,
+      "path": "kernel/src/tick_clock.rs",
+      "sha256": "3e8fb5fddb478ccd4e9c236cf592b62fdc76f13129c33edfdb8a5079c0cd1e00"
+    },
+    {
       "lines": 180,
       "path": "kernel/src/tx_queue.rs",
       "sha256": "fcbcae292d0f30731a00a461d2426dd90d429708d8f1576946c46b716a467fe4"
@@ -468,19 +473,29 @@
       "sha256": "ae9a287fc903bfa8c96565bd544b693c27bb28295e9a0f5bd5d523f66670be41"
     },
     {
-      "lines": 488,
-      "path": "tools/parser-stress/src/lib.rs",
-      "sha256": "c7722a45fbd05304d113f5dc19b43ea660f2759d92265fdd1d4d8783315a3473"
+      "lines": 101,
+      "path": "tools/parser-stress/src/handles.rs",
+      "sha256": "aab99bd600607356ab9e718b36d2ef0aab46729327ef3813c88bc114827137b5"
     },
     {
-      "lines": 308,
+      "lines": 491,
+      "path": "tools/parser-stress/src/lib.rs",
+      "sha256": "ffce26afd6d8776fbdeae2dc4542bccd485adf142381f22d9d8a3b3fbc61bab2"
+    },
+    {
+      "lines": 309,
       "path": "tools/parser-stress/src/main.rs",
-      "sha256": "5c363d9b6d8871db25aa0d5fe92c65ef08e8d33ca01eadd7a26348f1694b6cac"
+      "sha256": "e2f27d429358ba110d82aab5f01b7718bf108d9d8ebe70a53b06ead22011926b"
     },
     {
       "lines": 75,
       "path": "tools/parser-stress/tests/cli.rs",
       "sha256": "62521c3d3274ed77af59b42afb7c97ab32f184a8a220f35ce1aaf19148be839a"
+    },
+    {
+      "lines": 85,
+      "path": "tools/parser-stress/tests/handles.rs",
+      "sha256": "b2b043c4837def1f4aeb1b9c46925bb9490cc9083eddb726c77b8bc9ece02941"
     },
     {
       "lines": 104,
@@ -1781,96 +1796,86 @@
       "column": 1,
       "construct_sha256": "cf3f52f226133c4a6b8714ba9595a51429b1debf181d90a2956fd6fa20f1cfc4",
       "context": "    pub network_irqs: u64,\n}\n\nglobal_asm!(\n    include_str!(\"interrupt_entry.S\"),\n    error_code_mask = const kernel::exception::ERROR_CODE_MASK,\n    user_cs = const userspace::USER_CONTEXT_CS_OFFSET,",
-      "context_start_line": 29,
-      "end_line": 38,
+      "context_start_line": 30,
+      "end_line": 39,
       "kind": "global_asm_macro",
-      "line": 32,
+      "line": 33,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 1,
       "construct_sha256": "e728142db13ec9b9a3c5d9e9c8674d40b4f2601f04e0bfa4bbd09b9449111746",
       "context": "// Boot supplies permanent, bounded TSS slots and disjoint guarded stack tops.\n// Nested entries and #DF execute only fixed assembly reporting and never return\n// to Rust; only one admitted BSP can access the guard/configuration.\nglobal_asm!(\n    include_str!(\"entry_guard.S\"),\n    config_slots = const core::mem::offset_of!(kernel::exception::EntryConfig, slots),\n    config_tops = const core::mem::offset_of!(kernel::exception::EntryConfig, tops),",
-      "context_start_line": 41,
-      "end_line": 54,
+      "context_start_line": 42,
+      "end_line": 55,
       "kind": "global_asm_macro",
-      "line": 44,
+      "line": 45,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 33,
       "construct_sha256": "a9d0959fbb1a6eb28779f1d464595820406bacc16b2cfb6ac37a6c7d80a12d4f",
       "context": "    fn genos_irq1_stub();\n    fn genos_irq12_stub();\n    fn genos_irq48_stub();\n    static genos_vector_table: [unsafe extern \"C\" fn(); 256];\n}\n\npub fn vector_handler(vector: usize) -> unsafe extern \"C\" fn() {",
-      "context_start_line": 58,
-      "end_line": 61,
+      "context_start_line": 59,
+      "end_line": 62,
       "kind": "unsafe_fn",
-      "line": 61,
+      "line": 62,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 41,
       "construct_sha256": "c717d94053247bb418170e588aa7a56ee621263f620b6a4dd8bbf0155e2ca074",
       "context": "    static genos_vector_table: [unsafe extern \"C\" fn(); 256];\n}\n\npub fn vector_handler(vector: usize) -> unsafe extern \"C\" fn() {\n    match vector {\n        32 => return genos_irq0_stub,\n        33 => return genos_irq1_stub,",
-      "context_start_line": 61,
-      "end_line": 76,
+      "context_start_line": 62,
+      "end_line": 77,
       "kind": "unsafe_fn",
-      "line": 64,
+      "line": 65,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 5,
       "construct_sha256": "e707cb4499e7b8b163e169e5caf7db500080bb8311bc12652301cfc9efeed3e8",
       "context": "    }\n    // SAFETY: the linked assembly emits exactly 256 immutable function pointers.\n    // Array indexing checks the caller's vector before reading the table.\n    unsafe { genos_vector_table[vector] }\n}\n\npub fn init() {",
-      "context_start_line": 72,
-      "end_line": 75,
+      "context_start_line": 73,
+      "end_line": 76,
       "kind": "unsafe_block",
-      "line": 75,
+      "line": 76,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 5,
       "construct_sha256": "228bf7e3fe9289e7397dacadfdb0e85892935ff724cd28f5bd9372ada642f593",
       "context": "    // SAFETY: the irreversible BSP phase claim admits controller setup once,\n    // after the complete IDT was published by arch. IF is clear. No IDT writes\n    // occur here; a failed setup retains its claim and cannot enable IRQs.\n    unsafe {\n        remap_pic();\n        init_pit_100hz();\n    }",
-      "context_start_line": 84,
-      "end_line": 90,
+      "context_start_line": 85,
+      "end_line": 91,
       "kind": "unsafe_block",
-      "line": 87,
+      "line": 88,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 5,
       "construct_sha256": "54a545ca0f2b10f4671e0b3c1d1002826020a96db8acdf66348a57af88b221f7",
-      "context": "extern \"C\" fn genos_irq0_rust(frame: *mut userspace::UserContext) -> u64 {\n    TICKS.fetch_add(1, Ordering::Relaxed);\n    let preempted = userspace::timer_preempt(frame);\n    unsafe { pic_eoi(0) };\n    u64::from(preempted)\n}\n",
-      "context_start_line": 144,
-      "end_line": 147,
+      "context": "    TICKS.fetch_add(1, Ordering::Relaxed);\n    with_clock(Clock::hardware_tick);\n    let preempted = userspace::timer_preempt(frame);\n    unsafe { pic_eoi(0) };\n    u64::from(preempted)\n}\n",
+      "context_start_line": 153,
+      "end_line": 156,
       "kind": "unsafe_block",
-      "line": 147,
+      "line": 156,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 5,
       "construct_sha256": "3a15a9f754b5f7bde6574098796c6d109ac9a37b97b8ff66dc645cc594345a06",
       "context": "extern \"C\" fn genos_irq1_rust() {\n    KEYBOARD_IRQS.fetch_add(1, Ordering::Relaxed);\n    input_hw::keyboard_irq();\n    unsafe { pic_eoi(1) };\n}\n\n#[no_mangle]",
-      "context_start_line": 152,
-      "end_line": 155,
+      "context_start_line": 161,
+      "end_line": 164,
       "kind": "unsafe_block",
-      "line": 155,
+      "line": 164,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 5,
       "construct_sha256": "0f6aaa62f018d96ec4a1a5a678a33da1dba412fa3a386c02a79cce83beec457d",
       "context": "extern \"C\" fn genos_irq12_rust() {\n    MOUSE_IRQS.fetch_add(1, Ordering::Relaxed);\n    input_hw::mouse_irq();\n    unsafe { pic_eoi(12) };\n}\n\n#[no_mangle]",
-      "context_start_line": 159,
-      "end_line": 162,
-      "kind": "unsafe_block",
-      "line": 162,
-      "path": "kernel/src/interrupts.rs"
-    },
-    {
-      "column": 5,
-      "construct_sha256": "6a213c8b42b5a5d87c393406915876b99cc9917887fd351bd0f23bbe6f1d6114",
-      "context": "    crate::network_device::record_virtio_interrupt();\n    // SAFETY: this MSI-X vector is routed to the BSP local APIC; acknowledge\n    // its identity-mapped EOI register without touching protocol state.\n    unsafe { core::ptr::write_volatile(0xfee0_00b0 as *mut u32, 0) };\n}\n\n#[no_mangle]",
       "context_start_line": 168,
       "end_line": 171,
       "kind": "unsafe_block",
@@ -1879,112 +1884,122 @@
     },
     {
       "column": 5,
+      "construct_sha256": "6a213c8b42b5a5d87c393406915876b99cc9917887fd351bd0f23bbe6f1d6114",
+      "context": "    crate::network_device::record_virtio_interrupt();\n    // SAFETY: this MSI-X vector is routed to the BSP local APIC; acknowledge\n    // its identity-mapped EOI register without touching protocol state.\n    unsafe { core::ptr::write_volatile(0xfee0_00b0 as *mut u32, 0) };\n}\n\n#[no_mangle]",
+      "context_start_line": 177,
+      "end_line": 180,
+      "kind": "unsafe_block",
+      "line": 180,
+      "path": "kernel/src/interrupts.rs"
+    },
+    {
+      "column": 5,
       "construct_sha256": "2907d9079310585f2b0b62fbd50a941fa74181928d0649d5472d3d95704d014c",
       "context": "fn unexpected_pic_irq(irq: u8) {\n    // SAFETY: only the remapped PIC range reaches this function, so irq < 16.\n    // IF is clear on the BSP; command/mask accesses cannot race normal IRQ work.\n    unsafe {\n        let in_service = match irq {\n            7 => {\n                arch::outb(PIC1_COMMAND, PIC_READ_ISR);",
-      "context_start_line": 214,
-      "end_line": 242,
+      "context_start_line": 223,
+      "end_line": 251,
       "kind": "unsafe_block",
-      "line": 217,
+      "line": 226,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 1,
       "construct_sha256": "ee6848bde2a8f9c12b59f20de07f63c4933082c6afec049bff584a3ca744b3fd",
       "context": "    }\n}\n\nunsafe fn remap_pic() {\n    arch::outb(PIC1_COMMAND, 0x11);\n    io_wait();\n    arch::outb(PIC2_COMMAND, 0x11);",
-      "context_start_line": 242,
-      "end_line": 264,
+      "context_start_line": 251,
+      "end_line": 273,
       "kind": "unsafe_fn",
-      "line": 245,
+      "line": 254,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 1,
       "construct_sha256": "c80c1904c05009c03fcd249741a9a1c9570b83b51dacb5fa6a9c7074ae39bf44",
       "context": "    arch::outb(PIC2_DATA, 0b1110_1111);\n}\n\nunsafe fn init_pit_100hz() {\n    let divisor: u16 = 11932;\n    arch::outb(0x43, 0x36);\n    arch::outb(0x40, (divisor & 0xff) as u8);",
-      "context_start_line": 263,
-      "end_line": 271,
+      "context_start_line": 272,
+      "end_line": 280,
       "kind": "unsafe_fn",
-      "line": 266,
+      "line": 275,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 1,
       "construct_sha256": "38613f99f1b68d8b1f1df39ed1ec413bb2c4546364ae3aa1b1bb9089add3e43e",
       "context": "    arch::outb(0x40, (divisor >> 8) as u8);\n}\n\nunsafe fn pic_eoi(irq: u8) {\n    if irq >= 8 {\n        arch::outb(PIC2_COMMAND, PIC_EOI);\n    }",
-      "context_start_line": 270,
-      "end_line": 278,
+      "context_start_line": 279,
+      "end_line": 287,
       "kind": "unsafe_fn",
-      "line": 273,
+      "line": 282,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 1,
       "construct_sha256": "71d74f73b84de2f5e92fe15070dd4bda907b1adb2c4d94c173dde437adf3f5b2",
       "context": "    arch::outb(PIC1_COMMAND, PIC_EOI);\n}\n\nunsafe fn io_wait() {\n    arch::outb(0x80, 0);\n}",
-      "context_start_line": 277,
-      "end_line": 282,
+      "context_start_line": 286,
+      "end_line": 291,
       "kind": "unsafe_fn",
-      "line": 280,
+      "line": 289,
       "path": "kernel/src/interrupts.rs"
     },
     {
       "column": 9,
       "construct_sha256": "c310339d010c2c279dec79e3d8bdc635ba9247882638991d300a61bbe205ffc0",
       "context": "    pub fn halt_loop() -> ! {\n        panic!(\"unexpected privileged halt in host test\")\n    }\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
-      "context_start_line": 65,
-      "end_line": 70,
+      "context_start_line": 66,
+      "end_line": 71,
       "kind": "unsafe_fn",
-      "line": 68,
+      "line": 69,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "17c7b12b790576fd937eb7f726ddfd58cd1f981940ec1fb7386e9d0084b8af7f",
       "context": "    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {",
-      "context_start_line": 68,
-      "end_line": 73,
+      "context_start_line": 69,
+      "end_line": 74,
       "kind": "unsafe_fn",
-      "line": 71,
+      "line": 72,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "3f568f289ddbf53aced0e01a8c08b8663d90f40db51a5e1be26743d1cdb1909d",
       "context": "    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {",
-      "context_start_line": 71,
-      "end_line": 76,
+      "context_start_line": 72,
+      "end_line": 77,
       "kind": "unsafe_fn",
-      "line": 74,
+      "line": 75,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "00dea65152448b96d0d5ddf452abeaf12431daf027379b4aebfe7ac7e715a65b",
       "context": "    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {",
-      "context_start_line": 74,
-      "end_line": 79,
+      "context_start_line": 75,
+      "end_line": 80,
       "kind": "unsafe_fn",
-      "line": 77,
+      "line": 78,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "1a6c18dc0212beeffb26ec78ecbc3d296d3fd9d71a685cb427653cb62ab59fa2",
       "context": "    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {",
-      "context_start_line": 77,
-      "end_line": 82,
+      "context_start_line": 78,
+      "end_line": 83,
       "kind": "unsafe_fn",
-      "line": 80,
+      "line": 81,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "238b04576c64e3b2b07a66a69a9a15c9f6c008fa62d62f5039892dedddb70d60",
       "context": "    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n}",
-      "context_start_line": 80,
-      "end_line": 85,
+      "context_start_line": 81,
+      "end_line": 86,
       "kind": "unsafe_fn",
-      "line": 83,
+      "line": 84,
       "path": "kernel/src/lib.rs"
     },
     {

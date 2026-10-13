@@ -80,6 +80,14 @@
       "app_id": 15368
     },
     {
+      "context": "Coverage feedback (elf)",
+      "app_id": 15368
+    },
+    {
+      "context": "Coverage feedback (handles)",
+      "app_id": 15368
+    },
+    {
       "context": "Documentation",
       "app_id": 15368
     },
@@ -281,6 +289,10 @@
     },
     {
       "context": "Foundation storage-create-failure",
+      "app_id": 15368
+    },
+    {
+      "context": "Foundation tick-clock-transition",
       "app_id": 15368
     },
     {

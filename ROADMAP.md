@@ -99,7 +99,9 @@ terminal criteria, and 0/13 console-qualification criteria.
 On 2026-10-10, published independent CI execution and enforced required checks
 close F0.3, bringing the audited count to **51/100 (51%)**, including **40/60**
 kernel-foundation criteria. The four strict CPU/IRET probes now pass on an explicit
-KVM CPU variant. F0.1 integration and full F1 qualification remain open.
+KVM CPU variant. On October 13, PR #9 merged after all eighty required checks
+passed, closing F0.1 and bringing the count to **52/100**, including **41/60**
+kernel-foundation criteria. Full F1 qualification and independent reproduction remain open.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
 20 unified handles per process including 4 file and 4 socket handles; 32 VFS nodes;
@@ -113,7 +115,7 @@ Current bounds matter: 4 managed asynchronous process slots including the shell;
 
 | Next work item | Why it comes next | Completion evidence |
 | --- | --- | --- |
-| **F0.1 — Integrate verification** | Workflow publication is authorized and PR #9 has exact-head remote results, including hardware CPU probes | All required checks pass on the reviewed head, then review/merge and independent reference reproduction |
+| **F0.5 — Independent reference reproduction** | PR #9 integrated with all required checks passing; independent artifact acquisition and review remain | Another reviewer reproduces the documented reference and retained artifact identities |
 | **F1.2/F1.4 — Complete context and fault qualification** | Eager legacy state, private selectors, bounded zero-base/debug policy, fourteen guards and terminal entry ownership exist | Complete declared CPU-profile qualification and exact nested/return-fault evidence |
 | **F3.1/F3.2/F2.3 — Finish sharing, device and profile policy** | Reference-profile aliases, user copies, local retirement and quotas have bounded proofs | Explicit sharing/DMA retirement, raw-reference audit and additional hardware/feature profiles |
 | **S2 — Grow recoverable storage** | S1 failure semantics and the 606-image host model are qualified within stated device assumptions | Scalable file format, backup/migration and physical-device qualification |
@@ -127,21 +129,22 @@ must not deepen a known ownership or isolation violation.
 
 ### F0 — Green, reproducible verification
 
-**Owner:** build/test tooling. **Status:** checks published and enforced; hardware CPU probes pass; integration pending.
+**Owner:** build/test tooling. **Status:** checks published, enforced and integrated; independent reproduction remains open.
 
 - [x] Pinned Rust 1.97.0 and declared 1.97 minimum; host/target builds and strict lint commands exist.
 - [x] Separate normal debug/release, validation, no-NIC, network, storage and CPU proof commands exist locally.
 - [x] Serial logs, image/source identities, fixture patches and scoped manifests exist; new CI jobs are configured in the local branch.
 - [x] A versioned VM candidate and exact tool/firmware preflight exist; new normal evidence requires a fresh serial challenge, ordered readiness, unique retained run files and failure details. CPU-state and exception proofs reject duplicate/wrong-phase records.
 - [x] September 22 local checks passed the complete suite, six malformed-boot cases, five BSP cases, eight original exceptions, strict reference acceptance and ten consecutive release boots. [Exact commits and limits](docs/VERIFICATION.md#september-22-foundation-implementation-and-verification) are part of the claim; no release level advanced.
-- [ ] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
+- [x] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
   Publication is resolved: [PR #9](https://github.com/ErzenXz/GenOS/pull/9)
   publishes the versioned required GitHub Actions jobs. Enforcement now covers
   eighty checks. The four strict CPU probes pass on clean `818a5b1` through the
   explicit KVM qualification variant with their original instructions and validators.
-  All eighty required checks pass on that source, with a live policy/success
-  audit. The publication head still needs its own checks and merge; the frozen
-  TCG failures are retained separately. This does not close F0.1 before integration.
+  All eighty required checks also passed on publication head `ab1b2fe`, verified
+  by the live policy/success audit. PR #9 merged at `be6b221` with the identical
+  reviewed tree. The frozen TCG failures are retained separately; independent
+  reference acquisition/reproduction remains F0.5.
 - [x] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
   [REFERENCE_VM.md](docs/REFERENCE_VM.md) records the `genos-q35-tcg-v3` values, admitted/excluded feature matrix, artifact identity and profile-upgrade procedure. `reference-check` rejects wrong compiler/QEMU/firmware identities. Independent artifact acquisition and reviewer reproduction remain F0.5; this item does not qualify other hosts or devices.
 - [x] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
@@ -326,7 +329,7 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 **Owner:** change author and reviewer. **Status:** process defined; enforcement/evidence must accompany each release.
 
 - [x] **F7.1:** produce buildable, reviewable commits; separate mechanical moves from behavior where possible and explain inseparable large changes.
-  Four focused committed source steps each linked a validation boot image from an immutable source archive; follow-up harness and documentation commits are separated. Exact archive manifests and commit differences are retained locally. Remote review/merge remains F0.1/F0.3.
+  Four focused committed source steps each linked a validation boot image from an immutable source archive; follow-up harness and documentation commits are separated. Exact archive manifests and commit differences are retained locally. PR #9 is merged; independent review/reproduction remains F0.5/F7.4.
 - [ ] **F7.2:** map each public guarantee to success, negative, exhaustion, cancellation and cleanup evidence; review the actual failing cases and unsafe sites.
 - [x] **F7.3:** retain migration/downgrade/rollback plans for every public format/interface and a release-specific limitations snapshot.
   [The 20-boundary inventory](docs/COMPATIBILITY.md) has matched-bundle, data-preserving rollback and candidate-limit plans. This closes the local planning slice only; a promoted release still needs exact-version mixed-version/rejection/rollback execution and reviewer sign-off.

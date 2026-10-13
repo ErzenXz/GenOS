@@ -85,6 +85,9 @@ jobs:
           - name: interrupt-enable-before-init
             script: test_interrupt_admission.py
             args: --case enable-before-init
+          - name: tick-clock-transition
+            script: test_tick_clock.py
+            args: ''
           - name: lifecycle-counter-boundary
             script: test_lifecycle_churn.py
             args: --cycles 512 --timeout 180
@@ -209,5 +212,6 @@ jobs:
             build/interrupt-admission-evidence/
             build/lifecycle-churn-evidence/
             build/fault-containment-evidence/
+            build/tick-clock-evidence/
           if-no-files-found: warn
           retention-days: 14

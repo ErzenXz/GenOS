@@ -1,4 +1,5 @@
 //! Shared production invariant checks for deterministic and coverage-guided input.
+pub mod handles;
 use kernel::{elf::ElfImage, ipv6, native_image, net, socket};
 
 fn subslice(parent: &[u8], child: &[u8]) {
@@ -315,6 +316,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> bool {
         "boot-map" => check_boot_map(bytes),
         "paths" => check_paths(bytes),
         "descriptors" => check_descriptors(bytes),
+        "handles" => handles::exercise(bytes),
         "all" => {
             check_elf(bytes);
             check_native_elf(bytes);
@@ -326,6 +328,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> bool {
             check_boot_map(bytes);
             check_paths(bytes);
             check_descriptors(bytes);
+            handles::exercise(bytes);
             true
         }
         _ => unreachable!(),
