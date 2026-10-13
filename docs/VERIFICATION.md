@@ -2380,3 +2380,17 @@ it closes the bounded F1.1 implementation/fault-model criterion. The audited
 checklist reaches 54/100, including 43/60 foundation entries. F0.5 independent
 reference acquisition/reproduction, complete F1 CPU/context and the remaining
 roadmap gates stay open. GenOS remains Experimental.
+
+The first PR #13 CI head `2e2a919` retained the correct firmware outcomes but
+failed five cases because Ubuntu's QEMU 8.2.2 emitted two normal RTC_CHANGE
+notifications. The failed artifact `11815236846` has SHA-256
+`64bc48fde8bc89085c78f78475f6b7d662a9f1ac1e0b9a4812cbaa35e458b745`.
+Its original failed manifests remain unchanged. RTC notifications are now typed,
+phase-checked telemetry within the existing 256-message/1-MiB QMP reader budget;
+they do not supply success, reset or halt proof. Exact firmware record identities,
+retry counts, phase order and unique terminal acknowledgements remain required.
+A retained real QEMU 8.2 transcript tests repeated RTC events without allowing
+missing or duplicate status proof. All eight CI transcripts pass a read-only
+replay with the corrected validator; that replay is not a fresh CI execution.
+All 184 Python tests pass. Future CI artifact uploads explicitly retain hidden
+per-file dependency receipts as well as the original package and modified source.

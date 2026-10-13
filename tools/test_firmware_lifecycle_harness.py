@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from test_firmware_lifecycle import CASES, validate_log, validate_qmp, verify_package, STATUS_ID
-from test_kernel_elf import CAPABILITIES_ID, START_ID
+from test_kernel_elf import CAPABILITIES_ID, START_ID, MAX_QMP_MESSAGES
 
 
 def map_record(call, status="success", size=384, capacity=768):
@@ -96,9 +96,17 @@ class FirmwareEvidenceTests(unittest.TestCase):
             event={"event":"RTC_CHANGE","data":{"offset":0,"qom-path":"/machine/unattached/rtc"}}
             with_clock=good[:-1]+[event]+good[-1:]
             validate_qmp(with_clock,outcome)
-            for bad in [good[:-1]+[event,event]+good[-1:], [event]+good,
+            validate_qmp(good[:-1]+[event,event]+good[-1:],outcome)
+            for bad in [good[:-1]+[event]*MAX_QMP_MESSAGES+good[-1:], [event]+good,
                         good+[event],good[:-1]+[{"event":"RTC_CHANGE","data":{}}]+good[-1:]]:
                 with self.assertRaises(ValueError):validate_qmp(bad,outcome)
+
+    def test_retained_qemu82_two_rtc_events_do_not_substitute_for_terminal_proof(self):
+        path=Path(__file__).resolve().parent/"fixtures/firmware-qemu82-rtc.jsonl"
+        rows=[json.loads(line) for line in path.read_text().splitlines()]
+        validate_qmp(rows,"running")
+        with self.assertRaises(ValueError):validate_qmp(rows[:-1],"running")
+        with self.assertRaises(ValueError):validate_qmp(rows+[rows[-1]],"running")
 
 
 class FirmwareSourceTests(unittest.TestCase):
