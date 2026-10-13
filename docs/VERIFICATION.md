@@ -2198,3 +2198,78 @@ suite and the new timer/coverage jobs. The live success audit reports
 `required=83 executed=83 failed=0`, retained under
 `build/ci-policy-evidence/0da9e7c-clock-coverage-green/`. The subsequent
 documentation head still requires its own checks before integration.
+
+
+## October 13 complete host parser coverage
+
+Clean source `86b5b78e916fe8c6bccbe1fca8092b79aa992274` extracts the existing
+GFS2 and DHCP codecs into host-callable production modules and adds eight targets
+for partitions/snapshots, DHCP/DNS, ARP/ICMP, syscall admission and endpoint
+wait/cancel/revoke sequences. The device coordinators and validation shell call
+these same implementations. GFS2 version, ABI, device authority and commit order
+are unchanged. External snapshot entry decoding now rejects invalid cursor/slot
+bounds before indexing.
+
+The new DNS tests failed against the extracted original decoder: error/truncated
+responses, invalid compression pointers and overlong names were accepted. The
+fixed probe rejects these plus non-query replies and a wrong IN A question.
+Five exact former-acceptance inputs are retained in `tools/parser-stress/corpus/`
+with negative acceptance assertions and replay support. This is a bounded
+validation probe, not a general or authenticated resolver.
+
+On the Debian cloud developer host, Rust 1.97.0, Clang 19.1.7 and the locked LLVM
+21.1.8 libFuzzer runtime passed all nineteen targets with 10,000 executions each,
+seed 47454, nonzero coverage and required fresh corpus growth. Each built from
+its own immutable Git archive and retained source, runtime, executable, input,
+log and manifest hashes. These are 190,000 completed executions; coverage values
+are host instrumentation counters, not a whole-kernel percentage.
+
+| Target | Coverage counters | New corpus units | Evidence run |
+| --- | --- | --- | --- |
+| elf | 31 | 54 | `1791891430201302707` |
+| native-elf | 68 | 153 | `1791891519545803525` |
+| ipv4 | 42 | 33 | `1791891522930378509` |
+| ipv6 | 38 | 31 | `1791891526091046984` |
+| udp | 12 | 12 | `1791891529381215725` |
+| tcp | 12 | 2 | `1791891532560731825` |
+| socket | 210 | 340 | `1791891535964040706` |
+| boot-map | 38 | 33 | `1791891539269056408` |
+| paths | 91 | 157 | `1791891542456297390` |
+| descriptors | 39 | 57 | `1791891545550385941` |
+| handles | 176 | 251 | `1791891548718283756` |
+| partition | 17 | 21 | `1791891552186424630` |
+| snapshot | 191 | 39 | `1791891555226216731` |
+| dhcp | 35 | 31 | `1791891560234213192` |
+| dns | 40 | 71 | `1791891563496091288` |
+| arp | 19 | 22 | `1791891566709258118` |
+| icmp | 25 | 31 | `1791891569870853268` |
+| syscalls | 126 | 402 | `1791891573019621389` |
+| endpoints | 183 | 322 | `1791891576487962359` |
+
+Runs live under `build/coverage-fuzz/evidence/`. Additional checks passed:
+
+- Workspace tests: 380 unit tests plus 13 compile-fail doc tests.
+- Parser harness: 10 tests, 33 retained inputs and 85,037 proper prefixes;
+  100,000 deterministic mutations with seed `0x47454e4f53`.
+- All 173 Python harness tests; strict kernel and shell lint for normal and
+  validation targets, parser lint, formatting, links and unsafe inventory.
+- Normal debug/release guest boots with real commands, process control and
+  persistent file I/O, retained at `build/normal-evidence/1791891465300305386/`
+  and `build/normal-evidence/1791891482040364551/`.
+- All 606 production storage fault images matched the independent host decoder
+  at `build/storage-fault-evidence/1791891459256923237/`. The evidence source set
+  now includes the extracted codec so a changed parser cannot retain an old hash.
+
+The 407 lexical unsafe sites are unchanged; the baseline refresh records moved
+source context and is not a new safety certification. Qualification used QEMU
+10.0.13 and distribution OVMF, which supplies portability evidence rather than
+matching the frozen reference. This container has no `/dev/kvm`, and external
+UDP DNS remains unavailable as recorded during environment onboarding. No strict
+hardware CPU or full network-suite success is claimed. Remote CI for this source
+requires its own execution after publication.
+
+F6.2's bounded host-target criterion is complete locally, bringing the audited
+original checklist to 53/100 (42/60 foundation entries). Full deferred syscall
+completion/user-copy, device/DMA/reset interleavings, F6.4 fault schedules,
+24/72-hour mixed pressure, independent review and the remaining roadmap gates
+stay open. GenOS remains Experimental.

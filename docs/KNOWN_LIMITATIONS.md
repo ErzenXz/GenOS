@@ -37,7 +37,8 @@ The four strict CPU/IRET probes now pass on an explicit KVM CPU variant;
 the frozen TCG limitations remain. Publication is not a passing release.
 
 The audited 1000 fresh release boots passed on their recorded source/profile.
-Remaining coverage-guided targets, complete operation and fault matrices,
+Nineteen host coverage targets now have retained completed campaigns. Complete
+operation and fault matrices,
 sustained qualification and independent reference reproduction remain open. A pinned
 Miri run on selected pure Rust modules and a bounded
 ownership model have scoped local evidence; neither covers the whole kernel or
