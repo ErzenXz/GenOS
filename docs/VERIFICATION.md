@@ -2093,3 +2093,44 @@ immutable byte range for this synchronous call; the callback caps length at
 and does not retain the slice. No kernel unsafe operation, assembly or
 Send/Sync implementation changes in this slice. The inventory records this
 source context; it does not certify libFuzzer or its caller.
+
+## October 13 hardware CPU exception and return qualification
+
+Clean source `818a5b1aa0cb55412e48133c06f114c6b4ac9c92` adds an explicit
+`genos-q35-kvm-cpu-v1` qualification variant for four CPU-semantic probes that
+TCG could not deliver. No kernel instruction, deliberate probe, fixture mutation
+or strict log validator changed. An AST comparison against `9d003cb` confirms
+the exception instructions, both fixture builders and both validators are
+identical. The remaining CI lanes continue to use TCG.
+
+The new variant requires Linux x86_64, `/dev/kvm`, KVM API 12 and successful VM
+creation. QEMU launches with KVM only and an enforced bounded CPU model; QMP
+must report `enabled=true` and `present=true` before a result is accepted.
+Evidence retains the complete QMP stream, host CPU/kernel identity, source and
+image identity, exact command, firmware digest, and hashes of the raw logs.
+It explicitly reports the accelerator, QEMU and firmware differences from the
+frozen TCG reference. No unavailable hardware fallback is accepted.
+
+Both [user/kernel SIMD probes](https://github.com/ErzenXz/GenOS/actions/runs/38380236022)
+pass: real vector 19 terminates/reclaims the user process and deliberately halts
+the kernel case. Both [strict return probes](https://github.com/ErzenXz/GenOS/actions/runs/38380236182)
+also pass: noncanonical RIP faults at the actual kernel IRET site, and failed
+NMI IRET produces the required nested #GP followed by a second external NMI.
+Downloaded evidence under `build/remote-evidence/818a5b1/cpu-hardware/` was
+replayed through the unchanged validators and all retained log/JSON hashes
+were checked. Hosts report AMD EPYC 7763/9V45, QEMU 8.2.2 Ubuntu package
+`1:8.2.2+ds-0ubuntu1.18`, and firmware SHA-256
+`ad23261d43116abc3747d59a7837fbf578c9586a8993f4eeba064cd07eccb083`.
+
+All 165 host Python tests pass. Fresh local TCG `kernel/de` and `initial-cs`
+controls pass with accelerator readback and running-guest checks on the same
+clean source. This qualifies these four CPU boundaries on the named hardware
+variant; it does not repair TCG, establish complete physical-device support,
+close all F1 criteria or advance the Experimental release level.
+
+All **80 required checks pass** on `818a5b1`. The live, read-only success audit
+reports `required=80 executed=80 failed=0` and retains the exact check responses,
+contract and enforced branch policy under
+`build/ci-policy-evidence/818a5b1-hardware-cpu-green/`. No required check or
+administrator-enforcement setting was removed. A later documentation head
+still needs its own required execution before merge.

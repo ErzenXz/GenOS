@@ -214,9 +214,9 @@ vector 19, but these runs cannot prove delivery or containment of an actual #XM.
 
 The strict fixtures, failed manifests and configured matrix jobs remain; a
 returned probe or latched MXCSR flag is never accepted as exception success.
-Another qualified emulator/accelerator or physical x86 CPU is needed to close
-this part of F1.2. The reference profile and release gate were not changed to
-hide the failure. QEMU's [SSE implementation](https://github.com/qemu/qemu/blob/master/target/i386/ops_sse.h)
+Both unchanged probes pass on the KVM CPU variant at `818a5b1`; complete
+F1.2 qualification remains broader than these two cases. The frozen reference
+and its failed evidence remain recorded. QEMU's [SSE implementation](https://github.com/qemu/qemu/blob/master/target/i386/ops_sse.h)
 and [FP helpers](https://github.com/qemu/qemu/blob/master/target/i386/tcg/fpu_helper.c)
 support the emulator-limit diagnosis, but those upstream files are not an exact
 source attribution for the locally installed binary. The retained runtime

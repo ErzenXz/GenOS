@@ -98,8 +98,8 @@ stable-release percentage. On 2026-09-23 the count is **50/100 (50%)**:
 terminal criteria, and 0/13 console-qualification criteria.
 On 2026-10-10, published independent CI execution and enforced required checks
 close F0.3, bringing the audited count to **51/100 (51%)**, including **40/60**
-kernel-foundation criteria. Four strict CPU/IRET checks fail on the reviewed head;
-F0.1 integration and F1 qualification remain open.
+kernel-foundation criteria. The four strict CPU/IRET probes now pass on an explicit
+KVM CPU variant. F0.1 integration and full F1 qualification remain open.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
 20 unified handles per process including 4 file and 4 socket handles; 32 VFS nodes;
@@ -113,7 +113,7 @@ Current bounds matter: 4 managed asynchronous process slots including the shell;
 
 | Next work item | Why it comes next | Completion evidence |
 | --- | --- | --- |
-| **F0.1 — Integrate verification** | Workflow publication is authorized and PR #9 has exact-head remote results; four strict CPU/IRET checks fail | All required checks pass on the reviewed head, then review/merge and independent reference reproduction |
+| **F0.1 — Integrate verification** | Workflow publication is authorized and PR #9 has exact-head remote results, including hardware CPU probes | All required checks pass on the reviewed head, then review/merge and independent reference reproduction |
 | **F1.2/F1.4 — Complete context and fault qualification** | Eager legacy state, private selectors, bounded zero-base/debug policy, fourteen guards and terminal entry ownership exist | Complete declared CPU-profile qualification and exact nested/return-fault evidence |
 | **F3.1/F3.2/F2.3 — Finish sharing, device and profile policy** | Reference-profile aliases, user copies, local retirement and quotas have bounded proofs | Explicit sharing/DMA retirement, raw-reference audit and additional hardware/feature profiles |
 | **S2 — Grow recoverable storage** | S1 failure semantics and the 606-image host model are qualified within stated device assumptions | Scalable file format, backup/migration and physical-device qualification |
@@ -127,7 +127,7 @@ must not deepen a known ownership or isolation violation.
 
 ### F0 — Green, reproducible verification
 
-**Owner:** build/test tooling. **Status:** checks published and enforced; integration blocked by strict CPU/IRET failures.
+**Owner:** build/test tooling. **Status:** checks published and enforced; hardware CPU probes pass; integration pending.
 
 - [x] Pinned Rust 1.97.0 and declared 1.97 minimum; host/target builds and strict lint commands exist.
 - [x] Separate normal debug/release, validation, no-NIC, network, storage and CPU proof commands exist locally.
@@ -135,11 +135,13 @@ must not deepen a known ownership or isolation violation.
 - [x] A versioned VM candidate and exact tool/firmware preflight exist; new normal evidence requires a fresh serial challenge, ordered readiness, unique retained run files and failure details. CPU-state and exception proofs reject duplicate/wrong-phase records.
 - [x] September 22 local checks passed the complete suite, six malformed-boot cases, five BSP cases, eight original exceptions, strict reference acceptance and ten consecutive release boots. [Exact commits and limits](docs/VERIFICATION.md#september-22-foundation-implementation-and-verification) are part of the claim; no release level advanced.
 - [ ] **F0.1:** resolve authorized workflow publication; merge only after required checks pass on the exact reviewed head. Do not remove checks to bypass the permission restriction.
-  Publication is resolved: [draft PR #9](https://github.com/ErzenXz/GenOS/pull/9)
-  publishes the versioned required GitHub Actions jobs. Last completed head
-  `ae586e1` passed 72/76; interrupt admission raises enforcement to 80
-  and needs its own exact-head execution. Both user/kernel #XM and
-  two IRET boundaries fail; the PR remains unmerged. This does not close F0.1.
+  Publication is resolved: [PR #9](https://github.com/ErzenXz/GenOS/pull/9)
+  publishes the versioned required GitHub Actions jobs. Enforcement now covers
+  eighty checks. The four strict CPU probes pass on clean `818a5b1` through the
+  explicit KVM qualification variant with their original instructions and validators.
+  All eighty required checks pass on that source, with a live policy/success
+  audit. The publication head still needs its own checks and merge; the frozen
+  TCG failures are retained separately. This does not close F0.1 before integration.
 - [x] **F0.2:** pin/reference the compiler, QEMU machine/CPU, firmware hash, disk/device layout and test network; define the supported feature matrix and upgrade procedure.
   [REFERENCE_VM.md](docs/REFERENCE_VM.md) records the `genos-q35-tcg-v3` values, admitted/excluded feature matrix, artifact identity and profile-upgrade procedure. `reference-check` rejects wrong compiler/QEMU/firmware identities. Independent artifact acquisition and reviewer reproduction remain F0.5; this item does not qualify other hosts or devices.
 - [x] **F0.3:** verify all required CI lanes actually run independently and are required by repository/release policy. A warning in one lane must not hide results from the others.
@@ -150,7 +152,7 @@ must not deepen a known ownership or isolation violation.
   admin enforcement; force pushes/deletion are disabled. The read-only
   [policy audit](docs/CI_POLICY.md) retains API readback/execution evidence and
   rejects missing, duplicate, wrong-app, stale or unexecuted lanes. Its success
-  mode refuses the four failures. This closes enforcement/execution only.
+  mode refuses any failed lane. This closes enforcement/execution only.
 - [x] **F0.4:** test the harness itself: omitted, duplicated, forged, wrong-phase and stale success evidence must fail. Retain incomplete/failing manifests and stderr, not just successful runs.
   Normal, validation, network, memory, CPU and fault evidence now use exact, ordered contracts with negative and live-prefix tests. Deliberately failed reruns and their manifests remain retained; these markers are test evidence, not authenticated remote attestations.
 - [ ] **F0.5:** reproduce clean builds on the supported host lanes, publish artifact hashes/provenance and make another reviewer reproduce the documented reference run.

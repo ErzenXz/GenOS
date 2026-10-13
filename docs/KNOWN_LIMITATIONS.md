@@ -1,6 +1,6 @@
 # GenOS current limitations
 
-**Updated 2026-09-28; exact foundation source and evidence are recorded in [VERIFICATION.md](VERIFICATION.md). Level: Experimental.**
+**Updated 2026-10-13; exact foundation source and evidence are recorded in [VERIFICATION.md](VERIFICATION.md). Level: Experimental.**
 This is the current register, not a cumulative historical audit. The
 [previous register](history/2026-09-08-limitations-before-refresh.md) preserves older
 wording that described already-replaced implementations. Research and planned fixes
@@ -31,9 +31,10 @@ Those are scoped local results. The VM candidate now has pinned arguments and an
 exact tool/firmware preflight; independent reproduction remains missing.
 The earlier missing-`workflow` publication restriction was resolved on October 10.
 [Draft PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the independent jobs
-and has remote results. The [required-check policy](CI_POLICY.md) binds all seventy-six
+and has remote results. The [required-check policy](CI_POLICY.md) binds all eighty
 verification jobs to GitHub Actions and is enforced on `main`, including admins.
-Strict CPU/IRET failures still block integration; publication is not a passing release.
+The four strict CPU/IRET probes now pass on an explicit KVM CPU variant;
+the frozen TCG limitations remain. Publication is not a passing release.
 
 The audited 1000 fresh release boots passed on their recorded source/profile.
 Coverage-guided fuzzing, complete operation and fault matrices,
@@ -70,7 +71,7 @@ FSGSBASE keep bases zero, and boot resets inherited base/debug/fast-entry state.
 Pending unmasked x87 state and user/kernel #MF have local proofs. The strict
 user/kernel #XM fixtures fail on pinned QEMU TCG: MXCSR records an unmasked
 invalid operation, but DIVSS returns without a trap. SIMD exception delivery
-and containment require another qualified platform; retained failures remain
+and containment have scoped KVM evidence; the retained TCG failures remain
 in [VERIFICATION.md](VERIFICATION.md).
 This is a bounded policy, not exhaustive FP/flag or larger-feature qualification.
 
