@@ -336,13 +336,16 @@ jobs:
       - name: Install developer VM dependencies
         run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
       - name: Check boot-memory evidence and fixture regressions
-        run: python3 -m unittest discover -s tools -p 'test_boot_memory_harness.py'
+        run: |
+          python3 -m unittest discover -s tools -p 'test_boot_memory_harness.py'
+          python3 -m unittest discover -s tools -p 'test_firmware_lifecycle_harness.py'
       - name: Reject the malformed handoff before kernel initialization
         shell: bash
         run: |
           mkdir -p build
           if [ "${{ matrix.case }}" = loader-version ]; then
             python3 tools/test_boot_memory.py --loader-admission 2>&1 | tee build/boot-memory-run.log
+            python3 tools/test_firmware_lifecycle.py 2>&1 | tee build/firmware-lifecycle-run.log
           else
             python3 tools/test_boot_memory.py --case "${{ matrix.case }}" 2>&1 | tee build/boot-memory-run.log
           fi
@@ -353,5 +356,7 @@ jobs:
           path: |
             build/boot-memory-run.log
             build/boot-memory-evidence/
+            build/firmware-lifecycle-run.log
+            build/firmware-lifecycle-evidence/
           if-no-files-found: warn
           retention-days: 14
