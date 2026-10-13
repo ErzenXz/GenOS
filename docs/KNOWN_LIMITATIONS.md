@@ -59,8 +59,11 @@ are not the current design.
 BootInfo/map admission now rejects oversized/truncated, overflowing, overlapping
 maps and unretained kernel/boot/initrd ranges; unknown/runtime memory stays reserved.
 It still trusts an accessible typed handoff. The [kernel ELF loader](KERNEL_ELF.md)
-now validates a bounded immutable load plan before allocation/copy. Exhaustive
-firmware map-growth/stale-key retry failures remain untested.
+now validates a bounded immutable load plan before allocation/copy. Eight
+[firmware lifecycle cases](FIRMWARE_QUALIFICATION.md) now qualify real stale-key
+retry/exhaustion, map growth/refusal and boot allocation failures. These trust the
+firmware ABI and named VM; arbitrary firmware failures and independent frozen
+reference acquisition/reproduction remain outside that evidence.
 
 The reference now eagerly preserves x87/MMX/SSE state in a private 512-byte
 process image and initializes clean state on reuse. OSXSAVE/PKE are disabled;

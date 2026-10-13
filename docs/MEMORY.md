@@ -23,13 +23,15 @@ The handoff still trusts the loader to provide a mapped, aligned, live Rust
 BootInfo object with valid enum representations and a correctly loaded kernel.
 This is not validation of an arbitrary pointer or a hostile firmware implementation.
 The pinned `uefi` 0.36.1 helper owns map allocation and retries ExitBootServices
-once for a stale key; it does not provide an exhaustive map-growth/retry fault
-campaign. Those firmware interactions still need their own F1.1 fault campaign. Kernel ELF
+once for a stale key. The separate [firmware lifecycle campaign](FIRMWARE_QUALIFICATION.md)
+now tests real retry, exhaustion, map growth/refusal and the four retained boot
+allocation paths without modifying the production retry/reset/panic policy. This
+is bounded trusted-UEFI qualification, not exhaustive firmware verification. Kernel ELF
 loading now has a bounded checked plan; see [KERNEL_ELF.md](KERNEL_ELF.md). The ABI layout and version are unchanged.
 
 `cargo test -p genos_abi` tests malformed map bytes and handoff bounds.
 `python3 tools/test_boot_memory.py` builds immutable source fixtures and tests
-six actual VM rejection paths; each retains the patch, image/environment hashes,
+thirteen actual VM rejection paths; each retains the patch, image/environment hashes,
 serial log and pass/failure manifest under `build/boot-memory-evidence/`.
 
 ## Allocator execution ownership
@@ -236,4 +238,5 @@ cases exercise the production map validator through the real loader. All thirtee
 cases passed on clean `a2e810e`; source, fixture/image identities, serial logs and
 manifests are in [verification](VERIFICATION.md#october-13-loader-map-rejection-qualification).
 This is distribution VM portability evidence, not exhaustive firmware lifecycle
-or frozen-reference qualification. F1.1 remains open.
+or frozen-reference qualification. Subsequent firmware lifecycle evidence closes
+the bounded F1.1 slice; independent frozen-reference replay remains F0.5.

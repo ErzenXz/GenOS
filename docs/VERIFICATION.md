@@ -2319,3 +2319,64 @@ wrong head/app, missing/duplicate/unexecuted lanes. The report is retained at
 including hardware CPU and full network tests. This is remote execution evidence
 for PR #11, not an independent reference-review sign-off or a CI result for the
 later boot-map change.
+
+
+## October 13 five firmware lifecycle tasks
+
+Clean source `51ea61ef40aabd3db49e5a76afed8cf9deee439d` completes five bounded
+F1.1 tasks through eight real firmware cases, all passed under
+`build/firmware-lifecycle-evidence/1791895674666790761/`:
+
+| Task | Observed result |
+| --- | --- |
+| One stale exit key | Real INVALID_PARAMETER on attempt 1; a fresh map/key succeeds on attempt 2; kernel admission and readiness follow |
+| Both exit keys stale | Exactly two real INVALID_PARAMETER results; QMP confirms guest-reset; no kernel entry |
+| Map growth within headroom | One actual interior allocation grows the returned map from 5616 to 5712 bytes within a 6288-byte buffer; successful exit and handoff |
+| Map growth beyond headroom | Ten actual interior allocations grow the required map to 6816 bytes; two BUFFER_TOO_SMALL responses and guest-reset, without truncated handoff |
+| Boot allocation failure | Kernel exact-address request returns NOT_FOUND; initrd/BootInfo/map-buffer requests return OUT_OF_RESOURCES. The first three reach loader error handling and guest-shutdown; the map buffer reaches the existing BOOTLOADER_PANIC halt with a still-running guest |
+
+The map's descriptor stride is 48 bytes on this distribution firmware. These
+are observed sizes, not fixed input assumptions in the validator. Map growth
+allocates alternating pages from a checked, aligned, non-runtime conventional
+RAM span before the first exit attempt; the added pages remain LOADER_DATA in
+each disposable VM. No allocation follows a failed exit attempt.
+
+The pinned UEFI package archive and every unmodified file are verified before
+private vendoring/patching. Real firmware call results and the original helper's
+two-attempt loop, reset/panic and loader error handling remain under test;
+statuses are never fabricated. Each case retains the original package receipt,
+modified source and patch, whole source archive, image identity, build/VM
+commands, serial/QMP transcripts and hashed pass/failure manifest. Cargo registry
+sources, normal loader code and the user's data volume are unchanged.
+
+The first run on `5f8fb50` rejected all eight cases because the new QMP validator
+incorrectly treated normal RTC_CHANGE initialization as an unexpected event.
+Those failed manifests/logs remain at
+`build/firmware-lifecycle-evidence/1791894793750760014/`. The corrected parser
+allows at most one typed RTC event after resume and before final status/exit;
+reset, stop, watchdog, wrong terminal reasons and malformed/duplicate evidence
+still fail. A fresh complete run on `eef7979` passed all eight before the final
+portable socket/command-retention run above. Previous failures were not rewritten.
+
+All 183 Python tests pass, including six new provenance/evidence tests. These
+reject omitted/duplicated/prefixed/unterminated/wrong-phase records, wrong call
+identity, false growth/status metadata, wrong allocation stage, paused guest,
+wrong natural shutdown reason, extra RTC events and tampered/unlisted dependency
+files. The source inventory now has 413 lexical sites across 122 files: one
+bounded unsafe UART block and five assembly sites were added only in the
+validation fixture, with caller, bounds, clobber and failure comments. No normal
+kernel/loader unsafe site changed.
+
+CI runs the firmware group in its own always-run step within the existing
+loader-version context, so a failed decoder group cannot hide firmware outcomes.
+Each case retains its own result, and any failed case fails the overall group.
+Required check names/protection policy remain unchanged; the publication head
+requires its own remote execution before integration.
+
+This uses Rust 1.97.0 and QEMU 10.0.13/distribution OVMF. It is developer-profile
+portability evidence, not a frozen QEMU 11.1.1/firmware receipt or independent
+review. Together with the raw-map/BootInfo/ELF and thirteen live rejection proofs,
+it closes the bounded F1.1 implementation/fault-model criterion. The audited
+checklist reaches 54/100, including 43/60 foundation entries. F0.5 independent
+reference acquisition/reproduction, complete F1 CPU/context and the remaining
+roadmap gates stay open. GenOS remains Experimental.
