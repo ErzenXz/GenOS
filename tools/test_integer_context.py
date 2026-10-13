@@ -55,7 +55,11 @@ def patch_fixture(root: Path, case: str) -> str:
                    f'    movabs rax, {{user_data}} + 64 + 2 * 160 + {offset}\n'
                    '    xor qword ptr [rax], 1\n    pop rax\n')
     elif case == 'timer-skipped':
-        anchor, changed = '    jrcxz 1f\n', '    jmp 1f\n'
+        # Bypass the entire admitted capture interval, not just its condition.
+        # Otherwise a heavily delayed VM could still take two legitimate timer
+        # captures before the unconditional branch and make rejection flaky.
+        anchor = '    integer_snapshot 5\n'
+        changed = anchor + '    jmp genos_integer_timer_end\n'
     else:
         raise ValueError('unknown integer fixture')
     if changed in before:
