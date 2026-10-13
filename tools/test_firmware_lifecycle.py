@@ -294,9 +294,18 @@ def validate_qmp(messages: list[dict], outcome: str) -> None:
 
 
 def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
+    # Keep sockaddr_un short on both Darwin and Linux; use the caller's writable
+    # temporary directory rather than the much longer source/archive path.
+    with tempfile.TemporaryDirectory(prefix="gfw-qmp-") as temporary:
+        qmp_path = Path(temporary) / "qmp"
+        if len(os.fsencode(qmp_path)) >= 104:
+            raise ValueError("configure a shorter writable TMPDIR for the QMP socket")
+        boot_with_qmp(root, evidence, case, timeout, qmp_path)
+
+
+def boot_with_qmp(root: Path, evidence: Path, case: str, timeout: int, qmp_path: Path) -> None:
     outcome = CASES[case][3]
     serial = evidence / "serial.log"
-    qmp_path = root / "build/firmware-qmp.sock"
     args = qemu_args(root=root) + ["-drive", f"if=pflash,format=raw,readonly=on,file={firmware_path()}",
         "-drive", load_profile(root)["boot_drive"] + ",file=build/genos.img", "-net", "none",
         "-display", "none", "-monitor", "none", "-serial", f"file:{serial}", "-no-reboot", "-S",
@@ -311,8 +320,11 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
                 monitor.start(deadline)
                 while time.monotonic() < deadline:
                     log = serial.read_text(errors="replace") if serial.exists() else ""
+                    normalized = log.replace("\r", "")
+                    if "BOOTLOADER_PANIC\n" in normalized and outcome != "panic":
+                        raise ValueError("unexpected loader panic during firmware qualification")
                     marker = ("GENOS_READY" if outcome == "running" else "BOOTLOADER_PANIC") + "\n"
-                    if outcome in ("running", "panic") and marker in log.replace("\r", ""):
+                    if outcome in ("running", "panic") and marker in normalized:
                         validate_log(log, case)
                         wire = (json.dumps({"execute": "query-status", "id": STATUS_ID}) + "\n").encode()
                         sent.write(wire); sent.flush(); connection.sendall(wire)
@@ -359,7 +371,9 @@ def main() -> None:
         evidence = run / case
         evidence.mkdir()
         manifest = {"case": case, "status": "incomplete", "commit": commit, "source_clean": True,
-                    "source_archive_sha256": hashlib.sha256(archive).hexdigest(), "outcome": CASES[case][3]}
+                    "source_archive_sha256": hashlib.sha256(archive).hexdigest(), "outcome": CASES[case][3],
+                    "commands": [["cargo", "vendor", "--offline", "--locked", "--versioned-dirs", "vendor"],
+                                 ["cargo", "xtask", "build"]]}
         try:
             manifest.update(environment(Path(firmware_path()), ROOT))
             with tempfile.TemporaryDirectory(prefix="genos-firmware-") as temporary:
