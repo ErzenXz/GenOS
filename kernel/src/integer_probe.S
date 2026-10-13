@@ -96,7 +96,7 @@ genos_integer_code:
     integer_snapshot 5
 .global genos_integer_timer_start
 genos_integer_timer_start:
-    pause
+    nop
     mov rcx, [rbx]
     lea rcx, [rcx - 2]
     jrcxz 1f
