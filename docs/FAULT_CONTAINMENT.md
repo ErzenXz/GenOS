@@ -113,6 +113,12 @@ qualification gaps. This follows the IRET operation and exceptions in the
 [Intel instruction manual](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf).
 Detailed results and source analysis are in [VERIFICATION.md](VERIFICATION.md).
 
+The strict CI `initial-rip` and `nmi-iret` checks now select the explicit
+[KVM CPU qualification variant](REFERENCE_VM.md#hardware-cpu-qualification-variant)
+to execute the host CPU's return semantics. Their fault sites and validators
+are unchanged; accelerator preflight and QMP readback are additionally required.
+The earlier TCG failures remain retained and are not passing reference evidence.
+
 Build logs, fixture diffs, hashes, commands, QMP transcripts and success/failure
 manifests remain under `build/fault-containment-evidence`. Configured CI jobs do
 not establish remote execution. See [Proposed ADR-0014](adr/0014-terminal-entry-ownership.md).

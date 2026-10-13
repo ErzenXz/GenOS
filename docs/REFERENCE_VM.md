@@ -58,6 +58,29 @@ accelerators, physical devices and firmware variants need separate qualification
 The four-vCPU BSP fixture changes only topology and still requires one admitted
 kernel CPU; it is a rejection/admission test, not SMP support.
 
+## Hardware CPU qualification variant
+
+The strict SIMD exception, noncanonical IRET and failed-IRET NMI probes can
+select `--cpu-backend kvm`. This creates the separately named
+`genos-q35-kvm-cpu-v1` execution profile: the same q35 machine, memory, boot
+device and single-CPU topology, with `-accel kvm` and
+`qemu64-v1,smep=on,smap=on,svm=off,enforce`. Disabling SVM avoids requiring AMD
+virtualization on Intel hosts; `enforce` refuses missing requested CPU features.
+There is no automatic fallback to software emulation.
+
+These probes require Linux x86_64, a usable `/dev/kvm`, KVM API 12 and successful
+VM creation. Evidence records host CPU/kernel identity, exact commands, QEMU and
+firmware hashes, and QMP `query-kvm` readback confirming enabled acceleration.
+It always records a mismatch against the frozen TCG reference, even when its
+toolchain and firmware happen to match. A passing CPU probe on this variant
+does not qualify all devices or the frozen TCG implementation.
+
+CI selects this variant for the four strict checks affected by TCG CPU-semantic
+gaps. Their fault instructions and exact evidence validators stay unchanged.
+Unavailable virtualization or a failed hardware proof fails the job. Other
+checks continue to use TCG. GitHub-hosted nested virtualization availability is
+checked on each run; it is not a product support guarantee.
+
 ## Supported feature matrix for this candidate
 
 "Supported" below means admitted by the named local profile and the cited

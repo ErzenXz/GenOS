@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import time
 
+import cpu_backend
 from reference_vm import environment, load_profile, qemu_args
 from test_exception_entry import FRAME, USER_READY, firmware_path, replace_once, require_clean_source
 from test_exception_entry import patch_fixture as exception_fixture
@@ -265,14 +266,14 @@ def validate_log(log: str, case: str) -> None:
         raise ValueError('MCE fixture lacks production enable/readback')
 
 
-def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
+def boot(root: Path, evidence: Path, case: str, timeout: int, backend: str = 'tcg') -> None:
     profile = load_profile(root)
     serial = evidence / 'serial.log'
     # AF_UNIX paths have a small limit (104 bytes on macOS). Evidence paths can
     # be longer; keep only the live socket in an owned, short temporary directory.
     temporary_channel = tempfile.TemporaryDirectory(prefix='genos-qmp-', dir='/tmp')
     channel = Path(temporary_channel.name) / 'qmp.sock'
-    args = qemu_args(root=root) + ['-drive', f'if=pflash,format=raw,readonly=on,file={firmware_path()}',
+    args = qemu_args(root=root, backend=backend) + ['-drive', f'if=pflash,format=raw,readonly=on,file={firmware_path()}',
             '-drive', profile['boot_drive'] + ',file=build/genos.img', '-net', 'none', '-display', 'none',
             '-monitor', 'none', '-serial', f'file:{serial}', '-qmp', f'unix:{channel},server=on,wait=off', '-no-reboot']
     (evidence / 'qemu-command.json').write_text(json.dumps(args, indent=2) + '\n')
@@ -300,9 +301,16 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
         process = subprocess.Popen(args, cwd=root, stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline, injected = time.monotonic() + timeout, 0
+            accelerator_verified = False
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise RuntimeError('QEMU exited/reset instead of deliberate containment')
+                if not accelerator_verified:
+                    if not channel.exists():
+                        time.sleep(.05)
+                        continue
+                    cpu_backend.verify_accelerator(backend, command({'execute': 'query-kvm'}))
+                    accelerator_verified = True
                 log = serial.read_text(errors='replace') if serial.exists() else ''
                 trigger = f'ENTRY_WINDOW case={case}' if case in {'irq-nmi', 'irq-mce'} else f'ENTRY_CASE_ARMED case={case}'
                 if injected == 0 and trigger in log and case in {'nmi-idle', 'irq-nmi', 'nmi-iret', 'nmi-reentry', 'mce-idle', 'irq-mce', 'mce-gp'}:
@@ -341,6 +349,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', choices=CASES)
     parser.add_argument('--timeout', type=int, default=60)
+    parser.add_argument('--cpu-backend', choices=('tcg', 'kvm'), default='tcg')
     options = parser.parse_args()
     if sys.version_info < (3, 12) or options.timeout <= 0:
         parser.error('Python >=3.12 and positive timeout required')
@@ -353,11 +362,13 @@ def main() -> None:
         evidence = campaign / case
         evidence.mkdir(parents=True, exist_ok=False)
         manifest = {'case': case, 'commit': commit, 'source_clean': True, 'status': 'incomplete',
+                    'cpu_backend': options.cpu_backend,
                     'scope': ('software scoped current-process borrow denial' if case == 'syscall-borrow'
                               else 'software return-state denial' if case in SOFTWARE_KERNEL or case == 'user-nt'
                               else 'real CPU faults; QMP NMI and HMP machine-check injection where named')}
         try:
-            manifest.update(environment(firmware_path(), source))
+            manifest['cpu_backend_preflight'] = cpu_backend.preflight(options.cpu_backend)
+            manifest.update(environment(firmware_path(), source, backend=options.cpu_backend))
             with tempfile.TemporaryDirectory(prefix='genos-containment-') as temporary:
                 root = Path(temporary) / 'source'; root.mkdir()
                 with tarfile.open(fileobj=io.BytesIO(archive), mode='r:') as tree:
@@ -368,7 +379,7 @@ def main() -> None:
                 with (evidence / 'build.log').open('w') as output:
                     subprocess.run(['cargo', 'xtask', 'build-test'], cwd=root, stdout=output, stderr=subprocess.STDOUT, check=True, timeout=600)
                 manifest['image_sha256'] = hashlib.sha256((root / 'build/genos.img').read_bytes()).hexdigest()
-                boot(root, evidence, case, options.timeout)
+                boot(root, evidence, case, options.timeout, backend=options.cpu_backend)
                 manifest['status'] = 'passed'
         except Exception as error:
             manifest.update(status='failed', failure=f'{type(error).__name__}: {error}')
