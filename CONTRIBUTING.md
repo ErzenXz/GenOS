@@ -314,4 +314,6 @@ The existing `Boot memory admission (loader-version)` CI context now runs this
 entire group; the five other contexts keep their separate handoff cases. Required
 context names and repository protection policy are unchanged. These decoder
 fixtures do not emulate firmware map growth, stale-key retries or allocation
-failures; those remain F1.1 qualification work.
+failures; those are separately covered by `python3 tools/test_firmware_lifecycle.py`.
+Its eight cases complete five bounded firmware tasks; see
+[the fault model and provenance](docs/FIRMWARE_QUALIFICATION.md).

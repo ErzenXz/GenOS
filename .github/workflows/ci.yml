@@ -345,10 +345,13 @@ jobs:
           mkdir -p build
           if [ "${{ matrix.case }}" = loader-version ]; then
             python3 tools/test_boot_memory.py --loader-admission 2>&1 | tee build/boot-memory-run.log
-            python3 tools/test_firmware_lifecycle.py 2>&1 | tee build/firmware-lifecycle-run.log
           else
             python3 tools/test_boot_memory.py --case "${{ matrix.case }}" 2>&1 | tee build/boot-memory-run.log
           fi
+      - name: Qualify real firmware lifecycle and allocation failures
+        if: ${{ always() && matrix.case == 'loader-version' }}
+        shell: bash
+        run: python3 tools/test_firmware_lifecycle.py 2>&1 | tee build/firmware-lifecycle-run.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:

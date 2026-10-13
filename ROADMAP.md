@@ -72,7 +72,7 @@ own implementation decision and tests.
 
 | Area | What exists now | What the evidence does not establish |
 | --- | --- | --- |
-| Boot and exceptions | UEFI map/handoff and kernel ELF admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages and measured usage; protected IDT | Exhaustive firmware map/exit retries, nested/return-fault qualification or complete CPU-state qualification |
+| Boot and exceptions | UEFI map/handoff and kernel ELF admission; BSP/reentry guard; 2 MiB owned kernel stack; normalized exceptions; fourteen stack guard pages and measured usage; protected IDT | Independent frozen-reference replay, nested/return-fault qualification or complete CPU-state qualification |
 | Page protection | NX/WP and supported SMEP/SMAP; user mapping and linked kernel section permissions; reference-profile physical alias sealing | Every mapping/device profile, DMA lifetime or arbitrary firmware topology |
 | Memory | Owner/generation grants, pinned user mappings, rollback, RAM hygiene, local translation retirement, bounded owner quotas, scoped IRQ access and per-open `mem` snapshots | General sharing/device pins, raw kernel-reference retirement or complete synchronization |
 | Processes and authority | Ring 3, preemption, private eager x87/MMX/SSE state, typed handles, exact deferred request identity, lifecycle cleanup | General spawn/heap/streams, tailored namespaces, full CPU-state qualification or stable application compatibility |
@@ -103,7 +103,10 @@ KVM CPU variant. On October 13, PR #9 merged after all eighty required checks
 passed, closing F0.1 and bringing the count to **52/100**, including **41/60**
 kernel-foundation criteria. The October 13 host coverage completion closes F6.2
 on clean `86b5b78`, bringing the local count to **53/100**, including **42/60**
-kernel-foundation criteria. Full F1 qualification and independent reproduction remain open.
+kernel-foundation criteria. The five-task firmware lifecycle qualification on
+clean `51ea61e` closes the bounded F1.1 implementation/evidence criterion, bringing
+the count to **54/100**, including **43/60** foundation entries. Full F1 CPU/context
+qualification and independent frozen-reference reproduction remain open.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
 20 unified handles per process including 4 file and 4 socket handles; 32 VFS nodes;
@@ -174,8 +177,18 @@ must not deepen a known ownership or isolation violation.
 - [x] The [bounded eager CPU-state policy](docs/CPU_STATE.md) preserves x87/MMX/XMM0–15/MXCSR, initializes fresh process state, disables OSXSAVE/PKE and enforces soft-float kernel compilation. A real Ring 3 fixture covers six processes, direct/yield syscalls, preemption, fault/reuse and exact frame reclamation.
 - [x] The [kernel ELF load plan](docs/KERNEL_ELF.md) validates the whole image before allocation/copy; six malformed-image VM cases prove rejection before kernel entry and explicit QMP guest shutdown.
 - [x] Seven kernel stacks have fourteen inaccessible guards with boot-time mapping readback; four selected CPU faults prove exact guard addresses and deliberate containment.
-- [ ] **F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.
-  Map/handoff checks are implemented; the pinned UEFI helper supplies one stale-key retry. A [bounded kernel ELF load plan](docs/KERNEL_ELF.md) now validates the complete image before allocation/copy. Thirteen real loader/handoff cases now include exact stride, length, empty-map, capacity, range, alignment and overlap decoder errors, with no kernel entry for loader rejection. Exhaustive firmware map-growth/exit fault injection and firmware allocation-failure qualification remain open.
+- [x] **F1.1:** validate complete BootInfo and firmware maps: descriptor count/stride/version, checked ranges, map growth, stale exit keys, overlap and reserved kernel/firmware/device memory. Capacity exhaustion must not silently truncate.
+  Checked raw descriptors, complete handoff admission and the bounded kernel ELF
+  load plan reject malformed input before allocator/architecture initialization.
+  Thirteen live decoder/handoff cases are supplemented by eight
+  [real firmware lifecycle cases](docs/FIRMWARE_QUALIFICATION.md): one stale key
+  recovers; two stale keys reset; in-capacity map growth reaches handoff; excess
+  growth produces two real BUFFER_TOO_SMALL results and resets; kernel/initrd/
+  BootInfo allocation refusal shuts down; map-buffer refusal reaches the existing
+  bounded panic halt. All passed on clean `51ea61e` with retained source/package,
+  fixture, image, serial and QMP evidence. This closes the bounded trusted-UEFI
+  implementation/fault-model slice, not arbitrary firmware verification or
+  independent frozen-reference acquisition/reproduction (F0.5).
 - [ ] **F1.2:** inventory all process-visible register state. Implement a bounded, CPUID-validated eager XSTATE save/restore policy, with a justified narrower fallback; define initial state and kernel FPU/SIMD use. Test every enabled component through preemption, syscall, fault and reuse.
   The fixed 512-byte FXSAVE64 fallback now accompanies private DS/ES/FS/GS selectors, fixed zero bases, disabled debug/fast-entry policy and a [bounded register inventory](docs/CPU_STATE.md). Pending unmasked x87 state and user/kernel #MF have local proofs. Strict user/kernel #XM fixtures fail on pinned TCG: the instruction records MXCSR invalid status but does not trap. Exact results and retained failures are in [VERIFICATION.md](docs/VERIFICATION.md). Nonzero TLS/debugger APIs, larger CPU profiles, exhaustive FP/flag interactions and physical qualification remain open; no complete F1.2 claim.
 - [x] **F1.3:** give boot, privilege, interrupt and emergency stacks inaccessible guards and usage measurements. Overflow must reach controlled containment instead of adjacent corruption or unexplained reset.
