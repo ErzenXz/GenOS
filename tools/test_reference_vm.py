@@ -1,8 +1,11 @@
 """Host-only tests for reference identity and shared probe arguments."""
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from reference_vm import load_profile, mismatches, parse_profile, profile_path, qemu_args
+from reference_vm import environment, load_profile, mismatches, parse_profile, profile_path, qemu_args
 
 
 class ReferenceProfileTests(unittest.TestCase):
@@ -46,6 +49,30 @@ class ReferenceProfileTests(unittest.TestCase):
         self.assertEqual(single[single.index("-cpu") + 1], "qemu64-v1,smep=on,smap=on")
         with self.assertRaises(ValueError):
             qemu_args(2)
+
+    def test_kvm_cpu_probe_is_explicit_and_has_no_software_fallback(self):
+        normal = qemu_args()
+        hardware = qemu_args(backend="kvm")
+        self.assertEqual(hardware[hardware.index("-accel") + 1], "kvm")
+        self.assertEqual(hardware[hardware.index("-cpu") + 1],
+                         "qemu64-v1,smep=on,smap=on,svm=off,enforce")
+        self.assertEqual(normal[normal.index("-accel") + 1], "tcg,thread=single")
+        for option in ("-machine", "-m", "-boot", "-device", "-smp"):
+            self.assertEqual(normal[normal.index(option) + 1], hardware[hardware.index(option) + 1])
+        with self.assertRaises(ValueError):
+            qemu_args(backend="auto")
+
+    def test_kvm_evidence_never_claims_the_frozen_tcg_environment(self):
+        with TemporaryDirectory() as temporary:
+            firmware = Path(temporary) / "firmware.fd"
+            firmware.write_bytes(b"fixture firmware")
+            with patch("reference_vm.subprocess.run", return_value=SimpleNamespace(stdout="tool")), \
+                    patch("reference_vm.mismatches", return_value=[]):
+                evidence = environment(firmware, backend="kvm")
+            self.assertFalse(evidence["reference_environment_match"])
+            self.assertEqual(evidence["reference_mismatches"], ["cpu_backend"])
+            self.assertEqual(evidence["execution_profile"], "genos-q35-kvm-cpu-v1")
+            self.assertEqual(evidence["accelerator"], "kvm")
 
 
 if __name__ == "__main__":

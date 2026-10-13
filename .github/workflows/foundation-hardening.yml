@@ -135,7 +135,7 @@ jobs:
             args: --case mce-gp
           - name: entry-nmi-iret
             script: test_fault_containment.py
-            args: --case nmi-iret
+            args: --case nmi-iret --cpu-backend kvm
           - name: entry-nmi-reentry
             script: test_fault_containment.py
             args: --case nmi-reentry
@@ -144,7 +144,7 @@ jobs:
             args: --case initial-cs
           - name: entry-initial-rip
             script: test_fault_containment.py
-            args: --case initial-rip
+            args: --case initial-rip --cpu-backend kvm
           - name: entry-initial-rsp-reject
             script: test_fault_containment.py
             args: --case initial-rsp-reject
@@ -179,6 +179,12 @@ jobs:
           persist-credentials: false
       - name: Install VM dependencies
         run: sudo apt-get update && sudo apt-get install --yes mtools ovmf qemu-system-x86
+      - name: Require hardware CPU execution for strict return semantics
+        if: matrix.name == 'entry-nmi-iret' || matrix.name == 'entry-initial-rip'
+        run: |
+          test -c /dev/kvm
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          python3 -c 'import sys; sys.path.insert(0, "tools"); from cpu_backend import preflight; print(preflight("kvm"))'
       - name: Activate pinned compiler and verify Python
         run: |
           rustup show active-toolchain

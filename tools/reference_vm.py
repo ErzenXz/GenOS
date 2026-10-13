@@ -42,13 +42,23 @@ def load_profile(root: Path | None = None) -> dict[str, str]:
     return parse_profile(profile_path(root).read_text())
 
 
-def qemu_args(cpus: int = 1, root: Path | None = None) -> list[str]:
+def execution_profile(profile: dict[str, str], backend: str) -> dict[str, str]:
+    if backend == "tcg":
+        return {"name": profile["profile"], "cpu": profile["cpu"], "accel": profile["accel"]}
+    if backend == "kvm":
+        return {"name": "genos-q35-kvm-cpu-v1",
+                "cpu": "qemu64-v1,smep=on,smap=on,svm=off,enforce", "accel": "kvm"}
+    raise ValueError("CPU backend must be tcg or kvm")
+
+
+def qemu_args(cpus: int = 1, root: Path | None = None, *, backend: str = "tcg") -> list[str]:
     if cpus not in (1, 4):
         raise ValueError("only the reference single CPU and BSP rejection four-CPU variant are defined")
     profile = load_profile(root)
+    execution = execution_profile(profile, backend)
     topology = profile["smp"] if cpus == 1 else "4,sockets=1,cores=4,threads=1"
-    return ["qemu-system-x86_64", "-machine", profile["machine"], "-cpu", profile["cpu"],
-            "-accel", profile["accel"], "-m", profile["memory"],
+    return ["qemu-system-x86_64", "-machine", profile["machine"], "-cpu", execution["cpu"],
+            "-accel", execution["accel"], "-m", profile["memory"],
             "-boot", profile["boot_order"], "-device", profile["boot_device"], "-smp", topology]
 
 
@@ -63,15 +73,20 @@ def mismatches(profile: dict[str, str], rust: str, qemu: str, firmware_sha256: s
     return differences
 
 
-def environment(firmware: Path, root: Path | None = None) -> dict:
+def environment(firmware: Path, root: Path | None = None, *, backend: str = "tcg") -> dict:
     profile = load_profile(root)
+    execution = execution_profile(profile, backend)
     def output(args: list[str]) -> str:
         return subprocess.run(args, capture_output=True, text=True, check=True, timeout=30).stdout.strip()
     rust = output(["rustc", "-Vv"])
     qemu = output(["qemu-system-x86_64", "--version"])
     digest = hashlib.sha256(firmware.read_bytes()).hexdigest()
     differences = mismatches(profile, rust, qemu, digest)
+    if backend != "tcg":
+        differences.append("cpu_backend")
     return {"reference_profile": profile["profile"], "reference_environment_match": not differences,
+            "execution_profile": execution["name"], "cpu_backend": backend,
+            "cpu_model": execution["cpu"], "accelerator": execution["accel"],
             "reference_mismatches": differences, "firmware_path": str(firmware),
             "firmware_sha256": digest, "profile_sha256": hashlib.sha256(profile_path(root).read_bytes()).hexdigest(),
             "rust": rust, "qemu": qemu}

@@ -198,6 +198,12 @@ Executed evidence and exact tested source belong in [VERIFICATION.md](VERIFICATI
 
 ### SIMD exception qualification limit
 
+The strict CI user/kernel #XM probes now select the explicit
+[KVM CPU qualification variant](REFERENCE_VM.md#hardware-cpu-qualification-variant).
+The same unmasked DIVSS fault instruction and vector-19 cleanup/halt validators
+run with accelerator preflight and QMP readback. This supplements the TCG
+reference; the retained emulation failures below remain part of its limitations.
+
 On the pinned QEMU 11.1.1 TCG reference, the strict user and kernel #XM
 fixtures **fail**: DIVSS 0/0 returns instead of trapping with the invalid-operation
 mask cleared. A separate diagnostic ELF verifies MXCSR `0x1f00` immediately

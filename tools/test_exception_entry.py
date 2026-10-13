@@ -20,6 +20,7 @@ import tempfile
 import tarfile
 import time
 
+import cpu_backend
 from reference_vm import environment, load_profile, qemu_args
 
 VECTORS = {"de": 0, "ud": 6, "gp": 13, "pf": 14, "mf": 16, "xm": 19}
@@ -226,29 +227,41 @@ def firmware_path() -> Path:
     raise FileNotFoundError("install OVMF or set OVMF_CODE to its code firmware file")
 
 
-def boot(root: Path, evidence: Path, mode: str, fault: str, timeout: int) -> list[str]:
+def boot(root: Path, evidence: Path, mode: str, fault: str, timeout: int,
+         backend: str = "tcg") -> list[str]:
     log_path = evidence / "serial.log"
     profile = load_profile(root)
-    args = qemu_args(root=root) + [
+    # Evidence directories can exceed AF_UNIX's path limit on macOS.
+    temporary_channel = tempfile.TemporaryDirectory(prefix="genos-qmp-", dir="/tmp")
+    channel = Path(temporary_channel.name) / "qmp.sock"
+    transcript = []
+    args = qemu_args(root=root, backend=backend) + [
             "-drive", f"if=pflash,format=raw,readonly=on,file={firmware_path()}",
             "-drive", profile["boot_drive"] + ",file=build/genos.img", "-net", "none",
             "-display", "none", "-monitor", "none", "-serial", f"file:{log_path}",
+            "-qmp", f"unix:{channel},server=on,wait=off",
             "-no-reboot"]
     (evidence / "qemu-command.json").write_text(json.dumps(args, indent=2) + "\n")
     with (evidence / "qemu.log").open("w") as output:
         process = subprocess.Popen(args, cwd=root, stdout=output, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + timeout
+            accelerator_verified = False
             marker = "USERMODE_READY" if mode == "user" else "EXCEPTION_FATAL_HALT"
             while time.monotonic() < deadline:
                 log = log_path.read_text(errors="replace") if log_path.exists() else ""
                 if process.poll() is not None:
                     raise RuntimeError(f"QEMU exited unexpectedly: {process.returncode}")
-                if marker in log:
+                if not accelerator_verified and channel.exists():
+                    accelerator = cpu_backend.qmp_command(channel, {"execute": "query-kvm"}, transcript)
+                    cpu_backend.verify_accelerator(backend, accelerator)
+                    accelerator_verified = True
+                if marker in log and accelerator_verified:
                     # A double/triple fault must not count as a deliberate halt.
                     # -no-reboot makes a reset observable as process exit.
                     time.sleep(0.5)
-                    if process.poll() is not None:
+                    if (process.poll() is not None
+                            or not cpu_backend.qmp_command(channel, {"execute": "query-status"}, transcript)["running"]):
                         raise RuntimeError("QEMU reset/exited after the apparent success marker")
                     validate_log(log_path.read_text(errors="replace"), mode, fault)
                     return args
@@ -261,6 +274,8 @@ def boot(root: Path, evidence: Path, mode: str, fault: str, timeout: int) -> lis
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+            (evidence / "qmp.json").write_text(json.dumps(transcript, indent=2) + "\n")
+            temporary_channel.cleanup()
 
 
 def command_output(args: list[str], cwd: Path) -> str:
@@ -281,6 +296,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=("user", "kernel"), required=True)
     parser.add_argument("--fault", choices=VECTORS, required=True)
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--cpu-backend", choices=("tcg", "kvm"), default="tcg")
     parser.add_argument("--run-id", default=None)
     options = parser.parse_args()
     if options.run_id is not None and (not options.run_id.isascii() or not options.run_id.isdigit() or len(options.run_id) > 32):
@@ -294,9 +310,11 @@ def main() -> None:
                              stdout=subprocess.PIPE, check=True, timeout=30).stdout
     evidence = source / "build" / "exception-evidence" / f"{options.mode}-{options.fault}" / (options.run_id or str(time.time_ns()))
     evidence.mkdir(parents=True, exist_ok=False)
-    manifest = {"mode": options.mode, "fault": options.fault, "status": "incomplete"}
+    manifest = {"mode": options.mode, "fault": options.fault, "status": "incomplete",
+                "cpu_backend": options.cpu_backend}
     try:
-        manifest.update(environment(firmware_path(), source))
+        manifest["cpu_backend_preflight"] = cpu_backend.preflight(options.cpu_backend)
+        manifest.update(environment(firmware_path(), source, backend=options.cpu_backend))
         manifest.update({"commit": commit, "source_clean": True,
                          "rust": command_output(["rustc", "-Vv"], source),
                          "qemu": command_output(["qemu-system-x86_64", "--version"], source)})
@@ -313,13 +331,13 @@ def main() -> None:
                                stderr=subprocess.STDOUT, check=True, timeout=600)
             image = root / "build/genos.img"
             manifest["image_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
-            boot(root, evidence, options.mode, options.fault, options.timeout)
+            boot(root, evidence, options.mode, options.fault, options.timeout, backend=options.cpu_backend)
             manifest["status"] = "passed"
     except Exception as error:
         manifest.update(status="failed", failure=f"{type(error).__name__}: {error}")
         raise
     finally:
-        for name in ("serial.log", "qemu.log", "build.log"):
+        for name in ("serial.log", "qemu.log", "build.log", "qmp.json", "qemu-command.json"):
             artifact = evidence / name
             if artifact.is_file():
                 manifest[name + "_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
