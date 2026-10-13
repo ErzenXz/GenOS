@@ -130,7 +130,17 @@ fn genos_fixture_grow(buf: &mut [u8]) {
             let kind = u32::from_le_bytes(raw[..4].try_into().unwrap());
             let pages = u64::from_le_bytes(raw[24..32].try_into().unwrap());
             let start = u64::from_le_bytes(raw[8..16].try_into().unwrap());
-            (kind == 7 && pages >= required_pages as u64 && start != 0).then_some(start)
+            let attributes = u64::from_le_bytes(raw[32..40].try_into().unwrap());
+            (kind == 7
+                && pages >= required_pages as u64
+                && start != 0
+                && start.is_multiple_of(4096)
+                && attributes & (1 << 63) == 0
+                && pages
+                    .checked_mul(4096)
+                    .and_then(|size| start.checked_add(size))
+                    .is_some())
+            .then_some(start)
         })
         .expect("fixture conventional RAM span");
     for index in 0..GENOS_FIXTURE_GROW_PAGES {

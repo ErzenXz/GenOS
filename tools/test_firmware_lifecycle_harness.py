@@ -59,6 +59,7 @@ class FirmwareEvidenceTests(unittest.TestCase):
                             good.replace(line,"prefix "+line), "".join(reversed(records))]:
                     with self.subTest(case=case,line=line), self.assertRaises(ValueError):
                         validate_log(bad,case)
+            with self.assertRaises(ValueError):validate_log(good.rstrip("\n"),case)
 
     def test_wrong_error_extent_call_identity_stage_and_success_are_denied(self):
         for case in CASES:
@@ -88,6 +89,16 @@ class FirmwareEvidenceTests(unittest.TestCase):
                 bad[-1]["data"]["reason"]="host-error"
             with self.assertRaises(ValueError):validate_qmp(bad,outcome)
             with self.assertRaises(ValueError):validate_qmp([None],outcome)
+
+    def test_normal_firmware_rtc_initialization_is_bounded_and_not_terminal_evidence(self):
+        for outcome in ("running","panic","guest-reset","guest-shutdown"):
+            good=qmp_for(outcome)
+            event={"event":"RTC_CHANGE","data":{"offset":0,"qom-path":"/machine/unattached/rtc"}}
+            with_clock=good[:-1]+[event]+good[-1:]
+            validate_qmp(with_clock,outcome)
+            for bad in [good[:-1]+[event,event]+good[-1:], [event]+good,
+                        good+[event],good[:-1]+[{"event":"RTC_CHANGE","data":{}}]+good[-1:]]:
+                with self.assertRaises(ValueError):validate_qmp(bad,outcome)
 
 
 class FirmwareSourceTests(unittest.TestCase):
