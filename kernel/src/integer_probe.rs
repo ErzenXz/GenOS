@@ -88,7 +88,7 @@ pub(super) fn run() -> bool {
                         passed &= matches!(process.context.rcx, 0..=2 | u64::MAX)
                             || process.context.rcx == u64::MAX - 1;
                         expected[13] = process.context.rcx;
-                        let actual = oracle::frame_words(&process.context);
+                        let actual = oracle::timer_words(&process.context);
                         if actual != expected {
                             for (index, (actual, expected)) in
                                 actual.iter().zip(expected).enumerate()

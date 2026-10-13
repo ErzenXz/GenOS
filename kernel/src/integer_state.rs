@@ -1,5 +1,6 @@
 //! Validation-only oracle for the native integer-register fixture.
-//! No masked comparisons: every GPR, RSP, RFLAGS and both selectors must match.
+//! User snapshots compare every word; timer frames project the PUSHFQ-visible
+//! flags (RF is architecturally omitted by PUSHFQ and remains unqualified here).
 
 use crate::{cpu_context::UserContext, native_image, segments};
 
@@ -67,6 +68,15 @@ pub fn frame_words(frame: &UserContext) -> [u64; 17] {
     ]
 }
 
+pub fn timer_words(frame: &UserContext) -> [u64; 17] {
+    let mut words = frame_words(frame);
+    // This is an explicit observation boundary, not full RF qualification.
+    // The admitted TCG saves RF=1 even in the non-REP loop. Only RF is omitted;
+    // DF/AC/ID and every arithmetic/reserved/privileged flag remain exact.
+    words[16] &= !(1 << 16);
+    words
+}
+
 pub fn matches(words: &[u64; 17], bytes: &[u8]) -> bool {
     bytes.len() == STRIDE
         && words
@@ -100,6 +110,19 @@ mod tests {
         }
         assert!(!matches(&words, &bytes[..STRIDE - 1]));
         assert!(!matches(&words, &[0; STRIDE + 1]));
+    }
+
+    #[test]
+    fn timer_projection_excludes_only_the_declared_resume_flag() {
+        let frame = UserContext::initial(2, native_image::USER_CODE, native_image::USER_STACK_TOP);
+        let expected = timer_words(&frame);
+        for bit in 0..64 {
+            let changed = UserContext {
+                rflags: frame.rflags ^ (1 << bit),
+                ..frame
+            };
+            assert_eq!(timer_words(&changed) == expected, bit == 16);
+        }
     }
 
     #[test]
