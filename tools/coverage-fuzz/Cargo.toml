@@ -1,0 +1,30 @@
+[package]
+name = "genos-coverage-fuzz"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+genos-parser-stress = { path = "../parser-stress" }
+
+[features]
+runtime = []
+fault-oracle = ["runtime"]
+
+[[bin]]
+name = "genos-coverage-fuzz"
+path = "src/main.rs"
+test = false
+bench = false
+required-features = ["runtime"]
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+debug = 1
+codegen-units = 1
+lto = false

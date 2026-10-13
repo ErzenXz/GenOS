@@ -51,3 +51,25 @@ fn replay_uses_production_acceptance_and_rejects_invalid_cli() {
         );
     }
 }
+
+#[test]
+fn new_targets_reach_valid_and_rejected_production_paths() {
+    use genos_parser_stress::exercise;
+
+    let mut boot_map = [0u8; 44];
+    boot_map[..4].copy_from_slice(&[40, 0, 1, 0]);
+    boot_map[4..8].copy_from_slice(&7u32.to_le_bytes());
+    boot_map[12..20].copy_from_slice(&4096u64.to_le_bytes());
+    boot_map[28..36].copy_from_slice(&1u64.to_le_bytes());
+    assert!(exercise("boot-map", &boot_map));
+    assert!(!exercise("boot-map", &boot_map[..43]));
+
+    assert!(exercise("paths", b"/USER/NOTE.TXT"));
+    assert!(exercise("paths", b"/USER/../NOTE.TXT"));
+    assert!(!exercise("paths", b"\xff"));
+
+    let one_rx = [0, 0, 1, 0, 0, 0, 0, 0, 16, 0, 0, 0];
+    assert!(exercise("descriptors", &one_rx));
+    let bad_rx = [0, 0, 1, 0, 8, 0, 0, 0, 16, 0, 0, 0];
+    assert!(exercise("descriptors", &bad_rx));
+}

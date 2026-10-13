@@ -2063,3 +2063,24 @@ or relaxed. Local QEMU 11.1.2 remains portability evidence against frozen 11.1.1
 Full roadmap scope, the original **51/100** console count, Experimental status and
 draft/unmerged PR #9 remain unchanged. Wider ownership/IRQ review, 24-hour mixed
 pressure, frozen-reference qualification and independent review remain open.
+
+## October 13 host coverage feedback slice
+
+The interrupted F6.2 harness work was completed locally on a dirty checkout
+based on `ef2bc6812e53747733536c874a9f13ade66ae9ac`. The host-only
+[`coverage-fuzz` lane](../tools/coverage-fuzz/README.md) verifies every source
+file against the LLVM 21.1.8 commit and SHA-256 lock, builds its own libFuzzer
+runtime, instruments the Rust target and production-linked parser code with
+SanitizerCoverage, and retains per-target corpora, logs, summaries and crash
+artifacts under `build/coverage-fuzz/`.
+
+Ten targets each completed 5,000 cases without a crash: ELF, native ELF, IPv4,
+IPv6, UDP, TCP, sockets, boot maps, paths and RX/TX descriptors. Final edge
+coverage ranged from 12 to 210; the socket target reported 797 features.
+The retained logs show coverage-selected corpus growth on multiple targets;
+the TCP target added none after its earlier run had already found four. These are
+libFuzzer counters for this host build, not whole-kernel coverage or a stability
+claim. `cargo test --workspace --offline --locked`, the parser-stress CLI tests,
+strict parser-stress Clippy, formatting and Markdown-link validation passed.
+No QEMU, DMA or CPU qualification was run for this host-only harness change.
+The remaining F6.2 targets and the wider roadmap gate remain open.

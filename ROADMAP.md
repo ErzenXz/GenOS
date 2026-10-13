@@ -300,6 +300,12 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] **F6.1:** finish the normal startup cost/dependency audit. Optional devices must fail within declared deadlines and cannot make the local terminal depend on a test server or fixture.
   Real normal release boots without a storage controller, with an empty controller, and with a NIC but no host test service each reached a fresh Ring 3 terminal within the declared 60-second budget. Retained per-run commands, environment/source/image identities and visible `echo`/`net`/`mem` transcripts live under `build/startup-dependency-evidence/`; see [verification](docs/VERIFICATION.md#september-23-dependency-and-format-slices).
 - [ ] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
+  Ten host-only libFuzzer targets now reuse production parser and bounded-state
+  assertions for ELF, native ELF, IPv4/IPv6, UDP/TCP, sockets, boot maps, paths
+  and RX/TX descriptors. The pinned runtime, locked source hashes, replay path
+  and local evidence are documented in [coverage fuzzing](tools/coverage-fuzz/README.md).
+  Partition/snapshot, DHCP/DNS and syscall sequences remain outside this lane;
+  the gate stays open.
 - [x] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
   Pinned nightly Miri now covers 131 production-selected pure Rust tests, including boot/interrupt phases, syscall diagnostics, permanent DMA claims, RX/TX ownership, scoped framebuffer and VFS snapshot additions; see [scope and exclusions](docs/PURE_RUST_VERIFICATION.md). The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. CPU/device execution, unsafe sites outside the selected modules and unbounded executions are not covered.
 - [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
