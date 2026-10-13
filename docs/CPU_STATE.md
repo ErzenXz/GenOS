@@ -134,7 +134,7 @@ the unchanged loader, mapper, constructor, syscall and timer paths:
 | Fresh state | Six Ring 3 snapshots: fourteen zero GPRs, only the declared RDI token, initial RSP, exact `0x202` flags and native CS/SS |
 | Direct syscall | All fifteen distinct nonzero GPR patterns before an unknown syscall; fourteen preserved and RAX replaced by the exact ABI error, with exact RSP/flags/selectors |
 | Yield | All fifteen GPRs across a real scheduled yield, including the six zero arguments required by the existing ABI and RAX's zero result |
-| Timer | Two actual PIT captures per process inside a flag-neutral MOV/LEA/JRCXZ loop; all GPRs, RSP, flags and selectors checked before progress is published |
+| Timer | Two actual PIT captures per process inside a flag-neutral MOV/LEA/JRCXZ loop; all GPRs, RSP, PUSHFQ-visible flags and selectors checked before progress is published |
 | Fault and reuse | Two real user #UD terminations, four healthy peer exits, unconditional address-space reclamation and exact frame baseline; repeat the same identities/slots with new patterns and clean initial state |
 
 Three simultaneously live processes run twice. Each process has a distinct value
@@ -148,7 +148,13 @@ allows at most 48 rounds and reclaims every constructed owner on failure.
 
 The patterns include arithmetic flags, DF, AC and ID, with different combinations
 in each round. All memory/stack accesses are aligned. User PUSHFQ observations
-and saved timer frames compare every flag bit, without masking DF/AC. The
+and saved timer frames compare the same PUSHFQ-visible flag bits, without masking
+DF/AC. PUSHFQ architecturally omits RF/VM; VM is prohibited by return admission.
+RF alone is projected out of timer-frame comparisons. Local TCG saves RF=1 even
+in a non-REP loop; strict RF semantics remain unqualified rather than being
+claimed from these observations. A host test flips all 64 bits and requires only
+RF to be excluded by this explicit timer projection. User snapshot comparisons
+still require every bit of the PUSHFQ image. The
 existing entry assembly clears live kernel DF/AC before Rust; this fixture
 qualifies private user preservation and successful entry/return, not every
 alignment exception, single-step/RF interaction or independently sampled kernel

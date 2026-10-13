@@ -215,12 +215,12 @@
     {
       "lines": 198,
       "path": "kernel/src/integer_probe.rs",
-      "sha256": "1a0329857aec9c5f53cf727a9ad365df553d29f7f2144c8c5d8562205076a566"
+      "sha256": "128fdbbc066e00e818472b2e225cccb82c0ed4a5e67f5d3d98a6213ea549d98a"
     },
     {
-      "lines": 138,
+      "lines": 161,
       "path": "kernel/src/integer_state.rs",
-      "sha256": "88f17d274197d6a521cbda8c60484a3d1749a224e6841c19d14de35d5e9528a9"
+      "sha256": "71332ce0c39df06407b9cf0e0d25ff7e5ccece72cdaad1a90e555e9499a0ba7c"
     },
     {
       "lines": 187,
