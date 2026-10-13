@@ -24,6 +24,10 @@ unsafe extern "C" {
 }
 
 pub(super) fn run() -> bool {
+    run_xstate() && super::integer_probe::run()
+}
+
+fn run_xstate() -> bool {
     let begin = core::ptr::addr_of!(genos_xstate_probe_elf);
     let end = core::ptr::addr_of!(genos_xstate_probe_elf_end);
     // SAFETY: the linked assembly emits these ordered symbols around one

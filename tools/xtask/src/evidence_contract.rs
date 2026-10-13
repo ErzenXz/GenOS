@@ -359,6 +359,7 @@ impl<'a> Contract<'a> {
         }
         let mut required = vec!["BOOT_MODE validation"];
         required.extend(crate::cpu_evidence::BOOT_SEQUENCE.iter().copied());
+        required.extend(crate::cpu_evidence::INTEGER.iter().copied());
         required.extend([
             "USERMODE_READY",
             "USER_SHELL_READY",
@@ -435,8 +436,9 @@ impl<'a> Contract<'a> {
         // storage, SDK, serial and optional-server variants.
         let boot: Vec<_> = std::iter::once("BOOT_MODE validation")
             .chain(crate::cpu_evidence::BOOT_SEQUENCE.iter().copied())
+            .chain(["USERMODE_READY"])
+            .chain(crate::cpu_evidence::INTEGER.iter().copied())
             .chain([
-                "USERMODE_READY",
                 "USER_SHELL_READY",
                 "CONSOLE_TRANSCRIPT_READY",
                 "GENOS_READY",

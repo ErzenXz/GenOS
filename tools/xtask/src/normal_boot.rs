@@ -14,6 +14,7 @@ pub const FORBIDDEN: &[&str] = &[
     "USER_XSTATE_OK",
     "USER_XSTATE_PREEMPTIONS",
     "USER_CPU_CONTEXT_OK",
+    "USER_INTEGER_",
 ];
 
 #[derive(Clone, Copy)]
