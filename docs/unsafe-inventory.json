@@ -1,11 +1,11 @@
 {
   "counts": {
-    "asm_macro": 67,
+    "asm_macro": 72,
     "assembly_file": 3,
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 251,
+    "unsafe_block": 252,
     "unsafe_extern": 7,
     "unsafe_fn": 68,
     "unsafe_impl": 4,
@@ -471,6 +471,11 @@
       "lines": 41,
       "path": "tools/coverage-fuzz/src/main.rs",
       "sha256": "6a50be22f0a4c8bdef64aeca0f8079da451109feb5ec9065cff7098d30bb27d7"
+    },
+    {
+      "lines": 185,
+      "path": "tools/fixtures/firmware_lifecycle.rs",
+      "sha256": "916bd64751cac70b0caa8420c842d7beeb2c91b3b410c4c741822536f1345d9d"
     },
     {
       "lines": 283,
@@ -3691,6 +3696,66 @@
       "kind": "unsafe_block",
       "line": 21,
       "path": "tools/coverage-fuzz/src/main.rs"
+    },
+    {
+      "column": 5,
+      "construct_sha256": "59a5f03c49211e09d8fd26c119358dd4da93c8ed92af8af5538a2a93bc51e72f",
+      "context": "    // BSP. COM1 port operations have no Rust memory aliases, perform bounded\n    // polling and do not call firmware/allocate. AL/DX are the declared clobbers.\n    // A missing UART halts rather than emitting a partial successful proof.\n    unsafe {\n        if !GENOS_FIXTURE_UART.swap(true, Ordering::SeqCst) {\n            for (port, value) in [\n                (0x3f9u16, 0u8),",
+      "context_start_line": 21,
+      "end_line": 56,
+      "kind": "unsafe_block",
+      "line": 24,
+      "path": "tools/fixtures/firmware_lifecycle.rs"
+    },
+    {
+      "column": 29,
+      "construct_sha256": "6fd9443ef22358b2e5d38bbd280e4856d1b4cc70e164a8466386b451f733b638",
+      "context": "                (0x3fa, 0xc7),\n                (0x3fc, 0x0b),\n            ] {\n                core::arch::asm!(\"out dx, al\", in(\"dx\") port, in(\"al\") value, options(nomem, nostack));\n            }\n        }\n        for &byte in bytes {",
+      "context_start_line": 32,
+      "end_line": 35,
+      "kind": "asm_macro",
+      "line": 35,
+      "path": "tools/fixtures/firmware_lifecycle.rs"
+    },
+    {
+      "column": 29,
+      "construct_sha256": "925f40cbafeb62e6a4659d4e57e0029fcdce0135b9e0dba3731adaf2d931e737",
+      "context": "            let mut ready = false;\n            for _ in 0..100_000 {\n                let status: u8;\n                core::arch::asm!(\"in al, dx\", in(\"dx\") 0x3fdu16, out(\"al\") status, options(nomem, nostack));\n                if status & 0x20 != 0 {\n                    ready = true;\n                    break;",
+      "context_start_line": 39,
+      "end_line": 42,
+      "kind": "asm_macro",
+      "line": 42,
+      "path": "tools/fixtures/firmware_lifecycle.rs"
+    },
+    {
+      "column": 29,
+      "construct_sha256": "a7aa5006220c4bc6aabb88ce0d8e2654f50e79c7f8900254ccd9ee7d3c2f0166",
+      "context": "                }\n            }\n            if !ready {\n                core::arch::asm!(\"cli\", options(nomem, nostack));\n                loop {\n                    core::arch::asm!(\"hlt\", options(nomem, nostack));\n                }",
+      "context_start_line": 46,
+      "end_line": 49,
+      "kind": "asm_macro",
+      "line": 49,
+      "path": "tools/fixtures/firmware_lifecycle.rs"
+    },
+    {
+      "column": 33,
+      "construct_sha256": "2e5a49cc2ab562815c6e14cd86e2b264d9f51d0a70ad39ebce6d07094d4a41a4",
+      "context": "            if !ready {\n                core::arch::asm!(\"cli\", options(nomem, nostack));\n                loop {\n                    core::arch::asm!(\"hlt\", options(nomem, nostack));\n                }\n            }\n            core::arch::asm!(\"out dx, al\", in(\"dx\") 0x3f8u16, in(\"al\") byte, options(nomem, nostack));",
+      "context_start_line": 48,
+      "end_line": 51,
+      "kind": "asm_macro",
+      "line": 51,
+      "path": "tools/fixtures/firmware_lifecycle.rs"
+    },
+    {
+      "column": 25,
+      "construct_sha256": "9773ef8a932cce548e14aae0e7afb14c6d454fbc86039ba9a25fec17b72317b6",
+      "context": "                    core::arch::asm!(\"hlt\", options(nomem, nostack));\n                }\n            }\n            core::arch::asm!(\"out dx, al\", in(\"dx\") 0x3f8u16, in(\"al\") byte, options(nomem, nostack));\n        }\n    }\n}",
+      "context_start_line": 51,
+      "end_line": 54,
+      "kind": "asm_macro",
+      "line": 54,
+      "path": "tools/fixtures/firmware_lifecycle.rs"
     },
     {
       "column": 5,
