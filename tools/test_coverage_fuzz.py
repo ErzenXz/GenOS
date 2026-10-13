@@ -27,6 +27,7 @@ OUT = ROOT / "build/coverage-fuzz"
 TARGETS = (
     "elf", "native-elf", "ipv4", "ipv6", "udp", "tcp", "socket",
     "boot-map", "paths", "descriptors", "handles",
+    "partition", "snapshot", "dhcp", "dns", "arp", "icmp", "syscalls", "endpoints",
 )
 SEEDS = {
     "elf": ("elf-valid.bin", "elf-overflow.bin", "elf-truncated.bin"),
@@ -40,6 +41,14 @@ SEEDS = {
     "paths": (),
     "descriptors": (),
     "handles": (),
+    "partition": ('partition-valid.bin', 'partition-overflow.bin', 'partition-short.bin'),
+    "snapshot": ('snapshot-valid.bin', 'snapshot-checksum.bin', 'snapshot-path.bin'),
+    "dhcp": ('dhcp-valid.bin', 'dhcp-truncated-option.bin'),
+    "dns": ("dns-valid.bin", "dns-truncated.bin", "dns-error.bin", "dns-truncated-flag.bin", "dns-forward-pointer.bin", "dns-self-pointer.bin", "dns-wrong-question.bin"),
+    "arp": ('arp-valid.bin',),
+    "icmp": ('icmp-valid.bin',),
+    "syscalls": ('syscalls-sequence.bin',),
+    "endpoints": ('endpoints-sequence.bin',),
 }
 
 

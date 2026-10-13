@@ -2,7 +2,8 @@
 
 This standalone host crate calls `kernel`'s actual public ELF, native-image admission, IPv4, IPv6, UDP,
 TCP, ARP, checksum, TCP-classification, and socket-handle APIs through a local
-path dependency. It adds no network dependencies, production allocation, or
+path dependency. It also calls production GFS2, DHCP, DNS and ICMP codecs,
+syscall scalar admission and endpoint lifecycle APIs. It adds no network dependencies, production allocation, or
 hardware access. The host harness itself uses standard-library allocation.
 
 ```sh
@@ -12,8 +13,8 @@ cargo test --manifest-path tools/parser-stress/Cargo.toml --offline
 ```
 
 The default seed is `0x47454e4f53`, with 25,000 deterministic mutations. Every run
-first checks 14 retained corpus inputs and every proper prefix of those inputs
-(17,109 truncations). The corpus includes accepted ELF/network headers, overflowing
+first checks 33 retained corpus inputs and every proper prefix of those inputs
+(85,037 truncations). The corpus includes accepted ELF/network headers, overflowing
 ELF offsets, truncated ELF payloads, IPv4 fragments, truncated IPv6 options,
 invalid TCP offsets, and a socket lifecycle. Two native ELF fixtures exercise a
 valid fixed-address image and rejection of W+X in its final load segment. Mutation operators truncate, insert,
@@ -29,7 +30,8 @@ queue limits, shutdown, stale and forged handles, owner isolation, incarnation
 isolation, and teardown. Rejected handles must leave both owners' socket state
 unchanged. Each input executes at most 64 socket commands.
 
-Use `--target elf|native-elf|ipv4|ipv6|udp|tcp|socket|boot-map|paths|descriptors|handles` to focus mutation input on one target;
+Use `--help` to list all nineteen targets, including `partition`, `snapshot`,
+`dhcp`, `dns`, `arp`, `icmp`, `syscalls` and `endpoints`, and `--target TARGET` to focus mutation input on one target;
 the deterministic initial corpus still runs for all targets. `--target all` is
 the default. `--iterations` accepts 0 through 10,000,000. Seeds accept decimal
 or `0x` hexadecimal values, including zero.
@@ -65,12 +67,15 @@ pattern and received the same correction.
 This is reproducible mutation stress, **not coverage-guided fuzzing**, exhaustive
 verification, a sanitizer campaign, or proof of memory safety. A separate
 [coverage lane](../coverage-fuzz/README.md) reuses these assertions. The iteration
-count counts mutated inputs, not discovered execution paths. The private DNS,
-partition-discovery, filesystem-snapshot, and boot-validation implementations
-are not exercised here; they still need host-callable production boundaries and
+count counts mutated inputs, not discovered execution paths. The host-callable
+GFS2 and DHCP seams are the production codecs; snapshot mutations separately
+repair checksums to reach semantic entry validation. DNS rejection fixtures
+retain former acceptance of error/truncated replies, invalid compression
+pointers and a wrong question class. This is a bounded probe, not a general
+resolver. Actual firmware exit, device I/O, user-copy and scheduler execution need
 dedicated fuzz targets. Socket stress covers selected public operations, not
 every network-completion interleaving. F6 remains open.
 
 The local `[workspace]` keeps this host utility separate from boot-image members.
-Its lockfile contains only the harness, `kernel`, and `genos_abi`. Nested build
+Its lockfile contains only local harness, kernel, ABI, shell and runtime packages. Nested build
 output is excluded by this directory's `.gitignore`.

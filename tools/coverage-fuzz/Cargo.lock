@@ -13,8 +13,23 @@ dependencies = [
 name = "genos-parser-stress"
 version = "0.1.0"
 dependencies = [
+ "genos-shell",
  "genos_abi",
  "kernel",
+]
+
+[[package]]
+name = "genos-shell"
+version = "0.1.0"
+dependencies = [
+ "genos-user-runtime",
+]
+
+[[package]]
+name = "genos-user-runtime"
+version = "0.1.0"
+dependencies = [
+ "genos_abi",
 ]
 
 [[package]]
