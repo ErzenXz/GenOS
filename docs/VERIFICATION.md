@@ -2084,3 +2084,12 @@ claim. `cargo test --workspace --offline --locked`, the parser-stress CLI tests,
 strict parser-stress Clippy, formatting and Markdown-link validation passed.
 No QEMU, DMA or CPU qualification was run for this host-only harness change.
 The remaining F6.2 targets and the wider roadmap gate remain open.
+
+The reviewed lexical inventory changes from 405 sites/107 sources to 407
+sites/110 sources. The only new unsafe function and block are the host libFuzzer
+callback and its `from_raw_parts` conversion. The runtime supplies a readable
+immutable byte range for this synchronous call; the callback caps length at
+65,536, handles zero length without dereference, rejects a null nonempty pointer,
+and does not retain the slice. No kernel unsafe operation, assembly or
+Send/Sync implementation changes in this slice. The inventory records this
+source context; it does not certify libFuzzer or its caller.
