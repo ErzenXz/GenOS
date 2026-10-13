@@ -408,7 +408,17 @@ references, not an automatic filesystem selection. See [storage/platform researc
 **Status: partial, not unstarted. Extension depends on R1 and C1 stream/authority contracts.**
 
 - [x] Modern VirtIO/MSI-X, bounded concurrent passive streams, per-owner limits, readiness waits and selected loss/reordering/congestion tests exist on the VM.
-- [ ] **N1.1:** maintain a requirement-to-test matrix for the declared TCP profile using RFC 9293 and companion timing/congestion specifications; identify valid unsupported features separately from malformed input.
+- [x] **N1.1:** maintain a requirement-to-test matrix for the declared TCP profile using RFC 9293 and companion timing/congestion specifications; identify valid unsupported features separately from malformed input.
+  The [complete maintained TCP matrix](docs/TCP_REQUIREMENTS.md) accounts for all
+  119 RFC 9293 Appendix B identifiers across 25 topics, with RFC 6298/5681 timer
+  and congestion review plus RFC 5961 reset/injection review. The required Host
+  tests lane rejects omitted/duplicate requirements, stale source receipts,
+  detached compiled test names, missing guest producer/validator bindings and
+  stale generated documentation. Malformed, state-inapplicable, valid unsupported
+  and profile-limit inputs are distinct; mandatory implementation gaps stay
+  explicit. Structural option admission now rejects malformed length/padding
+  while preserving valid unknown options. This completes N1.1; TCP behavior,
+  multi-owner fairness, wire qualification and baselines remain N1.2–N1.5.
 - [ ] **N1.2:** finish general byte streams, multi-segment flight/reassembly, sequence wrap, duplicate handling, simultaneous/half-close, reset, persist/zero-window, RTT/RTO, congestion and cancellation behavior.
 - [ ] **N1.3:** prove fairness across different process owners, not only clients of one listener; stalled/malicious peers must stay inside per-owner memory, work, retry and lifetime budgets.
 - [ ] **N1.4:** use scripted wire/application/timing cases, packet capture and retained failure seeds. Include loss, delay, corruption, duplicate ACK/data, slow readers, peer death and exhaustion.

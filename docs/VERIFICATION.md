@@ -2468,3 +2468,56 @@ all five integer markers; arbitrary faults remain denied. The original failed
 manifest is unchanged. A read-only replay passes the corrected validator, and
 a fresh clean `433bbff` local storage run independently passes at
 `build/storage-startup-evidence/1791900252905092637`. All 189 Python tests pass.
+
+## October 13 complete TCP requirement matrix — N1.1
+
+Clean source `478cbeb205f6db515bf4e4c4f4817f708231dfa1` completes the
+[N1.1 TCP inventory](TCP_REQUIREMENTS.md). All 119 RFC 9293 Appendix B identifiers
+(69 MUST, 31 SHLD, 18 MAY and one REC identifier) are assigned exactly once across
+25 topics. The published RFC 9293/6298/5681/5961 texts were reviewed through the
+connected browser; the matrix pins their URLs/publication revisions. Its
+implementation descriptions come from the current GenOS source, with SHA-256
+review receipts for the parser, transport coordinator and socket authority model.
+Compiled host test names, positive/negative/cleanup/exhaustion outcomes, existing
+guest producer/validator markers and planned missing scenarios are recorded.
+The matrix does not relabel missing mandatory behavior as optional conformance.
+
+The CI guard rejects any missing/duplicate requirement, omitted topic, stale source
+receipt, orphaned compiled test name, hidden gap, unknown guest CI context/marker
+or stale generated document. Seven mutation tests exercise these refusals,
+including each of the 119 individual requirement omissions. The required Host
+tests context executes the guard after actual workspace tests; configured CI
+alone is not a claim of successful remote execution.
+
+The audit found that `parse_tcp` previously skipped opaque option bytes without
+checking internal lengths or EOL padding. The production parser now walks at
+most 40 option bytes, validates length-bearing extents and the known MSS shape,
+supports EOL/NOP and byte alignment, and preserves well-formed unknown kinds.
+Two parser tests and one correctly checksummed Ethernet/IPv4/TCP state-machine
+test prove malformed options cannot alter stream state while a valid unknown
+option delivers the exact application bytes. This is structural admission, not
+MSS/extension negotiation. Four permanent raw TCP inputs retain the invalid and
+valid boundary cases with explicit replay commands.
+
+Local verification passed 386 workspace unit tests, thirteen compile-fail docs,
+196 Python tests, ten parser harness tests, all 85,137 prefixes of 37 retained
+inputs and 100,000 deterministic mutations. Normal/validation bare-metal kernel,
+host library and parser-tool strict linting passed, along with formatting,
+dependency direction, generated-matrix consistency and Markdown link checks.
+The lexical unsafe inventory remains 417 sites across 125 source files; no unsafe
+operation or assembly changes were introduced.
+
+On the same clean source, the TCP-only coverage campaign passed 10,000 executions
+with coverage 22, feature count 31 and new corpus growth. Its original source/runtime
+archives, executable, command, inputs, log and manifest are retained under
+`build/coverage-fuzz/evidence/1791903044901295541/`. The existing guest network
+suite remains the real VirtIO/host-forwarding proof layer and will execute in
+required CI on the final PR head. Local external DNS remains unavailable, so no
+new local full-network run is claimed.
+
+N1.1 is checked complete. N1.2–N1.5 and the IPv6/security gates remain open:
+the matrix exposes missing MSS negotiation, secure ISNs, TIME-WAIT, urgent-data
+handling, full RFC RTO/congestion policy and broader wire/owner qualification.
+No ABI/on-disk format changes or Internet-conformance/release promotion result
+from the inventory. N1.1 is outside the frozen kernel/console checklist; that
+separate checklist stays 54/100.
