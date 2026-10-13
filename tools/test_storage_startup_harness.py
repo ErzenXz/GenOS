@@ -8,7 +8,8 @@ from test_storage_startup import PROOFS, WRITE, FAIL_WRITE, checkout_archive, pa
 
 def valid_log():
     early = []
-    for pid, vector, error, cr2 in [(1, 14, 6, 0x40000000b000), (122, 16, 0, 0), (122, 16, 0, 0)]:
+    for pid, vector, error, cr2 in [(1, 14, 6, 0x40000000b000), (122, 16, 0, 0), (122, 16, 0, 0),
+                                    (132, 6, 0, 0), (132, 6, 0, 0)]:
         early.append(f"EXCEPTION_FRAME vector={vector} cpl=3 error=0x{error:x} rip=0x400000001140 cs=0x33 rflags=0x10246 rsp=0x400000010000 ss=0x2b cr2=0x{cr2:x}")
         early.append(f"USER_FAULT_TERMINATED pid={pid} vector={vector} error=0x{error:x} rip=0x400000001140 cr2=0x{cr2:x}")
     return "\n".join([PROOFS[0], *early, *PROOFS[1:]]) + "\n"
@@ -43,6 +44,7 @@ class StorageStartupHarnessTests(unittest.TestCase):
         frame = next(line for line in good.splitlines() if line.startswith("EXCEPTION_FRAME"))
         for bad in [good.replace("cpl=3", "cpl=0", 1), good.replace("vector=14", "vector=13", 1),
                     good.replace("pid=1 ", "pid=2 ", 1), good.replace("rip=0x400000001140", "rip=0x1", 1),
+                    good.replace("pid=132 ", "pid=133 ", 1), good.replace("vector=6 ", "vector=13 ", 1),
                     good.replace(frame + "\n", "", 1), good + frame + "\n",
                     good.replace(frame + "\n", "", 1) + frame + "\n"]:
             with self.subTest(log=bad), self.assertRaises(ValueError):
