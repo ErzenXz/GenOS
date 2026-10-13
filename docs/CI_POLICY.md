@@ -1,6 +1,6 @@
 # Required verification and exact-head execution
 
-The `main` branch requires the seventy-six GitHub Actions checks listed in
+The `main` branch requires the eighty GitHub Actions checks listed in
 [`required-ci-checks.json`](../tools/required-ci-checks.json). Each context is bound
 to GitHub Actions App ID 15368. Required checks use strict base freshness and apply
 to administrators; force pushes and branch deletion are disabled. This policy was
@@ -76,6 +76,8 @@ checks to allow a failing candidate to merge.
 weakening, app binding, head identity, missing/duplicate/skipped execution,
 executed failures, success-mode refusal, and retention without overwrites.
 
-The October 10 draft [PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the
-previously local workflow changes. Its retained strict failures still prevent
-integration; publication and enforcement do not advance the release level.
+The October 10 [PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the
+previously local workflow changes. Its four strict CPU failures now have passing
+execution on the explicit [KVM CPU variant](REFERENCE_VM.md#hardware-cpu-qualification-variant).
+All check names and pass criteria remain required; only those four jobs select
+hardware execution. Publication and enforcement do not advance the release level.

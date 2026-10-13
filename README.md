@@ -138,8 +138,9 @@ before pipelines; scalable recoverable storage comes before trusting editor save
 
 Current work includes scoped proofs, not a stable release. CI workflow publication
 is now authorized and [draft PR #9](https://github.com/ErzenXz/GenOS/pull/9) has remote
-verification results. All seventy-six verification checks are required on `main` under
-the [published policy](docs/CI_POLICY.md); strict CPU failures still block integration.
+verification results. All eighty verification checks are required on `main` under
+the [published policy](docs/CI_POLICY.md). An explicit hardware CPU variant now
+passes the four strict exception/return probes that TCG could not deliver.
 See [current limitations](docs/KNOWN_LIMITATIONS.md), [verification](docs/VERIFICATION.md),
 and the [September 2026 primary-source research](docs/research/README.md).
 
