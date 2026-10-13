@@ -218,3 +218,22 @@ execution through its NX identity alias. Exact CR2/error bits, prior sealing,
 deliberate containment, clean source and retained failed/successful artifacts are
 required. The ordinary six CPU protection cases and full lifecycle suite remain
 required; these new probes do not replace them.
+
+## Loader map rejection qualification
+
+The immutable-source boot harness now has eight loader decoder cases and five
+kernel handoff cases. Run `python3 tools/test_boot_memory.py --loader-admission`
+for the loader group, or `--case loader-capacity` for one case. The new fixtures
+replace only the bounded input bytes/stride of `decode_uefi_map`, after the real
+firmware exit. An exact error check precedes the case-tagged terminal record;
+wrong errors, premature input rejection, missing/duplicate/wrong-case tags,
+wrong rejection phase and kernel initialization fail admission.
+
+The fixed stack fixtures allocate no memory or firmware resources after exit.
+The over-capacity case supplies 257 descriptors to the production 256-entry
+admission path; it must reject rather than truncate. Range, alignment and overlap
+cases exercise the production map validator through the real loader. All thirteen
+cases passed on clean `a2e810e`; source, fixture/image identities, serial logs and
+manifests are in [verification](VERIFICATION.md#october-13-loader-map-rejection-qualification).
+This is distribution VM portability evidence, not exhaustive firmware lifecycle
+or frozen-reference qualification. F1.1 remains open.

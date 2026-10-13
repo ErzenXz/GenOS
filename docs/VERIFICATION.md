@@ -2273,3 +2273,49 @@ original checklist to 53/100 (42/60 foundation entries). Full deferred syscall
 completion/user-copy, device/DMA/reset interleavings, F6.4 fault schedules,
 24/72-hour mixed pressure, independent review and the remaining roadmap gates
 stay open. GenOS remains Experimental.
+
+
+## October 13 loader map rejection qualification
+
+Clean source `a2e810e6b5d93175891aae6aa82411852a688445` extends the immutable-source
+boot-memory harness from six to thirteen cases. Seven new cases replace only
+bounded decoder inputs after the real `ExitBootServices`: descriptor stride and
+length, empty map, 257-descriptor capacity, page-count overflow, alignment and
+overlap. The production decoder/validator and terminal rejection path remain
+unchanged. Each fixture checks the exact `BootMemoryError` before its case-tagged
+record and the normal loader rejection. An early firmware-buffer mismatch takes
+a separate rejected path and cannot emit the expected proof tag.
+
+All eight loader cases passed, without kernel entry or allocator/architecture
+initialization, under `build/boot-memory-evidence/1791892177220255249/`. Each
+retains its fixture patch, environment, image/serial identities and success
+manifest. The five existing kernel handoff cases also passed on the same source:
+
+| Case | Evidence run |
+| --- | --- |
+| count | `1791892374060422659` |
+| overlap | `1791892388109776106` |
+| initrd-usable | `1791892401578991067` |
+| kernel-usable | `1791892415619555649` |
+| cmdline | `1791892430301489234` |
+
+The six harness tests reject missing/duplicated/wrong-case/error/phase evidence,
+verify each fixture keeps the actual exit and decoder without post-exit allocation,
+and inject a first-case timeout to require all later cases plus a failing overall
+result. All 177 Python tests pass. CI's existing loader-version context now runs
+the loader group, with separate retained per-case results; the other five context
+names and required-check policy are unchanged.
+
+This is QEMU 10.0.13/distribution OVMF portability qualification. Synthetic
+post-exit decoder bytes are not firmware map-growth, stale-key retry or
+allocation-failure injection. Those requirements remain open; F1.1 and the
+53/100 checklist count do not advance because of this slice.
+
+Separately, PR #11's source `9ca892072d85a25c24f0463f20a1740c4c02fa9c` passed all
+83 required checks. Complete check-run API readback was matched against the
+versioned contract using `audit_execution(..., require_success=True)`, rejecting
+wrong head/app, missing/duplicate/unexecuted lanes. The report is retained at
+`build/roadmap-evidence/pr11-check-runs.json`. All three workflow runs succeeded,
+including hardware CPU and full network tests. This is remote execution evidence
+for PR #11, not an independent reference-review sign-off or a CI result for the
+later boot-map change.
