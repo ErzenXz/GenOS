@@ -171,6 +171,11 @@ def patch_fixture(root: Path, package: Path, case: str) -> str:
 
 def validate_log(log: str, case: str) -> None:
     _, stage, pages, outcome = CASES[case]
+    proof_lines = {"GenOS kernel entered", "BOOT_MEMORY_MAP_VALIDATED", "GENOS_READY", "BOOTLOADER_PANIC"}
+    for line in log.splitlines(keepends=True):
+        if ("FIRMWARE_" in line or line.startswith("GenOS boot failed:")
+                or line.rstrip("\r\n") in proof_lines) and not line.endswith("\n"):
+            raise ValueError("unterminated firmware proof record")
     lines = log.replace("\r", "").splitlines()
     tagged = [line for line in lines if "FIRMWARE_" in line]
     accepted = (MAP, GROW, EXIT, DENIED, re.compile(r"FIRMWARE_ALLOCATION_ARMED stage=[1-4]"))
@@ -258,8 +263,17 @@ def validate_qmp(messages: list[dict], outcome: str) -> None:
     resumes = [i for i, row in events if row["event"] == "RESUME"]
     if len(resumes) != 1 or replies[0][0] >= resumes[0]:
         raise ValueError("missing or reordered guest start")
-    if any(row["event"] not in ("RESUME", "SHUTDOWN") for _, row in events):
+    if any(row["event"] not in ("RESUME", "SHUTDOWN", "RTC_CHANGE") for _, row in events):
         raise ValueError("unexpected reset/panic/watchdog/paused guest")
+    clocks = [(i, row) for i, row in events if row["event"] == "RTC_CHANGE"]
+    if len(clocks) > 1:
+        raise ValueError("duplicate firmware RTC initialization")
+    for position, row in clocks:
+        data = row.get("data")
+        if (not isinstance(data, dict) or type(data.get("offset")) is not int
+                or not isinstance(data.get("qom-path"), str) or not data["qom-path"].startswith("/machine/")
+                or not resumes[0] < position < len(messages) - 1):
+            raise ValueError("malformed or wrong-phase firmware RTC event")
     shutdowns = [(i, row) for i, row in events if row["event"] == "SHUTDOWN"]
     if outcome in ("running", "panic"):
         if shutdowns or len(replies) != 3 or replies[-1][1].get("id") != STATUS_ID:
@@ -297,7 +311,8 @@ def boot(root: Path, evidence: Path, case: str, timeout: int) -> None:
                 monitor.start(deadline)
                 while time.monotonic() < deadline:
                     log = serial.read_text(errors="replace") if serial.exists() else ""
-                    if outcome in ("running", "panic") and ("GENOS_READY" if outcome == "running" else "BOOTLOADER_PANIC") in log:
+                    marker = ("GENOS_READY" if outcome == "running" else "BOOTLOADER_PANIC") + "\n"
+                    if outcome in ("running", "panic") and marker in log.replace("\r", ""):
                         validate_log(log, case)
                         wire = (json.dumps({"execute": "query-status", "id": STATUS_ID}) + "\n").encode()
                         sent.write(wire); sent.flush(); connection.sendall(wire)

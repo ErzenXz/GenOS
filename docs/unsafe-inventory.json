@@ -473,9 +473,9 @@
       "sha256": "6a50be22f0a4c8bdef64aeca0f8079da451109feb5ec9065cff7098d30bb27d7"
     },
     {
-      "lines": 185,
+      "lines": 195,
       "path": "tools/fixtures/firmware_lifecycle.rs",
-      "sha256": "916bd64751cac70b0caa8420c842d7beeb2c91b3b410c4c741822536f1345d9d"
+      "sha256": "de63a03aabd9ff9f6bda7033908680728e6d09106ed569eb7ceb336a0deaa8dc"
     },
     {
       "lines": 283,
