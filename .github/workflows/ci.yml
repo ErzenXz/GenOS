@@ -341,7 +341,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p build
-          python3 tools/test_boot_memory.py --case "${{ matrix.case }}" 2>&1 | tee build/boot-memory-run.log
+          if [ "${{ matrix.case }}" = loader-version ]; then
+            python3 tools/test_boot_memory.py --loader-admission 2>&1 | tee build/boot-memory-run.log
+          else
+            python3 tools/test_boot_memory.py --case "${{ matrix.case }}" 2>&1 | tee build/boot-memory-run.log
+          fi
       - uses: actions/upload-artifact@v7
         if: always()
         with:
