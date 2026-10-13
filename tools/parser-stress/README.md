@@ -29,7 +29,7 @@ queue limits, shutdown, stale and forged handles, owner isolation, incarnation
 isolation, and teardown. Rejected handles must leave both owners' socket state
 unchanged. Each input executes at most 64 socket commands.
 
-Use `--target elf|native-elf|ipv4|ipv6|udp|tcp|socket` to focus mutation input on one target;
+Use `--target elf|native-elf|ipv4|ipv6|udp|tcp|socket|boot-map|paths|descriptors` to focus mutation input on one target;
 the deterministic initial corpus still runs for all targets. `--target all` is
 the default. `--iterations` accepts 0 through 10,000,000. Seeds accept decimal
 or `0x` hexadecimal values, including zero.
@@ -63,7 +63,8 @@ pattern and received the same correction.
 ## Limits
 
 This is reproducible mutation stress, **not coverage-guided fuzzing**, exhaustive
-verification, a sanitizer campaign, or proof of memory safety. The iteration
+verification, a sanitizer campaign, or proof of memory safety. A separate
+[coverage lane](../coverage-fuzz/README.md) reuses these assertions. The iteration
 count counts mutated inputs, not discovered execution paths. The private DNS,
 partition-discovery, filesystem-snapshot, and boot-validation implementations
 are not exercised here; they still need host-callable production boundaries and

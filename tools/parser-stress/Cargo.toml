@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 kernel = { path = "../../kernel" }
+genos_abi = { path = "../../crates/abi" }
 
 [profile.release]
 overflow-checks = true

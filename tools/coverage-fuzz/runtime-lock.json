@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "upstream": "https://github.com/llvm/llvm-project",
+  "release_tag": "llvmorg-21.1.8",
+  "commit": "2078da43e25a4623cab2d0d60decddf709aaea28",
+  "source_directory": "compiler-rt/lib/fuzzer",
+  "license_path": "compiler-rt/LICENSE.TXT",
+  "files": [
+    {
+      "name": "FuzzerBuiltins.h",
+      "sha256": "766b0c57707d1ec953034a852b152b3f0daa35ee705bed8952b501705f0799cf"
+    },
+    {
+      "name": "FuzzerBuiltinsMsvc.h",
+      "sha256": "e1af98f02bd5aa07c90ef761ae2a04d8c8119ceedf221f0bc4d535c65c091e00"
+    },
+    {
+      "name": "FuzzerCommand.h",
+      "sha256": "dcebaec18fc8d3040974748e47294d4e86972eebcc42e75380f9ce39e959e485"
+    },
+    {
+      "name": "FuzzerCorpus.h",
+      "sha256": "d534bab9a22b14b4fe6eb1bf807649644a06262876a29a348fa345474a70d3ff"
+    },
+    {
+      "name": "FuzzerCrossOver.cpp",
+      "sha256": "5bf910d4c8aea8a888eebddfb68250e521d0aba30c9f22bedc8624bcb3cd30c6"
+    },
+    {
+      "name": "FuzzerDataFlowTrace.cpp",
+      "sha256": "22996430dba1be545504e552eca11ad26bccf5b69ec95679316c08d0a258c828"
+    },
+    {
+      "name": "FuzzerDataFlowTrace.h",
+      "sha256": "8398d7a7370fc908ea13c9e683a081c8c9835337e758a4cb717f3998088bf175"
+    },
+    {
+      "name": "FuzzerDefs.h",
+      "sha256": "2117821633a53c435a40aad1b4fb13598b3c755b2cd34f1eef8b3529d551aab8"
+    },
+    {
+      "name": "FuzzerDictionary.h",
+      "sha256": "8cec4d9cacd1d23d0b08b6629b913c88cbeaf067b056b8d366e429abab0b7ead"
+    },
+    {
+      "name": "FuzzerDriver.cpp",
+      "sha256": "d441f74a14dceb78809f3da0eb0bbd78bad00e08feae55f4f1812d56b38c6c65"
+    },
+    {
+      "name": "FuzzerExtFunctions.def",
+      "sha256": "679fa9342b62966b48d78e39fbcbbfe9f7d1048c8d2083469a5630298ea0c796"
+    },
+    {
+      "name": "FuzzerExtFunctions.h",
+      "sha256": "f8c5e034004e5c4dc2adf4ad5053f93614802f3489b0510ae4bf447bfa3e480b"
+    },
+    {
+      "name": "FuzzerExtFunctionsDlsym.cpp",
+      "sha256": "1f778d077c895651956fe8923f2f7601395d5c5cfd1d5bce0054db5a77a7e0fc"
+    },
+    {
+      "name": "FuzzerExtFunctionsWeak.cpp",
+      "sha256": "2decf5d7713268ba720101c2387e31147a69e3ed0d3918cbe02aa5d8b80c94f2"
+    },
+    {
+      "name": "FuzzerExtFunctionsWindows.cpp",
+      "sha256": "7237190be7e0f17dd88e8651bbac65dc3d91eecde5cf8873e8e7a7f769d05788"
+    },
+    {
+      "name": "FuzzerExtraCounters.cpp",
+      "sha256": "bb7aa6b0319a2756a146ae2f8b8b4be78a1942e7b67cdaec727c6d3b978dccc5"
+    },
+    {
+      "name": "FuzzerExtraCountersDarwin.cpp",
+      "sha256": "ad2e4ba43dbbc5b584771d4fc4df013498a8c8b28c4db7b4263e7b7b46aa6539"
+    },
+    {
+      "name": "FuzzerExtraCountersWindows.cpp",
+      "sha256": "e4e6bca52b76046676f0d8db6305f649a525cc3812bfb0fcf1410d5b837f801c"
+    },
+    {
+      "name": "FuzzerFlags.def",
+      "sha256": "bdb4d32ceb4829f6607d1235a23669c4fb763842fbdb33ddc25077366917d161"
+    },
+    {
+      "name": "FuzzerFork.cpp",
+      "sha256": "f4c53e469aefef482f0614cf59a0b818e77cfacc4c4f43b80f58cb3c61ab39d2"
+    },
+    {
+      "name": "FuzzerFork.h",
+      "sha256": "94c5a6ceedd1922784999a7e36a08c7d044425b4b5c5c04602d570b6e094764a"
+    },
+    {
+      "name": "FuzzerIO.cpp",
+      "sha256": "ab62b3b4c2af6ca8126deed6481f3edb55d69e95007c761ed5797d2bc8d30814"
+    },
+    {
+      "name": "FuzzerIO.h",
+      "sha256": "872b100d87f28ef136eed1f19e1f2435ee625223e5ab6fc7ca132418301513d7"
+    },
+    {
+      "name": "FuzzerIOPosix.cpp",
+      "sha256": "6ab501ca1d35a731542ac01bf0ab28d27f13d393fd221f16641829060fb44dbd"
+    },
+    {
+      "name": "FuzzerIOWindows.cpp",
+      "sha256": "464a596346443ec5b3abe55080a8efc4ef07cab4dd834cbe02bba64d16559a31"
+    },
+    {
+      "name": "FuzzerInterceptors.cpp",
+      "sha256": "9f6a427e5eb498416a969dcffa65e53205615e0a69cb115227f46fd437b36b66"
+    },
+    {
+      "name": "FuzzerInterface.h",
+      "sha256": "79d35cc74761177495f1c9490f86cc394895c51d10442f7ba8fd3658d34d1f46"
+    },
+    {
+      "name": "FuzzerInternal.h",
+      "sha256": "12a6a94d51e34096f165babe341354ba5e3831a3bfb384c67c048e4d361d1734"
+    },
+    {
+      "name": "FuzzerLoop.cpp",
+      "sha256": "464afa54a29b9f782b959ae3352b5d552c6ea1473023df55c35696440a958256"
+    },
+    {
+      "name": "FuzzerMain.cpp",
+      "sha256": "273d432cac2fb564ca05760ee776503e26bfa35d0f06f263a4fb2493ad1d58be"
+    },
+    {
+      "name": "FuzzerMerge.cpp",
+      "sha256": "4866a3a40c17772dcc02bdbe985c8bb9e4a780b03dd2278e56d5bb20f6e8b4ae"
+    },
+    {
+      "name": "FuzzerMerge.h",
+      "sha256": "957b1fd91416eec6f66fb5da0306b13bd91934582e9bd2ece77af4e6f05d599b"
+    },
+    {
+      "name": "FuzzerMutate.cpp",
+      "sha256": "508c8c36fe2d1dae1788c02cf06a23a3ba96e7385c524e84bcea97456de73d04"
+    },
+    {
+      "name": "FuzzerMutate.h",
+      "sha256": "5355d2d89d3ae68e829d16d358c8e65c11c842ab4c3b17baed8ef2c7053a2a4b"
+    },
+    {
+      "name": "FuzzerOptions.h",
+      "sha256": "7f6c002fcba533f5ae24d04c3240d6c8c89c072999d1f0bf48eb19591e58b8cf"
+    },
+    {
+      "name": "FuzzerPlatform.h",
+      "sha256": "2d76795e56398779dcde4d3bcd85d835141ab471eab2c46fcc70a33f82a75094"
+    },
+    {
+      "name": "FuzzerRandom.h",
+      "sha256": "9648af77dae937ac37f8cc0be5df500c8259b9220ef4ae3be84c9e5706296186"
+    },
+    {
+      "name": "FuzzerSHA1.cpp",
+      "sha256": "18296f57c7342d6952d37266031b60036220645db8dbb0c70f6b1e602c97150f"
+    },
+    {
+      "name": "FuzzerSHA1.h",
+      "sha256": "29334b9aca30a5a51bcd0f8f958ac6bbabd5984235bf53bca24eac87bedc5fe8"
+    },
+    {
+      "name": "FuzzerTracePC.cpp",
+      "sha256": "d62d00a40d690a0b2eb66c2c9b9ff20ac845dcc9d68fa0fdc0239e6f47a74d96"
+    },
+    {
+      "name": "FuzzerTracePC.h",
+      "sha256": "f076d558a97ff07e9f782ea3b74d7b1f8e4c944155b55ea5465cf24bf6a95bd1"
+    },
+    {
+      "name": "FuzzerUtil.cpp",
+      "sha256": "cf0e9217539c77117a739e47e9e9f35e43141db291ab6167deae365b3ef496be"
+    },
+    {
+      "name": "FuzzerUtil.h",
+      "sha256": "e2efd3959787d1c21780881b3c6c318cd84626fa55bae3841e56b3b9846770d2"
+    },
+    {
+      "name": "FuzzerUtilDarwin.cpp",
+      "sha256": "a47741b0a0aa90b3232eb955cacbb9340f79301a82709ea8249cc1888b762f01"
+    },
+    {
+      "name": "FuzzerUtilFuchsia.cpp",
+      "sha256": "f10fd71767084dc68320fbb003bf553c4479fce280b612c59b404eb7fec99491"
+    },
+    {
+      "name": "FuzzerUtilLinux.cpp",
+      "sha256": "5885dd9462a62d09e9cf5c627b68d80b53a694d0f69e380d607058a13fa1a4ec"
+    },
+    {
+      "name": "FuzzerUtilPosix.cpp",
+      "sha256": "7428e637aa21f46319e61c971f83ef36d94b00b3efd81cf233ebb5ef3874c230"
+    },
+    {
+      "name": "FuzzerUtilWindows.cpp",
+      "sha256": "1986d2f90a8989ec095c27a7a2af0921062421fc13915e47fb8bf8a5d0502bfc"
+    },
+    {
+      "name": "FuzzerValueBitMap.h",
+      "sha256": "785a4131a3ff36c455469375092a87efc165eb926b53dad9851b53cc034a09e9"
+    },
+    {
+      "name": "LICENSE.TXT",
+      "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+    },
+    {
+      "name": "build.sh",
+      "sha256": "caf4aeec34fc19b141e797861f9c1022d9267858e2dda86133a91d211933f642"
+    }
+  ]
+}
