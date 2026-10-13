@@ -2134,3 +2134,67 @@ contract and enforced branch policy under
 `build/ci-policy-evidence/818a5b1-hardware-cpu-green/`. No required check or
 administrator-enforcement setting was removed. A later documentation head
 still needs its own required execution before merge.
+
+## October 13 monotonic clock and immutable coverage campaigns
+
+PR #9 merged at `be6b221ada834de69cd0ccc2942d0dbc3908e705` after the live
+success audit verified all eighty required checks on publication head
+`ab1b2fe8f2adc58aefd7f751ad33036971946ac8`. The merged tree matched the reviewed
+tree exactly. F0.1 is now integrated; the original console checklist advances
+from 51/100 to 52/100 without changing its denominator. Independent reference
+acquisition/reproduction and the remaining foundation gates stay open.
+
+Clean source `0da9e7cefab8e1c7af33e37f4197ddae1cbea9c3` fixes a concrete timer
+regression: separate fallback and hardware counters selected a smaller value
+when the first delayed PIT interrupt arrived. The retained old-main fixture at
+`build/tick-clock-evidence/1791887746836183000/` reports `before=3 first=1 final=3`
+and `monotonic=0`; it remains a failed manifest. The same observation on corrected
+source at `build/tick-clock-evidence/1791887746836058000/` reports
+`before=3 first=4 final=6`, three real IRQs and all monotonic/fallback/IF flags
+equal to one. QMP confirms a running guest after the fixture halts.
+Historical replay adds only the missing raw-counter getter; it does not change
+the old clock policy. New clock callbacks retire their scoped borrow before
+scheduling and before caller IF restoration. No new unsafe block or Send/Sync
+implementation was introduced; the reviewed lexical inventory stays at 407
+sites across 113 sources.
+
+The coverage runner previously compiled every cached C++ file despite verifying
+only locked entries, and reused/overwrote per-target evidence. It now rejects
+unexpected files and symlinks, compiles the explicit locked list, fingerprints
+the build recipe, serializes runtime-cache updates, and copies the runtime into
+each campaign. Rust builds from a retained clean-source archive into private
+output; the executed binary is copied into that campaign. Fresh corpora and
+recorded nonzero seeds replace implicit mutable corpus reuse. Source revision,
+tree/archive, runtime lock/archive, executable, input and output identities are
+retained with hashes. Download/build failures and partial timeout logs keep
+their own failed manifests instead of overwriting prior results.
+
+The new handle target executes up to 64 fixed records against two production
+registries and independent models, checking exact kinds/rights, zero/duplicate
+and full-table refusal, revocation, clear and owner isolation. It does not mint
+or claim generation guarantees for externally supplied numeric values.
+On clean `0da9e7c`, fresh 10,000-case campaigns passed for ELF (58 new corpus
+units) and handles (272 new units, 174 coverage counters/694 features), with
+all retained hashes checked. Evidence is under
+`build/coverage-fuzz/evidence/1791887849514870000/` and
+`build/coverage-fuzz/evidence/1791887746690413000/` respectively.
+
+Validation also passed 376 workspace unit tests, 13 compile-fail doctests, seven
+parser harness tests, 173 Python tests, strict kernel/harness lint, and a
+100,000-mutation all-target parser run at seed zero. Pinned strict-provenance
+Miri passed all 136 selected tests plus native allocator stress under
+`build/pure-rust-evidence/1791887849602475000/`. The clock scope adds five
+interpreted tests; it does not interpret CLI/PIT/IRQ execution.
+
+The new Linux timer and both coverage jobs pass. Required enforcement now adds
+those three contexts for a total of 83, with every unrelated protection field
+preserved in `build/ci-policy-evidence/clock-coverage-enforcement/`. The final
+publication head requires its own complete remote execution. This slice does
+not close all F4/F5 ownership, remaining F6.2 targets, masked-latency bounds or
+sustained/independent qualification, and GenOS remains Experimental.
+
+All **83 required checks passed** on `0da9e7c`, including the complete system
+suite and the new timer/coverage jobs. The live success audit reports
+`required=83 executed=83 failed=0`, retained under
+`build/ci-policy-evidence/0da9e7c-clock-coverage-green/`. The subsequent
+documentation head still requires its own checks before integration.

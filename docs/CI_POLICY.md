@@ -1,6 +1,6 @@
 # Required verification and exact-head execution
 
-The `main` branch requires the eighty GitHub Actions checks listed in
+The `main` branch requires the eighty-three GitHub Actions checks listed in
 [`required-ci-checks.json`](../tools/required-ci-checks.json). Each context is bound
 to GitHub Actions App ID 15368. Required checks use strict base freshness and apply
 to administrators; force pushes and branch deletion are disabled. This policy was
@@ -10,7 +10,7 @@ separate roadmap requirements.
 
 The contract covers the CI, exception-entry and foundation-containment workflows:
 host/static/release/documentation/unsafe checks, parser seeds, normal boots,
-single-core and boot-memory admission, twelve user/kernel exceptions, and forty-six
+single-core and boot-memory admission, twelve user/kernel exceptions, and fifty-one
 foundation fixtures, including scoped current-process borrow reentry and a
 fresh-volume write failure through the production quarantine and shell, plus a
 falsified post-CR3 observation through the production CPU-local gate, and real
@@ -76,8 +76,15 @@ checks to allow a failing candidate to merge.
 weakening, app binding, head identity, missing/duplicate/skipped execution,
 executed failures, success-mode refusal, and retention without overwrites.
 
-The October 10 [PR #9](https://github.com/ErzenXz/GenOS/pull/9) publishes the
+The October 10 [PR #9](https://github.com/ErzenXz/GenOS/pull/9) integrated the
 previously local workflow changes. Its four strict CPU failures now have passing
 execution on the explicit [KVM CPU variant](REFERENCE_VM.md#hardware-cpu-qualification-variant).
 All check names and pass criteria remain required; only those four jobs select
 hardware execution. Publication and enforcement do not advance the release level.
+
+The timer-transition fixture and two coverage-feedback jobs add three required
+contexts. Coverage builds only locked runtime sources, executes an archived clean
+source tree, and requires exact completed statistics and corpus discovery.
+Their manifests retain source/runtime/binary/input identities and failure logs.
+The policy readback preserves all other protection fields, including strict
+freshness and administrator enforcement.
