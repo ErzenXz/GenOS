@@ -23,6 +23,7 @@ import time
 
 from test_exception_entry import FRAME, firmware_path, replace_once, require_clean_source
 from reference_vm import environment
+from test_integer_context import MARKERS as INTEGER_PROOFS
 
 WRITE = """    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {
         ata_write_sector(self, lba, data)
@@ -34,6 +35,7 @@ FAIL_WRITE = """    fn write(&mut self, lba: u32, data: &[u8; SECTOR_BYTES]) -> 
     }"""
 PROOFS = [
     "BOOT_MODE validation",
+    *INTEGER_PROOFS,
     "STORAGE_CREATE_WRITE_FAILURE_ARMED",
     "PERSISTENT_STORAGE_QUARANTINED outcome=not-published",
     "PERSISTENT_STORAGE_UNAVAILABLE",
@@ -58,12 +60,13 @@ def patch_fixture(root: Path) -> str:
 def validate_initial_faults(lines: list[str]) -> None:
     frames = [(index, FRAME.fullmatch(line)) for index, line in enumerate(lines) if "EXCEPTION_FRAME" in line]
     terminated = [(index, line) for index, line in enumerate(lines) if "USER_FAULT_TERMINATED" in line]
-    if len(frames) != 3 or len(terminated) != 3:
-        raise ValueError("validation boot must have exactly its three deliberate CPU faults")
+    if len(frames) != 5 or len(terminated) != 5:
+        raise ValueError("validation boot must have exactly its five deliberate CPU faults")
     armed = lines.index("STORAGE_CREATE_WRITE_FAILURE_ARMED")
     previous = -1
     for (frame_index, match), (exit_index, record), (pid, vector, error, cr2) in zip(
-        frames, terminated, [(1, 14, 6, 0x40000000b000), (122, 16, 0, 0), (122, 16, 0, 0)]
+        frames, terminated, [(1, 14, 6, 0x40000000b000), (122, 16, 0, 0), (122, 16, 0, 0),
+                             (132, 6, 0, 0), (132, 6, 0, 0)]
     ):
         if match is None:
             raise ValueError("malformed CPU validation frame")
@@ -77,6 +80,8 @@ def validate_initial_faults(lines: list[str]) -> None:
             raise ValueError("CPU validation fault outside native code/stack")
         if not previous < frame_index < exit_index < armed:
             raise ValueError("CPU validation fault duplicated, reordered or after storage injection")
+        if pid == 132 and not exit_index < lines.index(INTEGER_PROOFS[0]):
+            raise ValueError("integer fault after integer proof")
         previous = exit_index
 
 
