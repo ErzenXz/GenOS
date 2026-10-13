@@ -88,7 +88,23 @@ pub(super) fn run() -> bool {
                         passed &= matches!(process.context.rcx, 0..=2 | u64::MAX)
                             || process.context.rcx == u64::MAX - 1;
                         expected[13] = process.context.rcx;
-                        passed &= oracle::frame_words(&process.context) == expected
+                        let actual = oracle::frame_words(&process.context);
+                        if actual != expected {
+                            for (index, (actual, expected)) in
+                                actual.iter().zip(expected).enumerate()
+                            {
+                                if *actual != expected {
+                                    crate::serial::print("USER_INTEGER_CAPTURE_MISMATCH word=");
+                                    crate::serial::print_u64(index as u64);
+                                    crate::serial::print(" actual=0x");
+                                    crate::serial::print_hex(*actual);
+                                    crate::serial::print(" expected=0x");
+                                    crate::serial::print_hex(expected);
+                                    crate::serial::println("");
+                                }
+                            }
+                        }
+                        passed &= actual == expected
                             && process.context.cs
                                 == u64::from(kernel::cpu_context::USER_CODE_SELECTOR)
                             && process.context.ss == u64::from(kernel::segments::USER_DATA);

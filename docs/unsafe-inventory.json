@@ -213,9 +213,9 @@
       "sha256": "2d7e6e528f2dc3676e9812f7cc5e20cac044d759a8114e49a8c2393f58fd1aab"
     },
     {
-      "lines": 182,
+      "lines": 198,
       "path": "kernel/src/integer_probe.rs",
-      "sha256": "63b7a628ca3633391551d8fd9c6e457f6fe284c1cae2227b2ee938ab29d6809f"
+      "sha256": "1a0329857aec9c5f53cf727a9ad365df553d29f7f2144c8c5d8562205076a566"
     },
     {
       "lines": 138,
