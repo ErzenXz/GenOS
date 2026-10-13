@@ -85,3 +85,27 @@ INIT and shell registration both validate admission before publishing. Each
 launch still builds its own validated plan and inactive root. No paging, scheduler,
 mutable process or executable authority is granted by the publication interface.
 See [the ownership contract](CPU_LOCAL.md#immutable-boot-images).
+
+## Host-callable wire and storage codecs
+
+`kernel::storage_format` owns the existing bounded GFS2 partition and snapshot
+admission, encoding, checksum and transactional RAM mount implementation.
+`storage` retains device discovery, the write-back cache, commit/flush order,
+quarantine and coordinator ownership. The shared codec neither issues I/O nor
+authorizes disk writes. Its external entry decoder rejects overflow and bounds
+outside the fixed slot before indexing. Disk and snapshot versions are unchanged.
+
+`kernel::dhcp` owns the existing DHCP wire codec. `network` calls it after its
+Ethernet/IP/UDP admission and retains device, route and transaction state.
+`kernel::net::is_icmp_echo_reply` is the existing bounded probe predicate;
+peer/protocol checks still belong to the network coordinator.
+
+`genos_shell::dns` owns the validation probe's A-record decoder. It now rejects
+error/truncated/non-query replies, a wrong IN A question, invalid compression
+references and names longer than 255 expanded bytes. Traversal is bounded to
+128 steps, so cycles cannot loop. It does not supply a general resolver or
+trusted response authentication. The probe remains validation-only in the shell.
+
+The standalone parser/coverage harness calls these production seams and the
+existing scalar syscall and endpoint modules. Harness maps, queues and allocation
+remain host-only; they grant no userspace memory or hardware authority.

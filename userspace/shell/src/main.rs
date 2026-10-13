@@ -873,61 +873,7 @@ fn prove_network(console: u64) -> bool {
 }
 
 #[cfg(feature = "validation-boot")]
-fn dns_first_a(response: &[u8]) -> Option<u32> {
-    if response.len() < 12
-        || response[0..2] != [0x47, 0x45]
-        || response[2] & 0x80 == 0
-        || u16::from_be_bytes([response[4], response[5]]) != 1
-    {
-        return None;
-    }
-    let answers = u16::from_be_bytes([response[6], response[7]]);
-    let mut cursor = skip_dns_name(response, 12)?.checked_add(4)?;
-    for _ in 0..answers {
-        cursor = skip_dns_name(response, cursor)?;
-        let header_end = cursor
-            .checked_add(10)
-            .filter(|end| *end <= response.len())?;
-        let kind = u16::from_be_bytes([response[cursor], response[cursor + 1]]);
-        let class = u16::from_be_bytes([response[cursor + 2], response[cursor + 3]]);
-        let data_len = usize::from(u16::from_be_bytes([
-            response[cursor + 8],
-            response[cursor + 9],
-        ]));
-        let data_end = header_end
-            .checked_add(data_len)
-            .filter(|end| *end <= response.len())?;
-        if kind == 1 && class == 1 && data_len == 4 {
-            return Some(u32::from_be_bytes(
-                response[header_end..data_end].try_into().ok()?,
-            ));
-        }
-        cursor = data_end;
-    }
-    None
-}
-
-#[cfg(feature = "validation-boot")]
-fn skip_dns_name(packet: &[u8], mut cursor: usize) -> Option<usize> {
-    for _ in 0..128 {
-        let length = *packet.get(cursor)?;
-        cursor += 1;
-        if length == 0 {
-            return Some(cursor);
-        }
-        if length & 0xc0 == 0xc0 {
-            packet.get(cursor)?;
-            return Some(cursor + 1);
-        }
-        if length & 0xc0 != 0 || length > 63 {
-            return None;
-        }
-        cursor = cursor
-            .checked_add(length as usize)
-            .filter(|end| *end <= packet.len())?;
-    }
-    None
-}
+use genos_shell::dns::first_a as dns_first_a;
 
 #[cfg(feature = "validation-boot")]
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {

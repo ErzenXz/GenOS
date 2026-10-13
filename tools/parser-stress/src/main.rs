@@ -1,25 +1,10 @@
 //! Deterministic host stress harness against the production kernel library.
 //! This is bounded mutation testing, not a coverage-guided fuzzer or safety proof.
-use genos_parser_stress::exercise;
+use genos_parser_stress::{exercise, TARGETS};
 use std::{env, fs, path::PathBuf, process};
 
 const DEFAULT_SEED: u64 = 0x0047_454e_4f53;
 const MAX_INPUT: usize = 65_536;
-const TARGETS: &[&str] = &[
-    "all",
-    "elf",
-    "native-elf",
-    "ipv4",
-    "ipv6",
-    "udp",
-    "tcp",
-    "socket",
-    "boot-map",
-    "paths",
-    "descriptors",
-    "handles",
-];
-
 struct Random(u64);
 impl Random {
     fn next(&mut self) -> u64 {
@@ -282,6 +267,120 @@ fn run() -> Result<(), String> {
             "socket",
             true,
             include_bytes!("../corpus/socket-lifecycle.bin"),
+        ),
+        (
+            "partition-valid",
+            "partition",
+            true,
+            include_bytes!("../corpus/partition-valid.bin"),
+        ),
+        (
+            "partition-overflow",
+            "partition",
+            false,
+            include_bytes!("../corpus/partition-overflow.bin"),
+        ),
+        (
+            "partition-short",
+            "partition",
+            false,
+            include_bytes!("../corpus/partition-short.bin"),
+        ),
+        (
+            "snapshot-valid",
+            "snapshot",
+            true,
+            include_bytes!("../corpus/snapshot-valid.bin"),
+        ),
+        (
+            "snapshot-checksum",
+            "snapshot",
+            false,
+            include_bytes!("../corpus/snapshot-checksum.bin"),
+        ),
+        (
+            "snapshot-path",
+            "snapshot",
+            false,
+            include_bytes!("../corpus/snapshot-path.bin"),
+        ),
+        (
+            "dhcp-valid",
+            "dhcp",
+            true,
+            include_bytes!("../corpus/dhcp-valid.bin"),
+        ),
+        (
+            "dhcp-truncated-option",
+            "dhcp",
+            false,
+            include_bytes!("../corpus/dhcp-truncated-option.bin"),
+        ),
+        (
+            "dns-valid",
+            "dns",
+            true,
+            include_bytes!("../corpus/dns-valid.bin"),
+        ),
+        (
+            "dns-truncated",
+            "dns",
+            false,
+            include_bytes!("../corpus/dns-truncated.bin"),
+        ),
+        (
+            "arp-valid",
+            "arp",
+            true,
+            include_bytes!("../corpus/arp-valid.bin"),
+        ),
+        (
+            "icmp-valid",
+            "icmp",
+            true,
+            include_bytes!("../corpus/icmp-valid.bin"),
+        ),
+        (
+            "syscalls-sequence",
+            "syscalls",
+            true,
+            include_bytes!("../corpus/syscalls-sequence.bin"),
+        ),
+        (
+            "endpoints-sequence",
+            "endpoints",
+            true,
+            include_bytes!("../corpus/endpoints-sequence.bin"),
+        ),
+        (
+            "dns-error",
+            "dns",
+            false,
+            include_bytes!("../corpus/dns-error.bin"),
+        ),
+        (
+            "dns-truncated-flag",
+            "dns",
+            false,
+            include_bytes!("../corpus/dns-truncated-flag.bin"),
+        ),
+        (
+            "dns-forward-pointer",
+            "dns",
+            false,
+            include_bytes!("../corpus/dns-forward-pointer.bin"),
+        ),
+        (
+            "dns-self-pointer",
+            "dns",
+            false,
+            include_bytes!("../corpus/dns-self-pointer.bin"),
+        ),
+        (
+            "dns-wrong-question",
+            "dns",
+            false,
+            include_bytes!("../corpus/dns-wrong-question.bin"),
         ),
     ];
     let mut truncations = 0;

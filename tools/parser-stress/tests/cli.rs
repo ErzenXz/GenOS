@@ -13,7 +13,7 @@ fn retained_corpus_and_truncations_pass() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("corpus=14 truncations=17109 mutations=0")
+        String::from_utf8_lossy(&output.stdout).contains("corpus=33 truncations=85037 mutations=0")
     );
 }
 

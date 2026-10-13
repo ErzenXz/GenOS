@@ -108,6 +108,11 @@
       "sha256": "7b75c0fc98361bf6de403bc44654931cc441be962204e90d5b71fd77b33b6212"
     },
     {
+      "lines": 102,
+      "path": "kernel/src/dhcp.rs",
+      "sha256": "1b0e63dea9eac5094f9c53ceeeef640e1a55cb568f265823cb87cea164c8b24c"
+    },
+    {
       "lines": 79,
       "path": "kernel/src/diagnostic_counter.rs",
       "sha256": "39a31af52831e4a161875a6fb3ee929dafc8ee672f85b9c9659efda443325b04"
@@ -228,9 +233,9 @@
       "sha256": "de208b2f6116d487e6c2a2b91416cf6b9b29689096b9a163dc482edeebbb17ba"
     },
     {
-      "lines": 95,
+      "lines": 97,
       "path": "kernel/src/lib.rs",
-      "sha256": "4a40567dc002a6722f24341915a765513f7090498ff13fc667dea898940bac88"
+      "sha256": "60a029d1e9ddd29c08802f7526b395b6cc21e45a24fb047404770485fab49944"
     },
     {
       "lines": 292,
@@ -253,14 +258,14 @@
       "sha256": "ff89f0c928e0586a948b6aa23fc7eebb3e40ab1b9b8a1172db14f3748df4efaf"
     },
     {
-      "lines": 348,
+      "lines": 353,
       "path": "kernel/src/net.rs",
-      "sha256": "8ad459ff0711df7e8462db22fddeb1107b904f8d57404966d1c7f6f0ae2e7a4d"
+      "sha256": "6cfdb882677a294f02247e9af53d2b5ed463261fc6fd25d8af283badfbf41367"
     },
     {
-      "lines": 2866,
+      "lines": 2763,
       "path": "kernel/src/network.rs",
-      "sha256": "0a97f40bef7e800a400961603c77b8e4d068dc30d87c6dde943c69445f0705ab"
+      "sha256": "c60a072cdd5e4385750a85b056d4c520ff1e5a236dcf12394fa2a34fb690381a"
     },
     {
       "lines": 1479,
@@ -388,9 +393,14 @@
       "sha256": "c18a18eb2576c3e004154e216ab6c40545b455f7b0b2ba3954e27870571d4694"
     },
     {
-      "lines": 1159,
+      "lines": 903,
       "path": "kernel/src/storage.rs",
-      "sha256": "23e3f4f37cc4cbc0ba4d6cec98f864dc07afa148fbe245afcc2a06e731f98353"
+      "sha256": "8372f8d4f9364ef624be9fd425705203c2163258fb5c6d27dac15078b02a344a"
+    },
+    {
+      "lines": 281,
+      "path": "kernel/src/storage_format.rs",
+      "sha256": "0b7ffffc84f909d2e2f0b8f18a77e4262c1d172ccec0752e7a6be8e122f62c3d"
     },
     {
       "lines": 968,
@@ -478,24 +488,44 @@
       "sha256": "aab99bd600607356ab9e718b36d2ef0aab46729327ef3813c88bc114827137b5"
     },
     {
-      "lines": 491,
+      "lines": 533,
       "path": "tools/parser-stress/src/lib.rs",
-      "sha256": "ffce26afd6d8776fbdeae2dc4542bccd485adf142381f22d9d8a3b3fbc61bab2"
+      "sha256": "cba1299cbfcb968864cc1cb4f3a4b7de3535c3d7fff9f688c9cca24b08fb577e"
     },
     {
-      "lines": 309,
+      "lines": 408,
       "path": "tools/parser-stress/src/main.rs",
-      "sha256": "e2f27d429358ba110d82aab5f01b7718bf108d9d8ebe70a53b06ead22011926b"
+      "sha256": "79dcbeeba446bf025214cb165d86d5acfe998c8b0ad4f13680fc1cb5aa68b35c"
+    },
+    {
+      "lines": 81,
+      "path": "tools/parser-stress/src/protocols.rs",
+      "sha256": "354e1f7813e7ece9880eaa06fe60ccdedf9115951402cae66336e47dc1cb6bf8"
+    },
+    {
+      "lines": 223,
+      "path": "tools/parser-stress/src/requests.rs",
+      "sha256": "8c6c21d4b20c488a06ee18758b8a8c7cc12fb98c06f7e8d97ae811c3bd7ee165"
+    },
+    {
+      "lines": 94,
+      "path": "tools/parser-stress/src/storage.rs",
+      "sha256": "683f754a1de85c1fb8c471bcc9717722a2492983f55dc1f490c622ca82ac84bc"
     },
     {
       "lines": 75,
       "path": "tools/parser-stress/tests/cli.rs",
-      "sha256": "62521c3d3274ed77af59b42afb7c97ab32f184a8a220f35ce1aaf19148be839a"
+      "sha256": "2cfebf90a4edb045be4173e5fe4b1504a99274bb77a3838731073df90bfad556"
     },
     {
       "lines": 85,
       "path": "tools/parser-stress/tests/handles.rs",
       "sha256": "b2b043c4837def1f4aeb1b9c46925bb9490cc9083eddb726c77b8bc9ece02941"
+    },
+    {
+      "lines": 122,
+      "path": "tools/parser-stress/tests/surfaces.rs",
+      "sha256": "f84e8be720bfda5136d3952b60f626b232bc55265949eb4b3b1b63033679c461"
     },
     {
       "lines": 104,
@@ -553,19 +583,29 @@
       "sha256": "aa1f09d0ebb535abf8b7ca3276671967e61e20d5974489b0f24f1d12f8b06110"
     },
     {
+      "lines": 82,
+      "path": "userspace/shell/src/dns.rs",
+      "sha256": "613d4d63d2246f9bc76d6828a15fcf2894fcc76eb227737e05121a22a5406611"
+    },
+    {
+      "lines": 56,
+      "path": "userspace/shell/src/dns_tests.rs",
+      "sha256": "31029f6a534b0fbc9ed7d00d468054116e50d68722df43d8d50e48c94f1b78ed"
+    },
+    {
       "lines": 263,
       "path": "userspace/shell/src/editor.rs",
       "sha256": "95f0cb646f18c0c8f8e82acc8547af3528901ccb37152dedd8e51129e9e86682"
     },
     {
-      "lines": 8,
+      "lines": 9,
       "path": "userspace/shell/src/lib.rs",
-      "sha256": "6649a5e3ba1ca57bdc77a9a8cb400c7e70ff22cbd19ce8c8fd2c36d965048cee"
+      "sha256": "c69ce621b96dbadce19f01cf29ab7c9d31033c4ffdd31a783cecf188cd73c075"
     },
     {
-      "lines": 1691,
+      "lines": 1637,
       "path": "userspace/shell/src/main.rs",
-      "sha256": "534cf733638c2a282ba7752dc7e207d1a166cd6cecfaeaf0f98cf75f7c15a17f"
+      "sha256": "3dc0a11ad79c888e228506819e5fc5e417db98b0c0dfa914adde7e5d18ead198"
     },
     {
       "lines": 117,
@@ -1946,60 +1986,60 @@
       "column": 9,
       "construct_sha256": "c310339d010c2c279dec79e3d8bdc635ba9247882638991d300a61bbe205ffc0",
       "context": "    pub fn halt_loop() -> ! {\n        panic!(\"unexpected privileged halt in host test\")\n    }\n    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {",
-      "context_start_line": 66,
-      "end_line": 71,
+      "context_start_line": 68,
+      "end_line": 73,
       "kind": "unsafe_fn",
-      "line": 69,
+      "line": 71,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "17c7b12b790576fd937eb7f726ddfd58cd1f981940ec1fb7386e9d0084b8af7f",
       "context": "    pub unsafe fn inb(_: u16) -> u8 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {",
-      "context_start_line": 69,
-      "end_line": 74,
+      "context_start_line": 71,
+      "end_line": 76,
       "kind": "unsafe_fn",
-      "line": 72,
+      "line": 74,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "3f568f289ddbf53aced0e01a8c08b8663d90f40db51a5e1be26743d1cdb1909d",
       "context": "    pub unsafe fn inw(_: u16) -> u16 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {",
-      "context_start_line": 72,
-      "end_line": 77,
+      "context_start_line": 74,
+      "end_line": 79,
       "kind": "unsafe_fn",
-      "line": 75,
+      "line": 77,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "00dea65152448b96d0d5ddf452abeaf12431daf027379b4aebfe7ac7e715a65b",
       "context": "    pub unsafe fn inl(_: u16) -> u32 {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {",
-      "context_start_line": 75,
-      "end_line": 80,
+      "context_start_line": 77,
+      "end_line": 82,
       "kind": "unsafe_fn",
-      "line": 78,
+      "line": 80,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "1a6c18dc0212beeffb26ec78ecbc3d296d3fd9d71a685cb427653cb62ab59fa2",
       "context": "    pub unsafe fn outb(_: u16, _: u8) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {",
-      "context_start_line": 78,
-      "end_line": 83,
+      "context_start_line": 80,
+      "end_line": 85,
       "kind": "unsafe_fn",
-      "line": 81,
+      "line": 83,
       "path": "kernel/src/lib.rs"
     },
     {
       "column": 9,
       "construct_sha256": "238b04576c64e3b2b07a66a69a9a15c9f6c008fa62d62f5039892dedddb70d60",
       "context": "    pub unsafe fn outw(_: u16, _: u16) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n    pub unsafe fn outl(_: u16, _: u32) {\n        panic!(\"unexpected hardware I/O in driver test\")\n    }\n}",
-      "context_start_line": 81,
-      "end_line": 86,
+      "context_start_line": 83,
+      "end_line": 88,
       "kind": "unsafe_fn",
-      "line": 84,
+      "line": 86,
       "path": "kernel/src/lib.rs"
     },
     {
@@ -3296,100 +3336,100 @@
       "column": 5,
       "construct_sha256": "9b9fb0a37b350e17a9e226b40cf0a59d1d20a7fc967580bcf97dcec692857417",
       "context": "        | (device as u32) << 11\n        | (function as u32) << 8\n        | u32::from(offset & 0xfc);\n    unsafe {\n        arch::outl(PCI_CONFIG_ADDRESS, address);\n        arch::inl(PCI_CONFIG_DATA)\n    }",
-      "context_start_line": 680,
-      "end_line": 686,
+      "context_start_line": 659,
+      "end_line": 665,
       "kind": "unsafe_block",
-      "line": 683,
+      "line": 662,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 5,
       "construct_sha256": "e6df77d0221046a67acc99f17d50ef095960fec40924a527d0addc5dc1deda00",
       "context": "        | (device as u32) << 11\n        | (function as u32) << 8\n        | u32::from(offset & 0xfc);\n    unsafe {\n        arch::outl(PCI_CONFIG_ADDRESS, address);\n        arch::outl(PCI_CONFIG_DATA, value);\n    }",
-      "context_start_line": 692,
-      "end_line": 698,
+      "context_start_line": 671,
+      "end_line": 677,
       "kind": "unsafe_block",
-      "line": 695,
+      "line": 674,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 20,
       "construct_sha256": "b6c2e28b1a512b697b865c2d2605574ae1464e1fe87e45ec36085a6c267c4765",
       "context": ") -> Result<(), StorageError> {\n    select_sector(io, lba, ATA_COMMAND_READ)?;\n    for index in 0..256 {\n        let word = unsafe { arch::inw(ata_port(io, 0)) }.to_le_bytes();\n        sector[index * 2] = word[0];\n        sector[index * 2 + 1] = word[1];\n    }",
-      "context_start_line": 967,
-      "end_line": 970,
+      "context_start_line": 711,
+      "end_line": 714,
       "kind": "unsafe_block",
-      "line": 970,
+      "line": 714,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
       "construct_sha256": "be0ff1069cb8aa9aa3f1837195abc696b4e51ce4a5c99a228282a3d8b7ba0c2b",
       "context": "fn ata_write_sector(io: &AtaIo, lba: u32, sector: &[u8; SECTOR_BYTES]) -> Result<(), StorageError> {\n    select_sector(io, lba, ATA_COMMAND_WRITE)?;\n    for chunk in sector.chunks_exact(2) {\n        unsafe { arch::outw(ata_port(io, 0), u16::from_le_bytes([chunk[0], chunk[1]])) };\n    }\n    ata_settle(io);\n    wait_not_busy(io)",
-      "context_start_line": 978,
-      "end_line": 981,
+      "context_start_line": 722,
+      "end_line": 725,
       "kind": "unsafe_block",
-      "line": 981,
+      "line": 725,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
       "construct_sha256": "39fb5b3290e3deb9acbbd6a8e26f746c506be1b7e1ab2fa3d390cf4ba47f7c96",
       "context": "    fn status(&mut self) -> u8 {\n        // SAFETY: the single-BSP storage owner reads the discovered IDE status\n        // port; no other command or interrupt handler accesses this channel.\n        unsafe { arch::inb(ata_port(self.0, 7)) }\n    }\n    fn error(&mut self) -> u8 {\n        // SAFETY: the same exclusively owned controller supplies this error",
-      "context_start_line": 1001,
-      "end_line": 1004,
+      "context_start_line": 745,
+      "end_line": 748,
       "kind": "unsafe_block",
-      "line": 1004,
+      "line": 748,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
       "construct_sha256": "57668df09e4419fd137d79a80108670d73d892a55c5c87556868dc71179ef9c6",
       "context": "    fn error(&mut self) -> u8 {\n        // SAFETY: the same exclusively owned controller supplies this error\n        // register after status indicated a failed command; no RAM is aliased.\n        unsafe { arch::inb(ata_port(self.0, 1)) }\n    }\n    fn command(&mut self, command: u8) {\n        // SAFETY: the storage owner has observed an idle data phase on this",
-      "context_start_line": 1006,
-      "end_line": 1009,
+      "context_start_line": 750,
+      "end_line": 753,
       "kind": "unsafe_block",
-      "line": 1009,
+      "line": 753,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
       "construct_sha256": "69e9b0e41c4923ab3ec47571a4b7949ea03e27c6ed7c0b5b2fd6a3aa6019c41b",
       "context": "    fn command(&mut self, command: u8) {\n        // SAFETY: the storage owner has observed an idle data phase on this\n        // discovered controller. Only a bounded supported command is submitted.\n        unsafe { arch::outb(ata_port(self.0, 7), command) };\n    }\n    fn settle(&mut self) {\n        ata_settle(self.0);",
-      "context_start_line": 1011,
-      "end_line": 1014,
+      "context_start_line": 755,
+      "end_line": 758,
       "kind": "unsafe_block",
-      "line": 1014,
+      "line": 758,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 9,
       "construct_sha256": "a9b28101e81cf6379c8314e8c45282db5b0aafc0d88a01d16cdef6025009797e",
       "context": "    // timing contract) exceed ATA's 400 ns command/selection settling interval.\n    // Ignored reads do not acknowledge IRQs or access memory; one BSP owns I/O.\n    for _ in 0..4 {\n        unsafe { arch::inb(io.control_base) };\n    }\n}\n",
-      "context_start_line": 1024,
-      "end_line": 1027,
+      "context_start_line": 768,
+      "end_line": 771,
       "kind": "unsafe_block",
-      "line": 1027,
+      "line": 771,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 5,
       "construct_sha256": "1c3568d37ec78c26a09ee4e8a3519cb61e5ac7b0a63206fe913df634ad113fcc",
       "context": "    wait_not_busy(io)?;\n    // SAFETY: one BSP owns the discovered IDE channel. Polling mode suppresses\n    // device interrupts; selecting the master changes no memory ownership.\n    unsafe {\n        arch::outb(io.control_base, 2);\n        arch::outb(ata_port(io, 6), 0xe0 | ((lba >> 24) as u8 & 0x0f));\n    }",
-      "context_start_line": 1042,
-      "end_line": 1048,
+      "context_start_line": 786,
+      "end_line": 792,
       "kind": "unsafe_block",
-      "line": 1045,
+      "line": 789,
       "path": "kernel/src/storage.rs"
     },
     {
       "column": 5,
       "construct_sha256": "53d123d711d1896a0c03dd213641e2fac1f7c90f667e0df01a4d7274f01cdace",
       "context": "    ata_settle(io);\n    // SAFETY: the selected device has settled; these bounded LBA28/count/command\n    // values address one sector on the exclusively owned controller.\n    unsafe {\n        arch::outb(ata_port(io, 2), 1);\n        arch::outb(ata_port(io, 3), lba as u8);\n        arch::outb(ata_port(io, 4), (lba >> 8) as u8);",
-      "context_start_line": 1049,
-      "end_line": 1058,
+      "context_start_line": 793,
+      "end_line": 802,
       "kind": "unsafe_block",
-      "line": 1052,
+      "line": 796,
       "path": "kernel/src/storage.rs"
     },
     {
@@ -4456,26 +4496,66 @@
       "column": 18,
       "construct_sha256": "881e325bd7e57ae4f087ae77e294b243c42acb38236f1d43674842e1846da2de",
       "context": "}\n\nfn execute(console: u64, supervisor: u64) {\n    let editor = unsafe { &mut *addr_of_mut!(DATA.editor) };\n    let len = editor.line().len();\n    let mut command = [0u8; LINE_CAPACITY];\n    command[..len].copy_from_slice(editor.line());",
-      "context_start_line": 958,
-      "end_line": 961,
+      "context_start_line": 904,
+      "end_line": 907,
       "kind": "unsafe_block",
-      "line": 961,
+      "line": 907,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "1ef1736fd577dcaf2bef291493115e0c4b5e6b418504ed9c90d5e63318541fbd",
       "context": "}\n\nfn network_status(console: u64) {\n    let config = unsafe { &mut *addr_of_mut!(DATA.network_config) };\n    let result = runtime::network_config(config);\n    let message: &[u8] = if result == core::mem::size_of::<runtime::UserNetworkConfig>() as u64 {\n        b\"network online - DHCP configuration available\"",
-      "context_start_line": 1033,
-      "end_line": 1036,
+      "context_start_line": 979,
+      "end_line": 982,
       "kind": "unsafe_block",
-      "line": 1036,
+      "line": 982,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
       "context": "\n#[cfg(feature = \"validation-boot\")]\nfn prove_process_control(supervisor: u64) -> bool {\n    let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n    if runtime::process_launch(\n        supervisor ^ 1,\n        runtime::PROCESS_IMAGE_INIT,",
+      "context_start_line": 991,
+      "end_line": 994,
+      "kind": "unsafe_block",
+      "line": 994,
+      "path": "userspace/shell/src/main.rs"
+    },
+    {
+      "column": 16,
+      "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
+      "context": "}\n\nfn launch_job(console: u64, supervisor: u64, mode: u64) {\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    let slot = jobs.iter().position(|job| job.id == 0);\n    let Some(slot) = slot else {\n        let _ = runtime::console_write(console, b\"job table full\", runtime::CONSOLE_LINE_ERROR);",
+      "context_start_line": 1025,
+      "end_line": 1028,
+      "kind": "unsafe_block",
+      "line": 1028,
+      "path": "userspace/shell/src/main.rs"
+    },
+    {
+      "column": 14,
+      "construct_sha256": "d5debf7dab1dd25435ff74e46e0da8009d989ddd7bf4e0db4f54e55cf1159454",
+      "context": "        );\n        return;\n    }\n    let id = unsafe { read_volatile(addr_of!(DATA.next_job_id)) };\n    unsafe {\n        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };",
+      "context_start_line": 1040,
+      "end_line": 1043,
+      "kind": "unsafe_block",
+      "line": 1043,
+      "path": "userspace/shell/src/main.rs"
+    },
+    {
+      "column": 5,
+      "construct_sha256": "bcfd10e082c2b7f8c9c4ae9379b32fdca189ebbf793165af3e1978d9d574a278",
+      "context": "        return;\n    }\n    let id = unsafe { read_volatile(addr_of!(DATA.next_job_id)) };\n    unsafe {\n        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };\n    }",
+      "context_start_line": 1041,
+      "end_line": 1047,
+      "kind": "unsafe_block",
+      "line": 1044,
+      "path": "userspace/shell/src/main.rs"
+    },
+    {
+      "column": 18,
+      "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
+      "context": "        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };\n    }\n    let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n    let mut output = [0u8; LINE_CAPACITY];\n    let mut len = 0usize;\n    append(&mut output, &mut len, b\"job \");",
       "context_start_line": 1045,
       "end_line": 1048,
       "kind": "unsafe_block",
@@ -4485,17 +4565,27 @@
     {
       "column": 16,
       "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
-      "context": "}\n\nfn launch_job(console: u64, supervisor: u64, mode: u64) {\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    let slot = jobs.iter().position(|job| job.id == 0);\n    let Some(slot) = slot else {\n        let _ = runtime::console_write(console, b\"job table full\", runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1079,
-      "end_line": 1082,
+      "context": "\nfn list_jobs(console: u64) {\n    let mut any = false;\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    for job in jobs.iter().filter(|job| job.id != 0) {\n        any = true;\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };",
+      "context_start_line": 1063,
+      "end_line": 1066,
       "kind": "unsafe_block",
-      "line": 1082,
+      "line": 1066,
       "path": "userspace/shell/src/main.rs"
     },
     {
-      "column": 14,
-      "construct_sha256": "d5debf7dab1dd25435ff74e46e0da8009d989ddd7bf4e0db4f54e55cf1159454",
-      "context": "        );\n        return;\n    }\n    let id = unsafe { read_volatile(addr_of!(DATA.next_job_id)) };\n    unsafe {\n        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };",
+      "column": 22,
+      "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
+      "context": "    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    for job in jobs.iter().filter(|job| job.id != 0) {\n        any = true;\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        let result = runtime::process_status(job.handle, status);\n        let mut output = [0u8; LINE_CAPACITY];\n        let mut len = 0usize;",
+      "context_start_line": 1066,
+      "end_line": 1069,
+      "kind": "unsafe_block",
+      "line": 1069,
+      "path": "userspace/shell/src/main.rs"
+    },
+    {
+      "column": 16,
+      "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
+      "context": "        let _ = runtime::console_write(console, b\"job id required\", runtime::CONSOLE_LINE_ERROR);\n        return;\n    };\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    let slot = jobs.iter().position(|job| job.id == id);\n    let Some(slot) = slot else {\n        let _ = runtime::console_write(console, b\"job not found\", runtime::CONSOLE_LINE_ERROR);",
       "context_start_line": 1094,
       "end_line": 1097,
       "kind": "unsafe_block",
@@ -4503,173 +4593,123 @@
       "path": "userspace/shell/src/main.rs"
     },
     {
-      "column": 5,
-      "construct_sha256": "bcfd10e082c2b7f8c9c4ae9379b32fdca189ebbf793165af3e1978d9d574a278",
-      "context": "        return;\n    }\n    let id = unsafe { read_volatile(addr_of!(DATA.next_job_id)) };\n    unsafe {\n        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };\n    }",
-      "context_start_line": 1095,
-      "end_line": 1101,
-      "kind": "unsafe_block",
-      "line": 1098,
-      "path": "userspace/shell/src/main.rs"
-    },
-    {
-      "column": 18,
-      "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
-      "context": "        DATA.next_job_id = DATA.next_job_id.saturating_add(1);\n        DATA.jobs[slot] = Job { id, handle };\n    }\n    let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n    let mut output = [0u8; LINE_CAPACITY];\n    let mut len = 0usize;\n    append(&mut output, &mut len, b\"job \");",
-      "context_start_line": 1099,
-      "end_line": 1102,
-      "kind": "unsafe_block",
-      "line": 1102,
-      "path": "userspace/shell/src/main.rs"
-    },
-    {
-      "column": 16,
-      "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
-      "context": "\nfn list_jobs(console: u64) {\n    let mut any = false;\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    for job in jobs.iter().filter(|job| job.id != 0) {\n        any = true;\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };",
-      "context_start_line": 1117,
-      "end_line": 1120,
-      "kind": "unsafe_block",
-      "line": 1120,
-      "path": "userspace/shell/src/main.rs"
-    },
-    {
-      "column": 22,
-      "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
-      "context": "    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    for job in jobs.iter().filter(|job| job.id != 0) {\n        any = true;\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        let result = runtime::process_status(job.handle, status);\n        let mut output = [0u8; LINE_CAPACITY];\n        let mut len = 0usize;",
-      "context_start_line": 1120,
-      "end_line": 1123,
-      "kind": "unsafe_block",
-      "line": 1123,
-      "path": "userspace/shell/src/main.rs"
-    },
-    {
-      "column": 16,
-      "construct_sha256": "4e7b9c46ec4ef263be34eb4d405f939afa6d984702367ae7c1302864f81e0d79",
-      "context": "        let _ = runtime::console_write(console, b\"job id required\", runtime::CONSOLE_LINE_ERROR);\n        return;\n    };\n    let jobs = unsafe { read_volatile(addr_of!(DATA.jobs)) };\n    let slot = jobs.iter().position(|job| job.id == id);\n    let Some(slot) = slot else {\n        let _ = runtime::console_write(console, b\"job not found\", runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1148,
-      "end_line": 1151,
-      "kind": "unsafe_block",
-      "line": 1151,
-      "path": "userspace/shell/src/main.rs"
-    },
-    {
       "column": 18,
       "construct_sha256": "8c6f4e15450f8ab3d54cfd0a7cf877a3c4aee5edd21ba6e73ab9f825897f498f",
       "context": "        let _ = runtime::console_write(console, b\"job not found\", runtime::CONSOLE_LINE_ERROR);\n        return;\n    };\n    let handle = unsafe { DATA.jobs[slot].handle };\n    let result = if reap {\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        runtime::process_reap(handle, status)",
-      "context_start_line": 1154,
-      "end_line": 1157,
+      "context_start_line": 1100,
+      "end_line": 1103,
       "kind": "unsafe_block",
-      "line": 1157,
+      "line": 1103,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "9b0faf22487e9f78f57c688516ae0edc0637af65bae4e8463d90be5a9d119913",
       "context": "    };\n    let handle = unsafe { DATA.jobs[slot].handle };\n    let result = if reap {\n        let status = unsafe { &mut *addr_of_mut!(DATA.process_status) };\n        runtime::process_reap(handle, status)\n    } else {\n        runtime::process_kill(handle)",
-      "context_start_line": 1156,
-      "end_line": 1159,
+      "context_start_line": 1102,
+      "end_line": 1105,
       "kind": "unsafe_block",
-      "line": 1159,
+      "line": 1105,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 9,
       "construct_sha256": "14994e6c69879bdd1727e45e95a2ca766d52a69aa793d49314f18cdee0f9fae9",
       "context": "        runtime::process_kill(handle)\n    };\n    if reap && result == process_status_size() {\n        unsafe { DATA.jobs[slot] = Job::empty() };\n        write_job_result(console, b\"reaped job \", id, runtime::CONSOLE_LINE_STATUS);\n    } else if !reap && result == 0 {\n        write_job_result(console, b\"killed job \", id, runtime::CONSOLE_LINE_STATUS);",
-      "context_start_line": 1162,
-      "end_line": 1165,
+      "context_start_line": 1108,
+      "end_line": 1111,
       "kind": "unsafe_block",
-      "line": 1165,
+      "line": 1111,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "fn prove_file_mutation(console: u64) -> bool {\n    let existing = runtime::open_file(MUTATION_PROOF_PATH);\n    let restored = if !handle_error(existing) {\n        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n        let count = runtime::read_handle(existing, buffer);\n        let restored = count == MUTATION_PROOF_EXPECTED.len() as u64\n            && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED",
-      "context_start_line": 1229,
-      "end_line": 1232,
+      "context_start_line": 1175,
+      "end_line": 1178,
       "kind": "unsafe_block",
-      "line": 1232,
+      "line": 1178,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "        let _ = runtime::close_handle(handle);\n        return false;\n    }\n    let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n    let count = runtime::read_handle(handle, buffer);\n    let verified = count == MUTATION_PROOF_EXPECTED.len() as u64\n        && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED;",
-      "context_start_line": 1278,
-      "end_line": 1281,
+      "context_start_line": 1224,
+      "end_line": 1227,
       "kind": "unsafe_block",
-      "line": 1281,
+      "line": 1227,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 17,
       "construct_sha256": "adfe84fd63799b0eaac409d6b94b535efba0aef3233e2943b4c8777b0cf9243a",
       "context": "        && runtime::remove_path(parent, b\"SHELL.TXT\") == runtime::ERROR_INVALID_ARGUMENT;\n    // SAFETY: no other startup operation holds this process-local output\n    // buffer, and read_directory copies only its bounded ABI structure.\n    let entry = unsafe { &mut *addr_of_mut!(DATA.directory_entry) };\n    let unchanged = !require_empty || runtime::read_directory(parent, 0, entry) == 0;\n    let closed = runtime::close_handle(parent) == 0;\n    let message: &[u8] = if require_empty {",
-      "context_start_line": 1324,
-      "end_line": 1327,
+      "context_start_line": 1270,
+      "end_line": 1273,
       "kind": "unsafe_block",
-      "line": 1327,
+      "line": 1273,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 18,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "    if handle_error(handle) {\n        return false;\n    }\n    let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n    let count = runtime::read_handle(handle, buffer);\n    let restored = count == MUTATION_PROOF_EXPECTED.len() as u64\n        && &buffer[..count as usize] == MUTATION_PROOF_EXPECTED",
-      "context_start_line": 1347,
-      "end_line": 1350,
+      "context_start_line": 1293,
+      "end_line": 1296,
       "kind": "unsafe_block",
-      "line": 1350,
+      "line": 1296,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "652d957c69800dbcfcaf92653b694705b5499538c15a13e98edd5120628f4b60",
       "context": "    if handle_error(parent) {\n        return false;\n    }\n    let stat = unsafe { &mut *addr_of_mut!(DATA.file_stat) };\n    let valid_parent = runtime::stat_handle(parent, stat)\n        == core::mem::size_of::<runtime::UserFileStat>() as u64\n        && stat.kind == runtime::FILE_KIND_DIRECTORY",
-      "context_start_line": 1380,
-      "end_line": 1383,
+      "context_start_line": 1326,
+      "end_line": 1329,
       "kind": "unsafe_block",
-      "line": 1383,
+      "line": 1329,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 16,
       "construct_sha256": "652d957c69800dbcfcaf92653b694705b5499538c15a13e98edd5120628f4b60",
       "context": "        let _ = runtime::console_write(console, FILE_ERROR, runtime::CONSOLE_LINE_ERROR);\n        return;\n    }\n    let stat = unsafe { &mut *addr_of_mut!(DATA.file_stat) };\n    if runtime::stat_handle(handle, stat) != core::mem::size_of::<runtime::UserFileStat>() as u64 {\n        let _ = runtime::close_handle(handle);\n        let _ = runtime::console_write(console, FILE_ERROR, runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1407,
-      "end_line": 1410,
+      "context_start_line": 1353,
+      "end_line": 1356,
       "kind": "unsafe_block",
-      "line": 1410,
+      "line": 1356,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "\nfn advance_to_end(handle: u64) -> bool {\n    loop {\n        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n        let count = runtime::read_handle(handle, buffer);\n        if handle_error(count) {\n            return false;",
-      "context_start_line": 1530,
-      "end_line": 1533,
+      "context_start_line": 1476,
+      "end_line": 1479,
       "kind": "unsafe_block",
-      "line": 1533,
+      "line": 1479,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 21,
       "construct_sha256": "adfe84fd63799b0eaac409d6b94b535efba0aef3233e2943b4c8777b0cf9243a",
       "context": "    }\n    let mut cursor = 0u64;\n    loop {\n        let entry = unsafe { &mut *addr_of_mut!(DATA.directory_entry) };\n        let result = runtime::read_directory(handle, cursor, entry);\n        if result == 0 {\n            break;",
-      "context_start_line": 1555,
-      "end_line": 1558,
+      "context_start_line": 1501,
+      "end_line": 1504,
       "kind": "unsafe_block",
-      "line": 1558,
+      "line": 1504,
       "path": "userspace/shell/src/main.rs"
     },
     {
       "column": 22,
       "construct_sha256": "d4c4212dbf442d7b85664ce88d3b7540ee3bc07120f9e76c44e234af0062043c",
       "context": "    let mut output = [0u8; LINE_CAPACITY];\n    let mut output_len = 0usize;\n    loop {\n        let buffer = unsafe { &mut *addr_of_mut!(DATA.file_buffer) };\n        let count = runtime::read_handle(handle, buffer);\n        if count == runtime::ERROR_INVALID_ARGUMENT || count == runtime::ERROR_UNAVAILABLE {\n            let _ = runtime::console_write(console, FILE_ERROR, runtime::CONSOLE_LINE_ERROR);",
-      "context_start_line": 1600,
-      "end_line": 1603,
+      "context_start_line": 1546,
+      "end_line": 1549,
       "kind": "unsafe_block",
-      "line": 1603,
+      "line": 1549,
       "path": "userspace/shell/src/main.rs"
     }
   ]

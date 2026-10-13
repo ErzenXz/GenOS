@@ -15,7 +15,7 @@ import subprocess
 import time
 
 
-SOURCES = ("kernel/src/storage.rs", "kernel/src/storage_tests.rs", "kernel/src/vfs.rs",
+SOURCES = ("kernel/src/storage.rs", "kernel/src/storage_format.rs", "kernel/src/storage_tests.rs", "kernel/src/vfs.rs",
            "kernel/src/path_policy.rs", "tools/xtask/src/main.rs", "tools/test_storage_faults.py")
 
 

@@ -1,6 +1,32 @@
 //! Shared production invariant checks for deterministic and coverage-guided input.
 pub mod handles;
+pub mod protocols;
+pub mod requests;
+pub mod storage;
 use kernel::{elf::ElfImage, ipv6, native_image, net, socket};
+
+pub const TARGETS: &[&str] = &[
+    "all",
+    "elf",
+    "native-elf",
+    "ipv4",
+    "ipv6",
+    "udp",
+    "tcp",
+    "socket",
+    "boot-map",
+    "paths",
+    "descriptors",
+    "handles",
+    "partition",
+    "snapshot",
+    "dhcp",
+    "dns",
+    "arp",
+    "icmp",
+    "syscalls",
+    "endpoints",
+];
 
 fn subslice(parent: &[u8], child: &[u8]) {
     let start = parent.as_ptr() as usize;
@@ -317,6 +343,14 @@ pub fn exercise(target: &str, bytes: &[u8]) -> bool {
         "paths" => check_paths(bytes),
         "descriptors" => check_descriptors(bytes),
         "handles" => handles::exercise(bytes),
+        "partition" => storage::partition(bytes),
+        "snapshot" => storage::snapshot(bytes),
+        "dhcp" => protocols::dhcp(bytes),
+        "dns" => protocols::dns(bytes),
+        "arp" => protocols::arp(bytes),
+        "icmp" => protocols::icmp(bytes),
+        "syscalls" => requests::syscalls(bytes),
+        "endpoints" => requests::endpoints(bytes),
         "all" => {
             check_elf(bytes);
             check_native_elf(bytes);
@@ -329,6 +363,14 @@ pub fn exercise(target: &str, bytes: &[u8]) -> bool {
             check_paths(bytes);
             check_descriptors(bytes);
             handles::exercise(bytes);
+            storage::partition(bytes);
+            storage::snapshot(bytes);
+            protocols::dhcp(bytes);
+            protocols::dns(bytes);
+            protocols::arp(bytes);
+            protocols::icmp(bytes);
+            requests::syscalls(bytes);
+            requests::endpoints(bytes);
             true
         }
         _ => unreachable!(),

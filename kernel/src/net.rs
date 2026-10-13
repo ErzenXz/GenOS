@@ -3,6 +3,11 @@ pub const IPV4_HEADER_BYTES: usize = 20;
 pub const UDP_HEADER_BYTES: usize = 8;
 pub const TCP_HEADER_BYTES: usize = 20;
 
+/// Match the bounded echo probe after its IPv4 peer/protocol checks.
+pub fn is_icmp_echo_reply(payload: &[u8], identity: [u8; 4]) -> bool {
+    payload.len() >= 8 && payload[0] == 0 && payload[4..8] == identity && checksum(payload) == 0
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ipv4Packet<'a> {
     pub source_mac: [u8; 6],

@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 kernel = { path = "../../kernel" }
 genos_abi = { path = "../../crates/abi" }
+genos-shell = { path = "../../userspace/shell" }
 
 [profile.release]
 overflow-checks = true
