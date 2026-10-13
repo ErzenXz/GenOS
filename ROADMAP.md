@@ -1,6 +1,6 @@
 # GenOS roadmap
 
-**Updated: 2026-10-10. Foundation series after `98c8b38`; exact tested commits are in [VERIFICATION.md](docs/VERIFICATION.md). Current level: Experimental.**
+**Updated: 2026-10-13. Foundation series after `98c8b38`; exact tested commits are in [VERIFICATION.md](docs/VERIFICATION.md). Current level: Experimental.**
 
 GenOS is an independent Rust operating system. The immediate product goal is a
 reliable kernel and useful terminal on a precisely defined reference machine.
@@ -101,6 +101,8 @@ close F0.3, bringing the audited count to **51/100 (51%)**, including **40/60**
 kernel-foundation criteria. The four strict CPU/IRET probes now pass on an explicit
 KVM CPU variant. On October 13, PR #9 merged after all eighty required checks
 passed, closing F0.1 and bringing the count to **52/100**, including **41/60**
+kernel-foundation criteria. The October 13 host coverage completion closes F6.2
+on clean `86b5b78`, bringing the local count to **53/100**, including **42/60**
 kernel-foundation criteria. Full F1 qualification and independent reproduction remain open.
 
 Current bounds matter: 4 managed asynchronous process slots including the shell;
@@ -310,15 +312,18 @@ and its bounded scope are described in [FRAME_GRANTS.md](docs/FRAME_GRANTS.md).
 - [x] Retained deterministic ELF/network/socket mutation inputs, exact fault evidence parsers, allocation injection and selected packet/storage failures exist.
 - [x] **F6.1:** finish the normal startup cost/dependency audit. Optional devices must fail within declared deadlines and cannot make the local terminal depend on a test server or fixture.
   Real normal release boots without a storage controller, with an empty controller, and with a NIC but no host test service each reached a fresh Ring 3 terminal within the declared 60-second budget. Retained per-run commands, environment/source/image identities and visible `echo`/`net`/`mem` transcripts live under `build/startup-dependency-evidence/`; see [verification](docs/VERIFICATION.md#september-23-dependency-and-format-slices).
-- [ ] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
-  Eleven host-only libFuzzer targets now reuse production parser and bounded-state
-  assertions for ELF, native ELF, IPv4/IPv6, UDP/TCP, sockets, boot maps, paths
-  RX/TX descriptors and handle-table operation sequences. The pinned runtime,
-  locked source hashes, immutable per-run source/input evidence and replay path
-  and local evidence are documented in [coverage fuzzing](tools/coverage-fuzz/README.md).
-  Two required CI targets additionally require fresh corpus discovery.
-  Partition/snapshot, DHCP/DNS and syscall sequences remain outside this lane;
-  the gate stays open.
+- [x] **F6.2:** add coverage-guided targets for boot maps, ELF, paths, partitions/snapshots, Ethernet/ARP/IP/ICMP/UDP/DHCP/DNS/TCP, descriptors and syscall/handle operation sequences. Preserve every fixed counterexample with an invariant and replay command.
+  Nineteen host-only targets reuse production ELF/native ELF, Ethernet/ARP,
+  IPv4/IPv6, ICMP, UDP/TCP, DHCP/DNS, boot-map, pathname, GFS2 partition/snapshot,
+  RX/TX descriptor, socket, syscall-scalar, endpoint and handle-table boundaries.
+  On clean `86b5b78`, all nineteen passed 10,000 executions with nonzero coverage
+  and fresh corpus growth; 33 retained inputs include five fixed DNS denial
+  counterexamples and exact replay support. The existing parser CI lane also
+  replays all inputs. See [coverage contracts](tools/coverage-fuzz/README.md)
+  and [executed evidence](docs/VERIFICATION.md#october-13-complete-host-parser-coverage).
+  This closes the bounded host-target criterion only. Real firmware exit,
+  user-copy, deferred completion, DMA, device reset, broader fault schedules and
+  sustained workloads require their separate proofs; no release level advances.
 - [x] **F6.3:** run Miri on compatible pure Rust modules; pilot bounded model checking on small ownership/generation models. Pin tool versions and expose unsupported cases. Neither tool is a whole-kernel proof.
   Pinned nightly Miri now covers 136 production-selected pure Rust tests, including boot/interrupt phases, logical clock transition, syscall diagnostics, permanent DMA claims, RX/TX ownership, scoped framebuffer and VFS snapshot additions; see [scope and exclusions](docs/PURE_RUST_VERIFICATION.md). The bounded ownership model explored 3,257,436 sequences/19,248,492 transitions through depth six, including a retained injected pin-bypass counterexample. CPU/device execution, unsafe sites outside the selected modules and unbounded executions are not covered.
 - [ ] **F6.4:** expand deterministic allocation, copy failure, cancellation, partial I/O, power-loss, packet corruption/loss/reordering/zero-window, IRQ and device-reset schedules. Test recovery failing again.
