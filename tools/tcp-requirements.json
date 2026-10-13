@@ -1,0 +1,1246 @@
+{
+  "schema": 1,
+  "profile": "genos-tcp-ipv4-bounded-v1",
+  "reviewed_date": "2026-10-13",
+  "roadmap_item": "N1.1",
+  "sources": {
+    "5681": {
+      "url": "https://www.rfc-editor.org/rfc/rfc5681.html",
+      "published": "2009-09"
+    },
+    "5961": {
+      "url": "https://www.rfc-editor.org/rfc/rfc5961.html",
+      "published": "2010-08"
+    },
+    "6298": {
+      "url": "https://www.rfc-editor.org/rfc/rfc6298.html",
+      "published": "2011-06"
+    },
+    "9293": {
+      "url": "https://www.rfc-editor.org/rfc/rfc9293.html",
+      "published": "2022-08",
+      "inventory": "Appendix B: MUST-1..69, SHLD-1..31, MAY-1..18, REC-1"
+    }
+  },
+  "production_sha256": {
+    "kernel/src/net.rs": "b0ff6b11efef6d55cd0fb809dd559db18e0502921867ebd4f199ee0024e43494",
+    "kernel/src/network.rs": "c60a072cdd5e4385750a85b056d4c520ff1e5a236dcf12394fa2a34fb690381a",
+    "kernel/src/socket.rs": "c95c6e666429f50297301980962a15c27d2f0eddbf0a81701ca4c979bf52770f"
+  },
+  "input_classes": {
+    "malformed": "Bad frame/checksum/header/option extent; drop before TCP state mutation.",
+    "state-inapplicable": "Well-formed segment for another tuple or invalid sequence/ACK in this state; ignore or ACK/challenge by state.",
+    "valid-unsupported": "Well-formed optional offer or feature with no advertised semantics; structurally admit/ignore or decline without calling the format malformed.",
+    "profile-limit": "Valid traffic outside fixed segment/queue/owner/lifetime budgets; defined backpressure/reset/failure, not format corruption."
+  },
+  "rows": [
+    {
+      "id": "header",
+      "title": "Header and payload admission",
+      "rfc9293": [],
+      "status": "verified",
+      "behavior": "The data offset bounds a 20..60-byte header; payload starts after that header. Reserved received bits are ignored. No option walk exceeds 40 bytes.",
+      "implementation": [
+        {
+          "path": "kernel/src/net.rs",
+          "symbol": "parse_tcp"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "net::tests::malformed_packets_are_rejected_without_indexing_past_bounds",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "net::tests::tcp_options_admit_unknown_and_unaligned_options_without_eating_payload",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [],
+      "planned": [],
+      "references": [
+        "9293:3.1"
+      ]
+    },
+    {
+      "id": "checksum",
+      "title": "IPv4 TCP checksum",
+      "rfc9293": [
+        "MUST-2",
+        "MUST-3"
+      ],
+      "status": "verified",
+      "behavior": "The production sender checksums the IPv4 pseudo-header and segment. Both passive and active receive paths validate that checksum before tuple/state handling.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "send_tcp_with_window"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "decode_tcp_reply"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "decode_passive_segment"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::checksum_corruption_and_foreign_tuple_never_change_stream_state",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "net::tests::passive_tcp_handshake_requires_exact_bounded_packets",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [],
+      "planned": [],
+      "references": [
+        "9293:appendix-B"
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Option structure and unknown kinds",
+      "rfc9293": [
+        "MUST-5",
+        "MUST-6",
+        "MUST-7",
+        "MUST-64",
+        "MUST-68",
+        "MUST-69"
+      ],
+      "status": "verified",
+      "behavior": "EOL/NOP, option extents and MSS shape are checked at byte alignment. Unknown well-formed length-bearing kinds are skipped; bad lengths and nonzero EOL padding are dropped before stream mutation.",
+      "implementation": [
+        {
+          "path": "kernel/src/net.rs",
+          "symbol": "tcp_options_valid"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "net::tests::tcp_options_admit_unknown_and_unaligned_options_without_eating_payload",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "net::tests::tcp_options_reject_bad_lengths_known_mss_shape_and_nonzero_eol_padding",
+          "roles": [
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::malformed_tcp_options_cannot_mutate_a_stream_but_unknown_valid_options_deliver",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [],
+      "planned": [],
+      "references": [
+        "9293:appendix-B"
+      ]
+    },
+    {
+      "id": "mss",
+      "title": "Mandatory MSS and segmentation",
+      "rfc9293": [
+        "MUST-4",
+        "MUST-14",
+        "MUST-15",
+        "MUST-16",
+        "MUST-65",
+        "MUST-67",
+        "SHLD-5",
+        "SHLD-6",
+        "MAY-3"
+      ],
+      "status": "gap",
+      "behavior": "GenOS emits a 20-byte TCP header and limits passive application sends to 128 bytes. Valid received MSS options pass structure checks but are not negotiated.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "send_tcp_with_window"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "transmit_stream_flight"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "net::tests::tcp_options_admit_unknown_and_unaligned_options_without_eating_payload",
+          "roles": [
+            "positive"
+          ]
+        }
+      ],
+      "gaps": [
+        "No advertised/negotiated MSS, path-dependent effective MSS or IPv6 TCP MSS. Structural MSS acceptance does not satisfy negotiation requirements."
+      ],
+      "planned": [
+        "Test absent and small peer MSS on SYN, MSS emission, non-SYN options and payload-size bounds."
+      ],
+      "references": [
+        "9293:3.7.1"
+      ]
+    },
+    {
+      "id": "isn",
+      "title": "Initial sequence and reincarnation",
+      "rfc9293": [
+        "MUST-8",
+        "MUST-9",
+        "SHLD-1"
+      ],
+      "status": "gap",
+      "behavior": "Passive ISNs are deterministic tuple/peer-sequence XOR values. Local sequence arithmetic uses wrapping u32; it is not a secure ISN generator.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "start_tcp_passive"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "start_tcp_async"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::sequence_wrap_preserves_order_and_exact_send_completion",
+          "roles": [
+            "positive"
+          ]
+        }
+      ],
+      "gaps": [
+        "No clock/secret PRF ISN component, quiet-time or old-incarnation segment exclusion; entropy and long-session qualification remain open."
+      ],
+      "planned": [
+        "Rapidly reuse the same tuple after close/reboot and inject retained segments; test a reviewed ISN generator."
+      ],
+      "references": [
+        "9293:3.4.1",
+        "9293:3.4.2",
+        "9293:3.4.3"
+      ]
+    },
+    {
+      "id": "open",
+      "title": "Connection establishment and passive ownership",
+      "rfc9293": [
+        "MUST-10",
+        "MUST-11",
+        "MUST-41",
+        "MUST-42",
+        "MUST-44",
+        "MUST-45"
+      ],
+      "status": "partial",
+      "behavior": "Active open and four tuple-keyed passive handshake cells exist; handshake ACKs require exact sequence and acknowledgment. Source address is the configured IPv4 address.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_async"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_handshake_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "start_tcp_passive"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "net::tests::passive_tcp_handshake_requires_exact_bounded_packets",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "socket::tests::listener_backlog_and_accepted_children_are_bounded_capabilities",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "No simultaneous open or complete RFC state transition/previous-state model. Host predicate tests and the guest handshake do not cover every handshake anomaly."
+      ],
+      "planned": [
+        "Script duplicate SYN/SYN-ACK, simultaneous open, early data/FIN and per-owner listener interference."
+      ],
+      "references": [
+        "9293:3.5",
+        "9293:3.10.7.2",
+        "9293:3.10.7.3"
+      ]
+    },
+    {
+      "id": "address",
+      "title": "Address and peer admission",
+      "rfc9293": [
+        "MUST-46",
+        "MUST-57",
+        "MUST-63"
+      ],
+      "status": "gap",
+      "behavior": "Inbound packets must name the configured destination and exact peer tuple. Socket connect validates zero addresses/ports; full broadcast/multicast/source-address policy is unqualified.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "decode_tcp_reply"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "decode_passive_segment"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::checksum_corruption_and_foreign_tuple_never_change_stream_state",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "socket::tests::tcp_transport_preserves_connecting_state_until_exact_completion",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "No complete invalid/broadcast/multicast OPEN/SYN campaign or general source-address selection."
+      ],
+      "planned": [
+        "Exercise broadcast, multicast, zero and forbidden source/destination addresses at socket and wire boundaries."
+      ],
+      "references": [
+        "9293:appendix-B"
+      ]
+    },
+    {
+      "id": "close",
+      "title": "Close, half-close and TIME-WAIT",
+      "rfc9293": [
+        "MUST-12",
+        "MUST-13",
+        "SHLD-2",
+        "SHLD-3",
+        "SHLD-4",
+        "MAY-1",
+        "MAY-2"
+      ],
+      "status": "partial",
+      "behavior": "Passive peer EOF and guest FIN/ACK have bounded state; post-EOF bytes and duplicate FIN do not redeliver. Reset/failure is reported and slots can be cancelled.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_stream_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "start_tcp_passive_stream_close"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "finish_tcp_passive_stream"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::no_data_or_second_fin_is_admitted_after_peer_eof",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::fin_waits_for_an_open_receive_window",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::cancellation_and_reset_leave_sibling_stream_usable",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "No 2MSL TIME-WAIT, complete simultaneous close/half-open recovery or long-lived tuple-retirement proof."
+      ],
+      "planned": [
+        "Script both close directions, simultaneous close, lost final ACK and delayed old packets after slot/tuple reuse."
+      ],
+      "references": [
+        "9293:3.6",
+        "9293:3.6.1"
+      ]
+    },
+    {
+      "id": "rto",
+      "title": "Retransmission timing and Karn",
+      "rfc9293": [
+        "MUST-18",
+        "MUST-19",
+        "MAY-4"
+      ],
+      "status": "partial",
+      "behavior": "Passive sends skip ambiguous RTT samples after retransmission. RTO starts at 25 ticks, uses a bounded heuristic, backs off up to 100 ticks and fails after three attempts.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_stream_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_passive_stream"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::retransmitted_ack_does_not_supply_an_ambiguous_rtt_sample",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::slow_reader_does_not_stop_outbound_retransmissions",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No SRTT/RTTVAR estimator, RFC second-scale floor/ceiling or complete per-state timer management. This bounded VM heuristic is not RFC 6298 conformance."
+      ],
+      "planned": [
+        "Use a controllable clock for initial/first/subsequent RTT, Karn, earliest expiry, timer restart and repeated loss."
+      ],
+      "references": [
+        "9293:3.8.1",
+        "6298:2",
+        "6298:3",
+        "6298:5"
+      ]
+    },
+    {
+      "id": "failure",
+      "title": "Retry, idle and application failure",
+      "rfc9293": [
+        "MUST-20",
+        "MUST-21",
+        "MUST-22",
+        "MUST-23",
+        "SHLD-9",
+        "SHLD-10",
+        "SHLD-11"
+      ],
+      "status": "partial",
+      "behavior": "Passive retry and idle lifetimes are finite; active compatibility paths use finite polls. Failed transport removes its slot and socket errors remain observable.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_async"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_passive"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_passive_stream"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_persists_with_bounded_probes_and_releases_its_slot",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "socket::tests::capacity_is_hard_bounded_and_failed_sockets_are_observable",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "No configurable R1/R2 or three-minute SYN retry policy, negative route advice, or standardized soft/hard ICMP error report."
+      ],
+      "planned": [
+        "Test independent R1/R2 thresholds, user abort, SYN persistence and failure/report cleanup."
+      ],
+      "references": [
+        "9293:3.8.3"
+      ]
+    },
+    {
+      "id": "keepalive",
+      "title": "Optional keep-alive facility",
+      "rfc9293": [
+        "MAY-5",
+        "MAY-6",
+        "MUST-24",
+        "MUST-25",
+        "MUST-26",
+        "MUST-27",
+        "MUST-28",
+        "MUST-29",
+        "SHLD-12"
+      ],
+      "status": "unsupported",
+      "behavior": "No keep-alive socket facility is advertised. The 200-tick passive idle deadline is a resource limit, not a keep-alive timer.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "refresh_stream_idle"
+        }
+      ],
+      "tests": [],
+      "gaps": [
+        "Keep-alive configuration and its conditional requirements have no implementation/test claim. Well-formed keep-alive probes are not malformed merely because the API is absent."
+      ],
+      "planned": [
+        "If enabled, test default-off, configurable idle interval, probe shape and lost ACK tolerance."
+      ],
+      "references": [
+        "9293:3.8.4"
+      ]
+    },
+    {
+      "id": "urgent",
+      "title": "Urgent-data semantics",
+      "rfc9293": [
+        "MUST-30",
+        "MUST-31",
+        "MUST-32",
+        "MUST-33",
+        "MUST-62",
+        "SHLD-13"
+      ],
+      "status": "gap",
+      "behavior": "The parser retains flags but not urgent-pointer semantics. There is no urgent-data delivery or application notification facility.",
+      "implementation": [
+        {
+          "path": "kernel/src/net.rs",
+          "symbol": "parse_tcp"
+        }
+      ],
+      "tests": [],
+      "gaps": [
+        "Mandatory urgent handling is missing; a valid URG segment is not classified as malformed. Absence is a conformance gap, not a satisfied optional exclusion."
+      ],
+      "planned": [
+        "Test pointer interpretation, zero-window urgent handling, notification and queued-byte observation."
+      ],
+      "references": [
+        "9293:3.8.5"
+      ]
+    },
+    {
+      "id": "window",
+      "title": "Send/receive windows and updates",
+      "rfc9293": [
+        "MUST-1",
+        "MUST-34",
+        "MUST-66",
+        "REC-1",
+        "SHLD-14",
+        "SHLD-15",
+        "SHLD-16",
+        "SHLD-17",
+        "MAY-7"
+      ],
+      "status": "partial",
+      "behavior": "Unsigned u16 windows cap one send flight; exact sequence/ACK window updates cannot complete another flight. Receive occupancy advertises zero and reopens after consumption.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_stream_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "receive_window"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "transmit_stream_flight"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::forged_ack_cannot_change_peer_window_or_complete_send",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::full_receive_window_reopens_after_consumption_without_losing_bytes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_defers_payload_and_reopening_resumes_exact_bytes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No general window shrink/partial ACK/multiple-flight model, widened window scaling or urgent-at-zero handling."
+      ],
+      "planned": [
+        "Test window shrink around SND.UNA, partial ACK, reordered updates and RST/URG while zero."
+      ],
+      "references": [
+        "9293:3.8.6",
+        "5681:3.1"
+      ]
+    },
+    {
+      "id": "persist",
+      "title": "Zero-window probing and resource lifetime",
+      "rfc9293": [
+        "MUST-35",
+        "MUST-36",
+        "MUST-37",
+        "SHLD-29",
+        "SHLD-30",
+        "MAY-8"
+      ],
+      "status": "partial",
+      "behavior": "Queued bytes stay owned while a peer window is zero. Bounded exponential probes do not advance data or count as congestion loss; the idle deadline eventually fails and releases the stream.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_passive_stream"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_defers_payload_and_reopening_resumes_exact_bytes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_persists_with_bounded_probes_and_releases_its_slot",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "The fixed idle limit does not satisfy indefinite acknowledged zero-window persistence. No general persist lifetime or application-controlled resource-abort qualification."
+      ],
+      "planned": [
+        "Separate indefinite valid zero-window behavior from an explicit user/resource abort and verify cleanup."
+      ],
+      "references": [
+        "9293:3.8.6.1"
+      ]
+    },
+    {
+      "id": "sws",
+      "title": "Silly-window avoidance and Nagle",
+      "rfc9293": [
+        "MUST-17",
+        "MUST-38",
+        "MUST-39",
+        "SHLD-7"
+      ],
+      "status": "gap",
+      "behavior": "Each bounded queued send can transmit immediately when no flight exists; small windows split that queue. No Nagle/SWS algorithm or disable option is advertised.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "transmit_stream_flight"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "consume_tcp_passive_stream_receive"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_defers_payload_and_reopening_resumes_exact_bytes",
+          "roles": [
+            "positive"
+          ]
+        }
+      ],
+      "gaps": [
+        "Small-window progress is not sender/receiver SWS or Nagle conformance."
+      ],
+      "planned": [
+        "Test tiny writes, tiny receive increments, algorithm thresholds and explicit Nagle disable."
+      ],
+      "references": [
+        "9293:3.7.4",
+        "9293:3.8.6.2.1",
+        "9293:3.8.6.2.2"
+      ]
+    },
+    {
+      "id": "ack",
+      "title": "ACKs, duplicate data and bounded reassembly",
+      "rfc9293": [
+        "MUST-40",
+        "MUST-58",
+        "MUST-59",
+        "SHLD-18",
+        "SHLD-19",
+        "SHLD-31",
+        "MAY-13"
+      ],
+      "status": "partial",
+      "behavior": "Cumulative ACKs accompany admitted/repeated data; one deferred 128-byte segment preserves a gap and FIN. Conflicting partial overlaps keep the original bytes; reads never expose a gap.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_stream_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "consume_tcp_passive_stream_receive"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::duplicates_are_acknowledged_without_duplicate_delivery",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::deferred_data_and_fin_wait_until_every_gap_closes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::overlap_cannot_deliver_conflicting_deferred_bytes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No general multi-slot reassembly/merging, full ACK aggregation or delayed-ACK policy. The one-slot capacity is a profile limit, not malformed input."
+      ],
+      "planned": [
+        "Test multiple gaps, legal larger segments, arbitrary overlap partitions and a bounded delayed-ACK timer."
+      ],
+      "references": [
+        "9293:3.7",
+        "9293:3.8.6.3",
+        "5681:4.2"
+      ]
+    },
+    {
+      "id": "push",
+      "title": "PUSH and application send policy",
+      "rfc9293": [
+        "MUST-60",
+        "MUST-61",
+        "SHLD-27",
+        "SHLD-28",
+        "MAY-15",
+        "MAY-16",
+        "MAY-17"
+      ],
+      "status": "partial",
+      "behavior": "Data flights set PSH/ACK and exact ACK completion retires the queued send. The fixed socket API does not expose separate PUSH or FLUSH controls.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "transmit_stream_flight"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "socket::tests::bounded_queues_report_readiness_and_backpressure",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_defers_payload_and_reopening_resumes_exact_bytes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No successive-PUSH coalescing or general send-max-segment policy/qualification."
+      ],
+      "planned": [
+        "Test successive writes/PUSH boundaries, no indefinite buffering, and partial application send completion."
+      ],
+      "references": [
+        "9293:appendix-B"
+      ]
+    },
+    {
+      "id": "api",
+      "title": "Application interface, errors and Diffserv",
+      "rfc9293": [
+        "MUST-43",
+        "MUST-47",
+        "MUST-48",
+        "SHLD-20",
+        "SHLD-21",
+        "SHLD-22",
+        "SHLD-23",
+        "MAY-9",
+        "MAY-14"
+      ],
+      "status": "partial",
+      "behavior": "Owned handles expose send/receive, readiness, shutdown, close and failure. Requests retain exact owner/handle/incarnation identity; partial reads and backpressure are bounded.",
+      "implementation": [
+        {
+          "path": "kernel/src/socket.rs",
+          "symbol": "receive"
+        },
+        {
+          "path": "kernel/src/socket.rs",
+          "symbol": "shutdown"
+        },
+        {
+          "path": "kernel/src/socket.rs",
+          "symbol": "complete_transport"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "socket::tests::receive_is_partial_bounded_and_lossless",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "socket::tests::handles_are_generation_safe_and_owner_scoped",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "socket::tests::shutdown_cancels_queued_work_and_owner_exit_reclaims_everything",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "No local-address OPEN parameter, Diffserv controls or full RFC error-report/FLUSH interface."
+      ],
+      "planned": [
+        "Test defined local-address binding, error/report control and any future Diffserv/FLUSH options."
+      ],
+      "references": [
+        "9293:3.9.1"
+      ]
+    },
+    {
+      "id": "ttl",
+      "title": "IP TTL policy",
+      "rfc9293": [
+        "MUST-49"
+      ],
+      "status": "gap",
+      "behavior": "IPv4 emission uses a fixed TTL of 64.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "send_ipv4_from"
+        }
+      ],
+      "tests": [],
+      "gaps": [
+        "No configurable TCP/application TTL interface or corresponding test."
+      ],
+      "planned": [
+        "Test explicit TTL configuration and emitted header values."
+      ],
+      "references": [
+        "9293:3.9.2"
+      ]
+    },
+    {
+      "id": "ip-options",
+      "title": "IPv4 option and routing interface",
+      "rfc9293": [
+        "MUST-50",
+        "MUST-51",
+        "MUST-52",
+        "MUST-53",
+        "SHLD-24",
+        "MAY-10",
+        "MAY-11"
+      ],
+      "status": "gap",
+      "behavior": "IPv4 admission bounds IHL and validates its checksum; TCP option checks do not implement IPv4 routing options.",
+      "implementation": [
+        {
+          "path": "kernel/src/net.rs",
+          "symbol": "parse_ipv4_frame"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "net::tests::malformed_packets_are_rejected_without_indexing_past_bounds",
+          "roles": [
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No source-route interface/return-route handling or IP option negotiation; structurally valid IP options are distinct from malformed IHL."
+      ],
+      "planned": [
+        "Test valid unknown IP options separately from bad lengths/checksum, and any explicitly supported routing option."
+      ],
+      "references": [
+        "9293:3.9.2"
+      ]
+    },
+    {
+      "id": "icmp",
+      "title": "ICMP error delivery",
+      "rfc9293": [
+        "MUST-54",
+        "MUST-55",
+        "MUST-56",
+        "SHLD-25",
+        "SHLD-26"
+      ],
+      "status": "gap",
+      "behavior": "The current coordinator handles echo/control traffic; TCP has no complete typed ICMP error path.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "receive_ipv4"
+        }
+      ],
+      "tests": [],
+      "gaps": [
+        "No reviewed hard/soft ICMP error reporting, quoted-tuple validation or route advice. Source quench and other valid ICMP messages are not blanket malformed TCP."
+      ],
+      "planned": [
+        "Inject correct/forged quoted tuples and verify non-aborting soft errors versus hard error policy."
+      ],
+      "references": [
+        "9293:3.9.2",
+        "9293:3.8.3"
+      ]
+    },
+    {
+      "id": "ecn",
+      "title": "ECN and larger negotiated extensions",
+      "rfc9293": [
+        "SHLD-8"
+      ],
+      "status": "unsupported",
+      "behavior": "ECN negotiation, window scale, timestamps, SACK and multipath are not advertised; structurally valid unknown TCP options are ignored.",
+      "implementation": [
+        {
+          "path": "kernel/src/net.rs",
+          "symbol": "parse_tcp"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "net::tests::tcp_options_admit_unknown_and_unaligned_options_without_eating_payload",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No negotiated extension or related recovery/anti-wrap claim. Unsupported valid input must not become an invalid-format label."
+      ],
+      "planned": [
+        "Test extension negotiation/decline and ordinary traffic after a valid unsupported offer."
+      ],
+      "references": [
+        "9293:3.1",
+        "9293:3.2.1"
+      ]
+    },
+    {
+      "id": "reset",
+      "title": "Reset/challenge ACK and injection defense",
+      "rfc9293": [
+        "MAY-12"
+      ],
+      "status": "partial",
+      "behavior": "An exact receive-sequence RST resets the passive stream; an in-window guess is challenged at most once per tick; foreign/out-of-window data cannot complete a flight.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_stream_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_handshake_segment"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::reset_requires_exact_receive_sequence_and_challenges_in_window_guess",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::forged_ack_cannot_change_peer_window_or_complete_send",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "The tests qualify bounded passive behavior, not all RFC 5961 states, global challenge budgets, secure ISNs or authenticated transport."
+      ],
+      "planned": [
+        "Script SYN-RECEIVED/active-open RSTs, repeated same-tick challenge attempts and cross-owner attack budgets."
+      ],
+      "references": [
+        "9293:3.5.3",
+        "5961:3",
+        "5961:4",
+        "5961:5",
+        "5961:7"
+      ]
+    },
+    {
+      "id": "congestion",
+      "title": "Congestion control and alternate algorithms",
+      "rfc9293": [
+        "MAY-18"
+      ],
+      "status": "partial",
+      "behavior": "Passive timeout lowers the threshold and sets cwnd to one 128-byte MSS; exact ACK grows a capped cwnd. Each flight is bounded by both peer window and cwnd.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "handle_stream_segment"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "poll_tcp_passive_stream"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "transmit_stream_flight"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::retransmitted_ack_does_not_supply_an_ambiguous_rtt_sample",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::zero_window_defers_payload_and_reopening_resumes_exact_bytes",
+          "roles": [
+            "positive",
+            "negative"
+          ]
+        }
+      ],
+      "gaps": [
+        "No full RFC 5681 algorithm qualification, multi-flight accounting, fast retransmit/recovery, byte-counted partial-ACK growth or idle restart. Named AIMD markers are not a conformance result."
+      ],
+      "planned": [
+        "Use deterministic loss/duplicate-ACK/idle schedules with cwnd/ssthresh/flight invariants and baseline measurements."
+      ],
+      "references": [
+        "9293:3.8.2",
+        "5681:3.1",
+        "5681:3.2",
+        "5681:4.1",
+        "5681:4.3"
+      ]
+    },
+    {
+      "id": "capacity",
+      "title": "Bounded ownership, cancellation and concurrency",
+      "rfc9293": [],
+      "status": "partial",
+      "behavior": "Four global handshakes/streams and two per incarnation bound authority. Host tests cover exact request completion, sibling cancellation, exhaustion and slot reuse.",
+      "implementation": [
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "cancel_tcp_passive_stream"
+        },
+        {
+          "path": "kernel/src/network.rs",
+          "symbol": "start_tcp_passive_stream"
+        }
+      ],
+      "tests": [
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::cancellation_and_reset_leave_sibling_stream_usable",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "network_transport::network::tests::stream_capacity_exhaustion_is_bounded_and_reusable",
+          "roles": [
+            "positive",
+            "negative",
+            "exhaustion",
+            "cleanup"
+          ]
+        },
+        {
+          "package": "kernel",
+          "name": "socket::tests::two_accepted_children_are_served_concurrently_and_independently",
+          "roles": [
+            "positive",
+            "negative",
+            "cleanup"
+          ]
+        }
+      ],
+      "gaps": [
+        "Two peers on one guest listener do not prove wire fairness across distinct process owners, reset quiescence or long-lived sessions."
+      ],
+      "planned": [
+        "Run different process owners with one stalled/malicious peer, delayed completion and cancellation during device failure."
+      ],
+      "references": [
+        "9293:3.9.1",
+        "9293:7"
+      ]
+    }
+  ],
+  "system_evidence": [
+    {
+      "check": "Build and boot",
+      "command": "cargo xtask test-network",
+      "markers": [
+        "USER_SOCKET_TCP_ASYNC_READY",
+        "USER_HTTP_REQUEST_OK",
+        "TCP_PASSIVE_HANDSHAKE_OK",
+        "TCP_FAULT_DATA_DROP_INJECTED",
+        "TCP_FAULT_REORDER_RELEASED",
+        "USER_SOCKET_PASSIVE_CONCURRENT_READY streams=2",
+        "NETWORK_REGRESSION_BUDGET_OK"
+      ],
+      "scope": "Actual VirtIO/guest/host TCP exchange, two clients on one listener, selected loss/reorder/FIN and frozen budgets; not all RFC behavior."
+    }
+  ],
+  "followup": "N1.2/N1.3/N1.4/N1.5 and SEC2 remain open; verified means only the exact declared behavior/tests, never whole-RFC conformance."
+}

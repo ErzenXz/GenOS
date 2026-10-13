@@ -53,6 +53,18 @@ The fallback NE2000 driver preserves the same ownership contract with one receiv
 
 ## Protocol baseline
 
+The [maintained TCP requirement matrix](TCP_REQUIREMENTS.md) inventories all
+119 RFC 9293 requirement identifiers and the RFC 6298/5681 timing/congestion
+review across 25 topics. CI checks its source receipts, compiled test references
+and guest proof bindings. It distinguishes malformed input, state-inapplicable
+segments, valid unsupported features and profile limits, and records mandatory
+gaps explicitly. This closes N1.1's inventory requirement; N1.2–N1.5 remain open.
+
+TCP option admission bounds each length-bearing option, recognizes EOL/NOP,
+requires zero EOL padding and the four-byte MSS shape, and permits byte alignment.
+Well-formed unknown kinds are ignored without swallowing application data.
+This structural check does not negotiate MSS, timestamps, SACK or window scale.
+
 The current stack implements:
 
 - Ethernet II framing;

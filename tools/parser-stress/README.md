@@ -13,8 +13,8 @@ cargo test --manifest-path tools/parser-stress/Cargo.toml --offline
 ```
 
 The default seed is `0x47454e4f53`, with 25,000 deterministic mutations. Every run
-first checks 33 retained corpus inputs and every proper prefix of those inputs
-(85,037 truncations). The corpus includes accepted ELF/network headers, overflowing
+first checks 37 retained corpus inputs and every proper prefix of those inputs
+(85,137 truncations). The corpus includes accepted ELF/network headers, overflowing
 ELF offsets, truncated ELF payloads, IPv4 fragments, truncated IPv6 options,
 invalid TCP offsets, and a socket lifecycle. Two native ELF fixtures exercise a
 valid fixed-address image and rejection of W+X in its final load segment. Mutation operators truncate, insert,
@@ -63,6 +63,18 @@ byte while preserving live socket state. The endpoint decoder had the same
 pattern and received the same correction.
 
 ## Limits
+
+TCP option regressions retain former acceptance of a zero option length and
+nonzero EOL padding. They must reject before state mutation; valid unknown kinds
+and byte-aligned MSS options remain accepted. These are raw TCP structural
+inputs; full packet checksum/state coverage is in the production transport tests.
+
+```sh
+cargo run --manifest-path tools/parser-stress/Cargo.toml --release --offline -- --target tcp --input tools/parser-stress/corpus/tcp-option-zero-length.bin --expect reject
+cargo run --manifest-path tools/parser-stress/Cargo.toml --release --offline -- --target tcp --input tools/parser-stress/corpus/tcp-eol-nonzero-padding.bin --expect reject
+cargo run --manifest-path tools/parser-stress/Cargo.toml --release --offline -- --target tcp --input tools/parser-stress/corpus/tcp-unknown-option-valid.bin --expect accept
+cargo run --manifest-path tools/parser-stress/Cargo.toml --release --offline -- --target tcp --input tools/parser-stress/corpus/tcp-mss-unaligned-valid.bin --expect accept
+```
 
 This is reproducible mutation stress, **not coverage-guided fuzzing**, exhaustive
 verification, a sanitizer campaign, or proof of memory safety. A separate
