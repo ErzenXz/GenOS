@@ -5,9 +5,9 @@
     "global_asm_macro": 4,
     "naked_asm_macro": 1,
     "unsafe_attribute": 1,
-    "unsafe_block": 250,
+    "unsafe_block": 251,
     "unsafe_extern": 7,
-    "unsafe_fn": 67,
+    "unsafe_fn": 68,
     "unsafe_impl": 4,
     "unsafe_trait": 1
   },
@@ -448,6 +448,16 @@
       "sha256": "026fb051835c401f008923f1bf85d395f1e66016cfb9cb8e33a45e70118a15ae"
     },
     {
+      "lines": 26,
+      "path": "tools/coverage-fuzz/build.rs",
+      "sha256": "f28eae2543ac51401a861b6c4b82ae52a63a492ccdce600cf409899f4839ce15"
+    },
+    {
+      "lines": 41,
+      "path": "tools/coverage-fuzz/src/main.rs",
+      "sha256": "6a50be22f0a4c8bdef64aeca0f8079da451109feb5ec9065cff7098d30bb27d7"
+    },
+    {
       "lines": 283,
       "path": "tools/fixtures/memory_snapshot.rs",
       "sha256": "2861005179ac6db9aae4e63119cf2d15b580da5ff09702b1b444d5883f77317e"
@@ -458,14 +468,19 @@
       "sha256": "ae9a287fc903bfa8c96565bd544b693c27bb28295e9a0f5bd5d523f66670be41"
     },
     {
-      "lines": 626,
-      "path": "tools/parser-stress/src/main.rs",
-      "sha256": "b13dc8ce0ee5244eee2769ee038f3d76203b07b42dc93965ff0375e3828ce248"
+      "lines": 488,
+      "path": "tools/parser-stress/src/lib.rs",
+      "sha256": "c7722a45fbd05304d113f5dc19b43ea660f2759d92265fdd1d4d8783315a3473"
     },
     {
-      "lines": 53,
+      "lines": 308,
+      "path": "tools/parser-stress/src/main.rs",
+      "sha256": "5c363d9b6d8871db25aa0d5fe92c65ef08e8d33ca01eadd7a26348f1694b6cac"
+    },
+    {
+      "lines": 75,
       "path": "tools/parser-stress/tests/cli.rs",
-      "sha256": "d3977b74822913de6770e90b190bef37d38594f817f5dd98337589d54e9331dd"
+      "sha256": "62521c3d3274ed77af59b42afb7c97ab32f184a8a220f35ce1aaf19148be839a"
     },
     {
       "lines": 104,
@@ -3601,6 +3616,26 @@
       "kind": "unsafe_block",
       "line": 128,
       "path": "kernel/src/xstate_probe.rs"
+    },
+    {
+      "column": 5,
+      "construct_sha256": "337e7d89098ca31ef4eb5a88339de6adc1a4968a65481b28440851df359177a4",
+      "context": "/// Zero-length input requires no pointer dereference. This host-only entry never\n/// supplies a hardware pointer, executes privileged code or crosses into a VM.\n#[no_mangle]\npub unsafe extern \"C\" fn LLVMFuzzerTestOneInput(data: *const u8, size: usize) -> i32 {\n    assert!(size <= 65_536);\n    let bytes = if size == 0 {\n        &[]",
+      "context_start_line": 10,
+      "end_line": 41,
+      "kind": "unsafe_fn",
+      "line": 13,
+      "path": "tools/coverage-fuzz/src/main.rs"
+    },
+    {
+      "column": 9,
+      "construct_sha256": "75f87be48a9d26b0baea55614cd0a1acdc8bf34f0a7a6f89b1087ffc6075ae38",
+      "context": "        assert!(!data.is_null());\n        // SAFETY: the runtime's callback contract above supplies the original\n        // allocation and bounds; usize is capped before slice construction.\n        unsafe { std::slice::from_raw_parts(data, size) }\n    };\n    let target = TARGET.get_or_init(|| std::env::var(\"GENOS_FUZZ_TARGET\").expect(\"fuzz target\"));\n    #[cfg(feature = \"fault-oracle\")]",
+      "context_start_line": 18,
+      "end_line": 21,
+      "kind": "unsafe_block",
+      "line": 21,
+      "path": "tools/coverage-fuzz/src/main.rs"
     },
     {
       "column": 5,
